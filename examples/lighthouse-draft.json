@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "id": "preview-story",
+  "title": "The Lighthouse Letter",
+  "premise": "A cartographer arrives in a storm-bound harbor to find her missing brother. A damaged lighthouse, a sealed letter, and a captain’s uneasy promise lead toward the north cove.",
+  "playerRole": "Mara, the cartographer",
+  "startingPoint": "Mara arrives at Greyhaven harbor",
+  "narratorInstructions": "Narrate Greyhaven and its cast through sensory details, restrained tension, and brief dialogue. Mara belongs to the player: leave her thoughts, dialogue, and actions open. Keep Elias’s whereabouts private until the letter is discovered.",
+  "cast": [
+    {
+      "id": "iona",
+      "name": "Captain Iona",
+      "aliases": [
+        "Iona",
+        "Captain"
+      ],
+      "personality": "Blunt and self-reliant, with a deep respect for promises. She is wary of outsiders but protective of the people of Greyhaven.",
+      "voice": "Short, direct sentences. Maritime metaphors used sparingly. Concern shows through practical offers of help.",
+      "relationships": "Elias trusts her. Mara is a newcomer; trust must develop through play.",
+      "knowledge": "Knows Elias left a sealed letter in the old chart room. Does not know the letter’s contents.",
+      "sourceRefs": [
+        "chunk:1"
+      ]
+    },
+    {
+      "id": "elias",
+      "name": "Elias",
+      "aliases": [],
+      "personality": "Resourceful and determined, willing to take personal risks to protect the harbor.",
+      "voice": "Earnest and practical, with a reassuring sense of humor.",
+      "relationships": "Mara’s brother; trusts Captain Iona.",
+      "knowledge": "At the opening, his whereabouts and motives are not known to Mara.",
+      "sourceRefs": [
+        "chunk:1"
+      ]
+    }
+  ],
+  "lore": [
+    {
+      "id": "greyhaven",
+      "name": "Greyhaven",
+      "keys": [
+        "Greyhaven",
+        "harbor",
+        "lighthouse"
+      ],
+      "content": "A small coastal harbor whose safety depends on its lighthouse. A storm is expected at midnight. The old chart room overlooks the docks."
+    }
+  ],
+  "scenes": [
+    {
+      "id": "harbor",
+      "title": "A promise at the harbor",
+      "greeting": "The harbor bells ring twice as the wind shifts. Captain Iona stands at the end of the pier, a salt-stained coat drawn tight around her shoulders.\n\n“You’re Elias’s sister.” It sounds less like a question than a decision. “He left something for you. Old chart room.”\n\nBeyond her, the lighthouse remains dark.",
+      "direction": "Introduce Iona’s concern and the approaching storm. Give Mara room to question her or explore.",
+      "assumptions": [],
+      "sourceRefs": [
+        "chunk:1"
+      ]
+    },
+    {
+      "id": "letter",
+      "title": "The sealed letter",
+      "greeting": "Dust follows the door across the chart room floor. Among the rolled maps lies a small envelope, its wax seal unbroken. Your name is written on the front in Elias’s familiar hand.\n\nBelow the window, a boat knocks gently against the seawall.",
+      "direction": "Guide toward access to the chart room without choosing how Mara gets there. The sealed letter can reveal Elias’s mission when Mara chooses to read it.",
+      "assumptions": [
+        "Mara has reached the chart room."
+      ],
+      "sourceRefs": [
+        "chunk:1"
+      ]
+    },
+    {
+      "id": "cove",
+      "title": "Across the rising tide",
+      "greeting": "The north cove opens beneath the cliff. A familiar figure stands beside a grounded boat, one arm wrapped protectively around a cloth-covered case. Elias looks up at the sound of footsteps.\n\n“You found the letter.” Relief gives way to a glance at the water. “The path won’t hold much longer.”",
+      "direction": "Bring the north cove within reach once the letter has been discovered. Let the player decide how to approach or help Elias.",
+      "assumptions": [
+        "The letter has been read and the north cove reached."
+      ],
+      "sourceRefs": [
+        "chunk:1"
+      ]
+    },
+    {
+      "id": "beacon",
+      "title": "A light through the storm",
+      "greeting": "Rain lashes the lighthouse windows. On the worktable, the replacement lens catches a thin glimmer of lantern light. Iona braces the door against the wind.\n\n“Whatever we do,” she says, “we do it soon.”\n\nThe dark harbor waits below.",
+      "direction": "Set up the lighthouse repair after the lens returns. Leave the method and outcome open.",
+      "assumptions": [
+        "The replacement lens has reached the lighthouse."
+      ],
+      "sourceRefs": [
+        "chunk:1"
+      ]
+    }
+  ],
+  "warnings": [
+    "Future scenes assume the original route through the story. Review those assumptions if your choices change it."
+  ],
+  "source": {
+    "title": "The Lighthouse Letter",
+    "characters": 1163,
+    "chunks": 1
+  },
+  "createdAt": 1791498429602
+}

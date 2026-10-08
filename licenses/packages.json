@@ -1,0 +1,227 @@
+[
+  {
+    "name": "@mozilla/readability",
+    "version": "0.6.0",
+    "license": "Apache-2.0",
+    "path": "node_modules/@mozilla/readability",
+    "directory": "licenses/mozilla-readability-0.6.0",
+    "files": [
+      "LICENSE.md",
+      "SOURCE-NOTICES.txt"
+    ],
+    "repository": "https://github.com/mozilla/readability",
+    "resolved": "https://registry.npmjs.org/@mozilla/readability/-/readability-0.6.0.tgz",
+    "integrity": "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ==",
+    "licenseSource": "node_modules/@mozilla/readability/LICENSE.md"
+  },
+  {
+    "name": "boolbase",
+    "version": "1.0.0",
+    "license": "ISC",
+    "path": "node_modules/boolbase",
+    "directory": "licenses/boolbase-1.0.0",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/boolbase",
+    "resolved": "https://registry.npmjs.org/boolbase/-/boolbase-1.0.0.tgz",
+    "integrity": "sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww==",
+    "licenseSource": "https://github.com/fb55/boolbase/blob/be0bcd8a4e917a0a5895e95b523fbbed05a64871/LICENSE"
+  },
+  {
+    "name": "css-select",
+    "version": "5.2.2",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/css-select",
+    "directory": "licenses/css-select-5.2.2",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/css-select",
+    "resolved": "https://registry.npmjs.org/css-select/-/css-select-5.2.2.tgz",
+    "integrity": "sha512-TizTzUddG/xYLA3NXodFM0fSbNizXjOKhqiQQwvhlspadZokn1KDy0NZFS0wuEubIYAV5/c1/lAr0TaaFXEXzw==",
+    "licenseSource": "node_modules/css-select/LICENSE"
+  },
+  {
+    "name": "css-what",
+    "version": "6.2.2",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/css-what",
+    "directory": "licenses/css-what-6.2.2",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/css-what",
+    "resolved": "https://registry.npmjs.org/css-what/-/css-what-6.2.2.tgz",
+    "integrity": "sha512-u/O3vwbptzhMs3L1fQE82ZSLHQQfto5gyZzwteVIEyeaY5Fc7R4dapF/BvRoSYFeqfBk4m0V1Vafq5Pjv25wvA==",
+    "licenseSource": "node_modules/css-what/LICENSE"
+  },
+  {
+    "name": "cssom",
+    "version": "0.5.0",
+    "license": "MIT",
+    "path": "node_modules/cssom",
+    "directory": "licenses/cssom-0.5.0",
+    "files": [
+      "LICENSE.txt"
+    ],
+    "repository": "https://github.com/NV/CSSOM",
+    "resolved": "https://registry.npmjs.org/cssom/-/cssom-0.5.0.tgz",
+    "integrity": "sha512-iKuQcq+NdHqlAcwUY0o/HL69XQrUaQdMjmStJ8JFmUaiiQErlhrmuigkg/CU4E2J0IyUKUrMAgl36TvN67MqTw==",
+    "licenseSource": "node_modules/cssom/LICENSE.txt"
+  },
+  {
+    "name": "dom-serializer",
+    "version": "2.0.0",
+    "license": "MIT",
+    "path": "node_modules/dom-serializer",
+    "directory": "licenses/dom-serializer-2.0.0",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/cheeriojs/dom-serializer",
+    "resolved": "https://registry.npmjs.org/dom-serializer/-/dom-serializer-2.0.0.tgz",
+    "integrity": "sha512-wIkAryiqt/nV5EQKqQpo3SToSOV9J0DnbJqwK7Wv/Trc92zIAYZ4FlMu+JPFW1DfGFt81ZTCGgDEabffXeLyJg==",
+    "licenseSource": "node_modules/dom-serializer/LICENSE"
+  },
+  {
+    "name": "entities",
+    "version": "4.5.0",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/dom-serializer/node_modules/entities",
+    "directory": "licenses/entities-4.5.0",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/entities",
+    "resolved": "https://registry.npmjs.org/entities/-/entities-4.5.0.tgz",
+    "integrity": "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==",
+    "licenseSource": "node_modules/dom-serializer/node_modules/entities/LICENSE"
+  },
+  {
+    "name": "domelementtype",
+    "version": "2.3.0",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/domelementtype",
+    "directory": "licenses/domelementtype-2.3.0",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/domelementtype",
+    "resolved": "https://registry.npmjs.org/domelementtype/-/domelementtype-2.3.0.tgz",
+    "integrity": "sha512-OLETBj6w0OsagBwdXnPdN0cnMfF9opN69co+7ZrbfPGrdpPVNBUj02spi6B1N7wChLQiPn4CSH/zJvXw56gmHw==",
+    "licenseSource": "node_modules/domelementtype/LICENSE"
+  },
+  {
+    "name": "domhandler",
+    "version": "5.0.3",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/domhandler",
+    "directory": "licenses/domhandler-5.0.3",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/domhandler",
+    "resolved": "https://registry.npmjs.org/domhandler/-/domhandler-5.0.3.tgz",
+    "integrity": "sha512-cgwlv/1iFQiFnU96XXgROh8xTeetsnJiDsTc7TYCLFd9+/WNkIqPTxiM/8pSd8VIrhXGTf1Ny1q1hquVqDJB5w==",
+    "licenseSource": "node_modules/domhandler/LICENSE"
+  },
+  {
+    "name": "domutils",
+    "version": "3.2.2",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/domutils",
+    "directory": "licenses/domutils-3.2.2",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/domutils",
+    "resolved": "https://registry.npmjs.org/domutils/-/domutils-3.2.2.tgz",
+    "integrity": "sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==",
+    "licenseSource": "node_modules/domutils/LICENSE"
+  },
+  {
+    "name": "entities",
+    "version": "7.0.1",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/entities",
+    "directory": "licenses/entities-7.0.1",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/entities",
+    "resolved": "https://registry.npmjs.org/entities/-/entities-7.0.1.tgz",
+    "integrity": "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==",
+    "licenseSource": "node_modules/entities/LICENSE"
+  },
+  {
+    "name": "html-escaper",
+    "version": "3.0.3",
+    "license": "MIT",
+    "path": "node_modules/html-escaper",
+    "directory": "licenses/html-escaper-3.0.3",
+    "files": [
+      "LICENSE.txt"
+    ],
+    "repository": "https://github.com/WebReflection/html-escaper",
+    "resolved": "https://registry.npmjs.org/html-escaper/-/html-escaper-3.0.3.tgz",
+    "integrity": "sha512-RuMffC89BOWQoY0WKGpIhn5gX3iI54O6nRA0yC124NYVtzjmFWBIiFd8M0x+ZdX0P9R4lADg1mgP8C7PxGOWuQ==",
+    "licenseSource": "node_modules/html-escaper/LICENSE.txt"
+  },
+  {
+    "name": "htmlparser2",
+    "version": "10.1.0",
+    "license": "MIT",
+    "path": "node_modules/htmlparser2",
+    "directory": "licenses/htmlparser2-10.1.0",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/htmlparser2",
+    "resolved": "https://registry.npmjs.org/htmlparser2/-/htmlparser2-10.1.0.tgz",
+    "integrity": "sha512-VTZkM9GWRAtEpveh7MSF6SjjrpNVNNVJfFup7xTY3UpFtm67foy9HDVXneLtFVt4pMz5kZtgNcvCniNFb1hlEQ==",
+    "licenseSource": "node_modules/htmlparser2/LICENSE"
+  },
+  {
+    "name": "linkedom",
+    "version": "0.18.12",
+    "license": "ISC",
+    "path": "node_modules/linkedom",
+    "directory": "licenses/linkedom-0.18.12",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/WebReflection/linkedom",
+    "resolved": "https://registry.npmjs.org/linkedom/-/linkedom-0.18.12.tgz",
+    "integrity": "sha512-jalJsOwIKuQJSeTvsgzPe9iJzyfVaEJiEXl+25EkKevsULHvMJzpNqwvj1jOESWdmgKDiXObyjOYwlUqG7wo1Q==",
+    "licenseSource": "node_modules/linkedom/LICENSE"
+  },
+  {
+    "name": "nth-check",
+    "version": "2.1.1",
+    "license": "BSD-2-Clause",
+    "path": "node_modules/nth-check",
+    "directory": "licenses/nth-check-2.1.1",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/fb55/nth-check",
+    "resolved": "https://registry.npmjs.org/nth-check/-/nth-check-2.1.1.tgz",
+    "integrity": "sha512-lqjrjmaOoAnWfMmBPL+XNnynZh2+swxiX3WUE0s4yEHI6m+AwrK2UZOimIRl3X/4QctVqS8AiZjFqyOGrMXb/w==",
+    "licenseSource": "node_modules/nth-check/LICENSE"
+  },
+  {
+    "name": "uhyphen",
+    "version": "0.2.0",
+    "license": "ISC",
+    "path": "node_modules/uhyphen",
+    "directory": "licenses/uhyphen-0.2.0",
+    "files": [
+      "LICENSE"
+    ],
+    "repository": "https://github.com/WebReflection/uhyphen",
+    "resolved": "https://registry.npmjs.org/uhyphen/-/uhyphen-0.2.0.tgz",
+    "integrity": "sha512-qz3o9CHXmJJPGBdqzab7qAYuW8kQGKNEuoHFYrBwV6hWIMcpAmxDLXojcHfFr9US1Pe6zUswEIJIbLI610fuqA==",
+    "licenseSource": "node_modules/uhyphen/LICENSE"
+  }
+]
