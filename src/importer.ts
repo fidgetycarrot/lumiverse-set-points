@@ -1,3 +1,4 @@
+import { defaultRoles, roleInstruction, rolesForImport, validateRoles } from './roles';
 import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type StoryDraft, type LoreEntry, type StoryScene } from './types';
 
 export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
@@ -112,8 +113,16 @@ export function validateDraft(value: unknown): StoryDraft {
     appearanceIds.add(characterId);
     return { characterId, description: safeText(entry.description, `${path}.description`, 4000, true), startingOutfit: safeText(entry.startingOutfit, `${path}.startingOutfit`, 2000, true) };
   });
+  let roles: StoryDraft['roles'];
+  if (draft.roles !== undefined) { try { roles = validateRoles(draft.roles, cast); } catch (error) { fail('INVALID_SCHEMA', error instanceof Error ? error.message : 'Invalid narration roles.'); } }
+  const playerRole=safeText(draft.playerRole,'playerRole',2000);
+  const namedPlayer=defaultRoles({cast,playerRole}).playerCharacterId;
+  if(roles?.playerCharacterId&&namedPlayer&&roles.playerCharacterId!==namedPlayer)fail('INVALID_SCHEMA','The player role names a different cast identity. Align Your role and Player cast identity in Review.');
+  const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, 'roleReview', 80);
+  if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview)) fail('INVALID_SCHEMA', 'Invalid player/viewpoint review acknowledgment.');
   return {
-    version: 1, id: identifier(draft.id, 'id'), title: safeText(draft.title, 'title', 200), premise: safeText(draft.premise, 'premise', 6000), playerRole: safeText(draft.playerRole, 'playerRole', 2000), startingPoint: safeText(draft.startingPoint, 'startingPoint', 2000),
+    ...(roles ? { roles } : {}), ...(roleReview ? { roleReview } : {}),
+    version: 1, id: identifier(draft.id, 'id'), title: safeText(draft.title, 'title', 200), premise: safeText(draft.premise, 'premise', 6000), playerRole, startingPoint: safeText(draft.startingPoint, 'startingPoint', 2000),
     narratorInstructions: safeText(draft.narratorInstructions, 'narratorInstructions', 8000), cast, ...(appearances !== undefined ? { appearances } : {}), lore, scenes, warnings: texts(draft.warnings, 'warnings', 96, 2000),
     source: { title: safeText(source.title, 'source.title', 200), ...(sourceUrl(source.url) ? { url: sourceUrl(source.url) } : {}), characters: number(source.characters, 'source.characters', 1, IMPORT_LIMITS.sourceCharacters), chunks }, createdAt: number(draft.createdAt, 'createdAt', 0, Number.MAX_SAFE_INTEGER),
   };
@@ -324,7 +333,7 @@ function mergeGroups(ledgers: Ledger[]): Ledger[][] {
 }
 
 type DraftMetadata = Pick<StoryDraft, 'version' | 'id' | 'playerRole' | 'startingPoint' | 'source' | 'createdAt'>;
-type Preferences = { sourceTitle: string; playerRole: string; startingPoint: string; requestedScenes: number };
+type Preferences = { sourceTitle: string; playerRole: string; startingPoint: string; requestedScenes: number } & Pick<ImportOptions,'narrationMode'|'narratorCharacter'|'sourceViewpoint'>;
 type PlannedScene = { id: string; title: string; eventIndexes: number[]; brief: string; assumptions: string[]; sourceRefs: string[] };
 type AdaptationPlan = { title: string; premise: string; narratorInstructions: string; startingLore: number[]; scenes: PlannedScene[]; warnings: string[] };
 
@@ -415,11 +424,15 @@ function packNewWarnings(values: string[]): string[] {
 }
 
 async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal): Promise<{ draft: StoryDraft; operations: number }> {
+  const roleCast = ledger.cast.map((person,index)=>({ ...person, id:`cast-${index+1}`, knowledge:person.knowledgeAtIntroduction }));
+  let roles: StoryDraft['roles'];
+  if (preferences.narrationMode !== undefined) { try { roles = rolesForImport(roleCast, preferences.playerRole, preferences); } catch (error) { fail('INVALID_SCHEMA', error instanceof Error ? error.message : 'Invalid narration choice.'); } }
+  const rolePolicy = roles ? `\n${roleInstruction({cast:roleCast,playerRole:preferences.playerRole,roles})}` : '';
   let completed = 0;
   let total = 1 + Math.ceil(ledger.cast.length / 4) + Math.ceil(ledger.setting.length / 4) + Math.ceil(preferences.requestedScenes / 2);
   report(completed, total, 'Planning the narrator and scene order');
   const plan = await requestJson([
-    { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nPlan a staged adaptation. Return exactly {"title":"story title","premise":"premise at the chosen start","narratorInstructions":"narrator rules","startingLore":[0],"scenes":[{"title":"scene title","eventIndexes":[0],"brief":"one-sentence scene setup and relevant revelation","assumptions":[]}],"warnings":[]}. Source indexes are zero-based positions in ledger.setting and ledger.events. Select only setting entries appropriate for starting lore; explain omitted or future-only entries in warnings. The full ledger remains available to later scene generation. All source cast identities will be retained separately; do not reproduce their descriptions here. Plan at least one and at most ${preferences.requestedScenes} scenes, with no invented padding. Each scene must cite one or more existing event indexes in chronological order. The first scene begins at the chosen starting point. Do not write greetings, full cast profiles, or lore content yet. Keep the premise concise, narrator instructions focused, each scene brief to one short sentence, and assumptions to only necessary continuity conditions (at most six short items). Give only new warnings, at most sixteen concise items; source warnings are preserved automatically. Aim for a compact plan under 16,000 JSON characters. All fields are required.` },
+    { role: 'system', content: `${sourcePolicy}\n${agencyRules}${rolePolicy}\nPlan a staged adaptation. Return exactly {"title":"story title","premise":"premise at the chosen start","narratorInstructions":"narrator rules","startingLore":[0],"scenes":[{"title":"scene title","eventIndexes":[0],"brief":"one-sentence scene setup and relevant revelation","assumptions":[]}],"warnings":[]}. Source indexes are zero-based positions in ledger.setting and ledger.events. Select only setting entries appropriate for starting lore; explain omitted or future-only entries in warnings. The full ledger remains available to later scene generation. All source cast identities will be retained separately; do not reproduce their descriptions here. Plan at least one and at most ${preferences.requestedScenes} scenes, with no invented padding. Each scene must cite one or more existing event indexes in chronological order. The first scene begins at the chosen starting point. Do not write greetings, full cast profiles, or lore content yet. Keep the premise concise, narrator instructions focused, each scene brief to one short sentence, and assumptions to only necessary continuity conditions (at most six short items). Give only new warnings, at most sixteen concise items; source warnings are preserved automatically. Aim for a compact plan under 16,000 JSON characters. All fields are required.` },
     { role: 'user', content: JSON.stringify({ task: 'set-points-plan-v1', preferences, ledger }) },
   ], generate, value => validatePlan(value, ledger, preferences.requestedScenes), signal);
   completed++;
@@ -432,7 +445,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
   if (metadata.source.chunks > 1) knownWarnings.push(`Adapted from ${metadata.source.chunks} source sections using a condensed story ledger. Review character consistency, chronology, and omitted subplots before saving.`);
   if (scenes.length < preferences.requestedScenes) knownWarnings.push(`The model produced ${scenes.length} scenes of the ${preferences.requestedScenes} requested. Review whether any major events are missing.`);
   if (entries.length < ledger.setting.length) knownWarnings.push(`${ledger.setting.length - entries.length} source setting entries were excluded from starting lore. Their source facts remain available to scene generation; review the plan's warnings for future-only details or omissions.`);
-  const base: StoryDraft = { ...metadata, title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, cast, lore, scenes, warnings: [...new Set(knownWarnings)] };
+  const base: StoryDraft = { ...metadata, ...(roles ? { roles } : {}), title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, cast, lore, scenes, warnings: [...new Set(knownWarnings)] };
   const batches = Math.ceil(cast.length / 4) + Math.ceil(lore.length / 4) + Math.ceil(scenes.length / 2);
   total = completed + batches;
   const room = IMPORT_LIMITS.draftCharacters - JSON.stringify(base).length - 512;
@@ -451,7 +464,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
     const targets = characters.slice(start, start + 4), skeletons = cast.slice(start, start + 4);
     report(completed, total, `Creating character batch ${Math.floor(start / 4) + 1} of ${Math.ceil(characters.length / 4)}`);
     const result = await requestJson([
-      { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nWrite only the requested character profiles, as they are at the chosen starting point. Return exactly {"cast":[{"id":"requested id","personality":"traits","voice":"speech style","relationships":"relationships at the start","knowledge":"knowledge at the start"}],"warnings":[]}. Return every requested ID once, without adding or omitting characters. Names, aliases and source references are retained automatically. Preserve relationship context and motivations; keep later developments and secrets out of these starting profiles. Keep each field to a concise paragraph and stay below the provided serialized JSON prose budget per character. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate scenes or lore.` },
+      { role: 'system', content: `${sourcePolicy}\n${agencyRules}${rolePolicy}\nWrite only the requested character profiles, as they are at the chosen starting point. Return exactly {"cast":[{"id":"requested id","personality":"traits","voice":"speech style","relationships":"relationships at the start","knowledge":"knowledge at the start"}],"warnings":[]}. Return every requested ID once, without adding or omitting characters. Names, aliases and source references are retained automatically. Preserve relationship context and motivations; keep later developments and secrets out of these starting profiles. Keep each field to a concise paragraph and stay below the provided serialized JSON prose budget per character. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate scenes or lore.` },
       { role: 'user', content: JSON.stringify({ task: 'set-points-cast-v1', preferences, ledger, foundation, characters: targets, limits: { prosePerCharacter: budgets.cast, newWarnings: budgets.warnings } }) },
     ], generate, value => {
       const batch = orderedBatch(value, 'cast', targets.map(item => item.id));
@@ -467,7 +480,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
     const targets = entries.slice(start, start + 4), skeletons = lore.slice(start, start + 4);
     report(completed, total, `Creating starting lore batch ${Math.floor(start / 4) + 1} of ${Math.ceil(entries.length / 4)}`);
     const result = await requestJson([
-      { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nWrite only the requested starting lore entries. Return exactly {"lore":[{"id":"requested id","keys":["keyword"],"content":"facts safe to know at the chosen start"}],"warnings":[]}. Return every requested ID once, without adding or omitting entries. Names are retained automatically. Write only established starting facts, keeping future revelations and changes in the scene material. Keep content concise and stay below the provided serialized JSON prose budget per entry, including keywords. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate character profiles or scenes.` },
+      { role: 'system', content: `${sourcePolicy}\n${agencyRules}${rolePolicy}\nWrite only the requested starting lore entries. Return exactly {"lore":[{"id":"requested id","keys":["keyword"],"content":"facts safe to know at the chosen start"}],"warnings":[]}. Return every requested ID once, without adding or omitting entries. Names are retained automatically. Write only established starting facts, keeping future revelations and changes in the scene material. Keep content concise and stay below the provided serialized JSON prose budget per entry, including keywords. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate character profiles or scenes.` },
       { role: 'user', content: JSON.stringify({ task: 'set-points-lore-v1', preferences, ledger, foundation, entries: targets, limits: { prosePerEntry: budgets.lore, newWarnings: budgets.warnings } }) },
     ], generate, value => {
       const batch = orderedBatch(value, 'lore', targets.map(item => item.id));
@@ -483,11 +496,12 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
     const targets = plan.scenes.slice(start, start + 2), skeletons = scenes.slice(start, start + 2);
     report(completed, total, `Creating scene batch ${Math.floor(start / 2) + 1} of ${Math.ceil(plan.scenes.length / 2)}`);
     const result = await requestJson([
-      { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nWrite only the requested scene openings. Return exactly {"scenes":[{"id":"requested id","greeting":"playable opening","direction":"private scene guidance","assumptions":[]}],"warnings":[]}. Return every requested ID once, without adding or omitting scenes. Titles, order and source references come from the approved plan and are retained automatically. Each greeting should be roughly 150–300 words, set a concrete situation, and stop before the player speaks or acts. Keep directions concise, faithful to the selected source events, and conditional on player choices. Established cast identities, voices, and relationships must stay consistent with the ledger. Preserve the planned continuity assumptions; add only necessary new assumptions. Stay below the provided serialized JSON prose budget per scene, including any additional assumptions. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not reproduce the narrator card, cast, lore, or other scenes.` },
+      { role: 'system', content: `${sourcePolicy}\n${agencyRules}${rolePolicy}\nWrite only the requested scene openings. Return exactly {"scenes":[{"id":"requested id","greeting":"playable opening","direction":"private scene guidance","assumptions":[]}],"warnings":[]}. Return every requested ID once, without adding or omitting scenes. Titles, order and source references come from the approved plan and are retained automatically. ${roles ? 'Every scene must also include "roles":{ "playerCharacterId":'+JSON.stringify(roles.playerCharacterId)+', "narration":"'+roles.narration+'", "viewpointCharacterId":'+JSON.stringify(roles.viewpointCharacterId)+'}. These declarations must match the role contract exactly; they do not substitute for reviewing the prose. ' : ''}Each greeting should be roughly 150–300 words, set a concrete situation, and stop before the player speaks or acts. Keep directions concise, faithful to the selected source events, and conditional on player choices. Established cast identities, voices, and relationships must stay consistent with the ledger. Preserve the planned continuity assumptions; add only necessary new assumptions. Stay below the provided serialized JSON prose budget per scene, including any additional assumptions. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not reproduce the narrator card, cast, lore, or other scenes.` },
       { role: 'user', content: JSON.stringify({ task: 'set-points-scenes-v1', preferences, ledger, foundation, scenes: targets, limits: { prosePerScene: budgets.scenes, newWarnings: budgets.warnings } }) },
     ], generate, value => {
       const batch = orderedBatch(value, 'scenes', targets.map(item => item.id));
       const records = batch.entries.map((item, i): StoryScene => {
+        if (roles) { const declared = object(item.roles, 'scenes.roles'); if (declared.playerCharacterId !== roles.playerCharacterId || declared.narration !== roles.narration || declared.viewpointCharacterId !== roles.viewpointCharacterId) fail('INVALID_SCHEMA', 'Scene role declarations must match the selected player and narrator identities.'); }
         const assumptions = [...new Set([...skeletons[i].assumptions, ...texts(item.assumptions, 'scenes.assumptions', 24, 1000)])];
         const result = { ...skeletons[i], greeting: safeText(item.greeting, 'scenes.greeting', 8000), direction: safeText(item.direction, 'scenes.direction', 6000), assumptions: texts(assumptions, 'scenes.assumptions', 24, 1000) };
         checkProseBudget(result, skeletons[i], budgets.scenes, 'A scene opening'); return result;
@@ -540,9 +554,9 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   }
   const ledger = ledgers[0];
   const metadata: DraftMetadata = { version: 1, id: `sp-${crypto.randomUUID()}`, playerRole, startingPoint, source: { title, ...(url ? { url } : {}), characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
-  const preferences: Preferences = { sourceTitle: title, playerRole, startingPoint, requestedScenes: sceneCount };
+  const preferences: Preferences = { sourceTitle: title, playerRole, startingPoint, requestedScenes: sceneCount, ...(options.narrationMode !== undefined ? { narrationMode: options.narrationMode, narratorCharacter: options.narratorCharacter ?? '', sourceViewpoint: options.sourceViewpoint ?? '' } : {}) };
   progress('Checking for a saved complete adaptation');
-  let adapted = await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, value => validateAdaptation(value, metadata, sceneCount), value => finalizeAdaptation(value, ledger, sceneCount), signal);
+  let adapted = preferences.narrationMode !== undefined ? undefined : await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, value => validateAdaptation(value, metadata, sceneCount), value => finalizeAdaptation(value, ledger, sceneCount), signal);
   if (adapted) completed++;
   else {
     const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal);
@@ -579,15 +593,15 @@ export function cardPayload(value: StoryDraft) {
   const approvedAppearances = appearanceGuide(draft);
   return {
     name: draft.title,
-    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}${approvedAppearances ? `\n\n${approvedAppearances}` : ''}`,
+    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${roleInstruction(draft)}\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}${approvedAppearances ? `\n\n${approvedAppearances}` : ''}`,
     personality: 'A responsive narrator who keeps supporting characters distinct and leaves the player character under the human’s control.',
     scenario: `${draft.premise}\n\nPlayer role: ${draft.playerRole}\nStarting point: ${draft.startingPoint}`,
     first_mes: draft.scenes[0].greeting,
     alternate_greetings: draft.scenes.slice(1).map(scene => scene.greeting),
-    system_prompt: `${draft.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}${approvedAppearances ? `\n\n${APPEARANCE_RULE}` : ''}`,
+    system_prompt: `${draft.narratorInstructions}\n\n${roleInstruction(draft)}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}${approvedAppearances ? `\n\n${APPEARANCE_RULE}` : ''}`,
     mes_example: '',
     creator_notes: `Adapted with Set Points from ${draft.source.title}${draft.source.url ? ` (${draft.source.url})` : ''}.\n${draft.warnings.join('\n')}`,
     tags: ['Set Points', 'Narrator', 'Story adaptation'],
-    extensions: { [EXTENSION_ID]: { version: 1, draftId: draft.id, title: draft.title, scenes: draft.scenes } },
+    extensions: { [EXTENSION_ID]: { version: 1, draftId: draft.id, title: draft.title, scenes: draft.scenes, playerRole: draft.playerRole, roles: draft.roles ?? defaultRoles(draft), roleDirection: roleInstruction(draft) } },
   };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, adaptStory, appearanceGuide, cardPayload, validateDraft, type Generate, type GenerationMessage } from '../src/importer';
 import type { StoryDraft } from '../src/types';
+import { roleInstruction } from '../src/roles';
 import { enrichVisuals, INCOMPLETE_APPEARANCE, UNSPECIFIED_APPEARANCE, validateVisualPack, visualCaption, visualDraftSignature, visualTagPrompt, type VisualPack, type VisualProfile } from '../src/visuals';
 
 const source = 'Mira is a woman, 30 years old. She has dark hair and green eyes. At the beginning, she wears a blue coat. Later, she changes into a red cloak. Rowan waits beside the harbor, with no appearance described.';
@@ -50,7 +51,7 @@ describe('approved appearances in the playable draft',()=>{
     expect(cardPayload({...original,appearances:[]})).toEqual(card);
     expect(appearanceGuide(original)).toBe('');
     expect(card.description).not.toContain('Approved appearance guide');
-    expect(card.system_prompt).toBe(`${original.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}`);
+    expect(card.system_prompt).toBe(`${original.narratorInstructions}\n\n${roleInstruction(original)}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}`);
   });
   test('publishes only approved descriptions with the authority rule and no scene rewrites',()=>{
     const original=draft(),generated=profile();

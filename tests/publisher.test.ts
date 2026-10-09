@@ -4,6 +4,7 @@ import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, appearanceGuide, cardPaylo
 import { CardPublisher, draftKey, worldEntries } from '../src/publisher';
 import { EXTENSION_ID } from '../src/types';
 import { draft } from './fixtures';
+import { roleInstruction, roleReviewFingerprint } from '../src/roles';
 
 function host() {
   const storage = new Map<string,unknown>(), books: any[] = [], cards: any[] = [], entries: any[] = [], users: string[] = [];
@@ -24,6 +25,17 @@ function host() {
   return {api,books,cards,entries,users,loseReply:()=>{loseCardReply=true;},failEntry:()=>{failEntryOnce=true;}};
 }
 describe('saving cards and lore', () => {
+  test('blocks unresolved player agency before creating resources and invalidates review after edits',async()=>{
+    const h=host(),p=new CardPublisher(h.api,'user-a'),story=draft();
+    story.scenes[0].greeting='You decide to open the letter. I wait beside the boat.';
+    await expect(p.publish(story)).rejects.toThrow('player and viewpoint checks');
+    expect(h.cards).toHaveLength(0);expect(h.books).toHaveLength(0);expect(h.entries).toHaveLength(0);
+    story.roleReview=roleReviewFingerprint(story);await p.publish(story);
+    expect(h.cards).toHaveLength(1);expect(h.cards[0].system_prompt).toContain('external narrator');
+    expect(h.cards[0].extensions[EXTENSION_ID].roleDirection).toBe(roleInstruction(story));
+    story.scenes[0].greeting='You decide to leave.';
+    await expect(p.publish(story)).rejects.toThrow('player and viewpoint checks');expect(h.cards).toHaveLength(1);
+  });
   test('saves one narrator with attached, non-global lore and ordered greetings', async () => {
     const h=host(), p=new CardPublisher(h.api,'user-a'), story=draft(); const saved=await p.publish(story);
     expect(h.cards).toHaveLength(1); expect(h.books).toHaveLength(1); expect(h.entries).toHaveLength(3);
@@ -53,7 +65,7 @@ describe('saving cards and lore', () => {
     const story=draft(), entries=worldEntries(story);
     expect(entries).toHaveLength(3);
     expect(entries.map(entry=>entry.comment)).toEqual(['Premise and player role','Iona','Greyhaven']);
-    expect(entries[0].content).toBe(`${story.premise}\n\nPlayer: ${story.playerRole}\nStarting point: ${story.startingPoint}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}`);
+    expect(entries[0].content).toBe(`${story.premise}\n\nPlayer: ${story.playerRole}\nStarting point: ${story.startingPoint}\n\n${roleInstruction(story)}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}`);
     expect(entries[1].content).toBe('Iona\nPersonality: Blunt and dependable.\nVoice: Short, direct sentences.\nRelationships at the start: She knows Elias and is wary of Mara.\nKnowledge at the start: Elias left a letter in the chart room.\nUse subsequent chat events for changes to these starting facts.');
     expect(entries[2].content).toBe(story.lore[0].content);
     expect(worldEntries({...story,appearances:[]})).toEqual(entries);

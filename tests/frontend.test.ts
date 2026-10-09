@@ -3,6 +3,7 @@ import { Window } from 'happy-dom';
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { createRpc, setup } from '../src/frontend';
 import { validateDraft } from '../src/importer';
+import { repairSignature } from '../src/scene-repair';
 import { INCOMPLETE_APPEARANCE, visualDraftSignature, type VisualPack } from '../src/visuals';
 import type { AppSnapshot, StoryDraft, WebStoryPage } from '../src/types';
 
@@ -16,13 +17,18 @@ function harness(hasDraft=true) {
   const root=window.document.createElement('div');window.document.body.append(root);
   const state:AppSnapshot={version:'0.1.0',permissions:[],connections:[{id:'model',name:'Writing model',provider:'test',model:'test'}],job:null,draft:hasDraft?fixture():null,saved:null,play:{chatId:'chat',characterId:'card',title:'The Letter',enabled:true,current:0,next:1,scenes:fixture().scenes,canUndo:false,busy:false,notice:''},diagnostics:[]};
   let receive:(message:unknown)=>void=()=>{};let webFetch:((url:string)=>Promise<WebStoryPage>)|null=null;let connectionTest:((id:string)=>Promise<{message:string}>)=async()=>({message:'The provider accepted the neutral test request.'});let draftSave:((draft:unknown)=>Promise<StoryDraft>)|null=null;let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
+  let repairApply:((draft:unknown)=>Promise<StoryDraft>)|null=null;
   const ctx={ui:{registerDrawerTab:()=>({root,tabId:'set-points',setBadge:()=>{},onActivate:()=>()=>{},activate:()=>{active=true;},destroy:()=>{}}),registerInputBarAction:()=>({onClick:()=>()=>{},destroy:()=>{}})},dom:{addStyle:(css:string)=>{const style=window.document.createElement('style');style.textContent=css;window.document.head.append(style);return()=>style.remove();}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'chat',characterId:'card'}),ready:()=>{},onBackendMessage:(callback:(message:unknown)=>void)=>{receive=callback;return()=>{receive=()=>{};};},sendToBackend:(message:any)=>{requests.push(message);queueMicrotask(()=>{
     if(failure&&message.action!=='snapshot'){receive({type:'set-points:response',id:message.id,error:failure});return;}
     if(message.action==='save-draft'&&draftSave){draftSave(message.input.draft).then(result=>{state.draft=result;receive({type:'set-points:response',id:message.id,result:structuredClone(result)});},error=>receive({type:'set-points:response',id:message.id,error:String(error)}));return;}
+    if(message.action==='apply-scene-repair'&&repairApply){repairApply(message.input.draft).then(result=>{state.draft=result;receive({type:'set-points:response',id:message.id,result:structuredClone(result)});},error=>receive({type:'set-points:response',id:message.id,error:String(error)}));return;}
     if(message.action==='test-connection'){Promise.resolve().then(()=>connectionTest(message.input.connectionId)).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     if(message.action==='fetch-url'){Promise.resolve().then(()=>{if(!webFetch)throw new Error('No readable page');return webFetch(message.input.url);}).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     let result:unknown;
     if(message.action==='snapshot')result=structuredClone(state);
+    else if(message.action==='start-scene-repair'){state.repairs={job:{id:'repair',status:'running',completed:0,total:message.input.sceneIds.length,label:'Repairing scene'},result:null,requestSignature:repairSignature(message.input.draft),resumeAvailable:false,retryUncertain:false};result=state.repairs.job;}
+    else if(message.action==='resume-scene-repair'){state.repairs!.job={...state.repairs!.job!,status:'running',label:'Repairing scene'};result=state.repairs!.job;}
+    else if(message.action==='apply-scene-repair'){state.draft=state.repairs!.result;result=state.draft;}
     else if(message.action==='save-draft'){try{state.draft=validateDraft(message.input.draft);result=state.draft;}catch(error){receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)});return;}}
     else if(message.action==='start-import'||message.action==='resume-import'){state.resume={available:false,retryUncertain:false};state.job={id:'job-a',status:'running',completed:0,total:3,label:'Reading section one'};result=state.job;}
     else if(message.action==='cancel-import'){state.job={id:'job-a',status:'cancelled',completed:0,total:3,label:'Cancelled'};state.resume={available:true,retryUncertain:false};}
@@ -38,7 +44,7 @@ function harness(hasDraft=true) {
   const field=(label:string)=>{const caption=Array.from(root.querySelectorAll('label')).find(item=>item.textContent===label)!;return root.querySelector(`#${caption.htmlFor}`) as unknown as HTMLInputElement;};
   const input=(label:string,value:string)=>{const el=field(label);el.value=value;el.dispatchEvent(new window.Event('input',{bubbles:true}) as unknown as Event);return el;};
   const openDraft=(text:string)=>{const input=root.querySelector('input[accept=".json,application/json"]')!;Object.defineProperty(input,'files',{configurable:true,value:[new window.File([text],'saved-draft.json',{type:'application/json'})]});input.dispatchEvent(new window.Event('change',{bubbles:true}));};
-  return {root,state,requests,button,field,input,openDraft,setDraftSave:(handler:(draft:unknown)=>Promise<StoryDraft>)=>{draftSave=handler;},setConnectionTest:(checker:(id:string)=>Promise<{message:string}>)=>{connectionTest=checker;},setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
+  return {root,state,requests,button,field,input,openDraft,setRepairApply:(handler:(draft:unknown)=>Promise<StoryDraft>)=>{repairApply=handler;},setDraftSave:(handler:(draft:unknown)=>Promise<StoryDraft>)=>{draftSave=handler;},setConnectionTest:(checker:(id:string)=>Promise<{message:string}>)=>{connectionTest=checker;},setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
 }
 
 describe('request handling',()=>{
@@ -56,6 +62,36 @@ describe('request handling',()=>{
 });
 
 describe('Set Points workspace',()=>{
+  test('edits narrator roles on a completed legacy import without regenerating its scenes',async()=>{
+    const app=harness();await tick();app.button('Review').click();const opening=app.field('Scene opening').value;
+    app.input('Story narration','character');app.input('Source viewpoint · optional','Iona tells the original story.');app.button('Save draft').click();await tick();
+    const saved=app.requests.find(item=>item.action==='save-draft')!.input.draft;expect(saved.roles).toEqual({narration:'character',playerCharacterId:null,viewpointCharacterId:'captain',sourceViewpoint:'Iona tells the original story.'});
+    expect(saved.scenes[0].greeting).toBe(opening);expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
+  });
+  test('provides free role review with field focus and retains edits without generating',async()=>{
+    const app=harness();app.state.draft!.scenes[0].greeting='You decide to leave. I wait beside the boat.';await tick();app.changed();await tick();app.button('Review').click();
+    expect(app.root.textContent).toContain('2 possible role or viewpoint conflicts');app.button('Open role issue').click();expect(app.window.document.activeElement.id).toBe(app.field('Scene opening').id);
+    app.button('Save to Lumiverse').click();await tick();expect(app.requests.some(item=>item.action==='create-card')).toBe(false);expect(app.root.textContent).toContain('Correct the flagged fields');
+    const ack=app.field('I have reviewed the current possible conflicts');ack.checked=true;ack.dispatchEvent(new app.window.Event('change',{bubbles:true}) as unknown as Event);
+    app.button('Save draft').click();await tick();expect(app.requests.find(item=>item.action==='save-draft')?.input.draft.roleReview).toBeDefined();
+    app.input('Scene opening','You decide to return.');expect(app.field('I have reviewed the current possible conflicts').checked).toBe(false);
+    expect(app.requests.some(item=>['start-import','start-visuals','start-scene-repair'].includes(item.action))).toBe(false);
+  });
+  test('sends only selected scene repairs, previews without replacing, and hides a result after edits',async()=>{
+    const app=harness();app.state.draft!.scenes[0].greeting='You decide to leave.';await tick();app.changed();await tick();app.button('Review').click();
+    app.button('Repair selected scenes').click();await tick();const requested=app.requests.find(item=>item.action==='start-scene-repair')!;expect(requested.input.sceneIds).toEqual(['opening']);expect(requested.input.connectionId).toBe('model');expect(requested.input.maxOutputTokens).toBe(16000);
+    const candidate=structuredClone(requested.input.draft);candidate.scenes[0].greeting='Iona holds a letter beside the boat.';
+    app.state.repairs={...app.state.repairs!,job:{id:'repair',status:'complete',completed:1,total:1,label:'Ready to review'},result:candidate};app.changed();await tick();
+    expect(app.field('Scene opening').value).toBe('You decide to leave.');expect(app.field('Repaired opening').value).toBe(candidate.scenes[0].greeting);expect(app.button('Load repaired scenes').hidden).toBe(false);
+    app.input('Premise','My newer premise.');expect(app.button('Load repaired scenes').hidden).toBe(true);expect(app.root.textContent).toContain('different draft version');
+    expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
+  });
+  test('preserves newer editor changes while an explicitly applied repair is being saved',async()=>{
+    const app=harness();await tick();const original=structuredClone(app.state.draft!),candidate=structuredClone(original);candidate.scenes[0].greeting='Iona offers a letter.';
+    app.state.repairs={job:{id:'repair',status:'complete',completed:1,total:1,label:'Ready'},result:candidate,requestSignature:repairSignature(original),resumeAvailable:false,retryUncertain:false};app.changed();await tick();app.button('Review').click();
+    let resolve!:(draft:StoryDraft)=>void;app.setRepairApply(async()=>new Promise(done=>{resolve=done;}));app.button('Load repaired scenes').click();await tick();app.input('Premise','Keep this edit.');resolve(candidate);await tick();
+    expect(app.field('Premise').value).toBe('Keep this edit.');expect(app.root.textContent).toContain('Your newer review edits remain visible');app.button('Load new draft').click();expect(app.field('Scene opening').value).toBe('Iona offers a letter.');
+  });
   test('preserves source and unsaved review fields across snapshots and tabs',async()=>{
     const app=harness();await tick();app.input('Story text','My unfinished source text');app.button('Review').click();
     app.input('Premise','My revised premise');app.state.draft!.premise='Backend update';app.changed();await tick();

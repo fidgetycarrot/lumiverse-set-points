@@ -2,6 +2,7 @@ import type { SpindleAPI, GenerationRequestDTO, GenerationResponseDTO, Intercept
 import { adaptStory, ImportError, validateDraft, type Generate, type GenerationMessage } from './importer';
 import { ResponseCheckpoints, CheckpointError } from './checkpoints';
 import { CardPublisher } from './publisher';
+import { repairSceneOpenings, repairSignature } from './scene-repair';
 import { SceneRuntime } from './runtime';
 import { extractPage, storyUrl } from './source';
 import { enrichVisuals, validateVisualPack, visualDraftSignature, type VisualPack } from './visuals';
@@ -9,7 +10,9 @@ import { VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type Sav
 
 const STATE_PATH = 'workspace.json';
 type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
+type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 type Workspace = {
+  repairInput?: RepairInput; repairJob?: ImportJob; repairResult?: StoryDraft; repairConnectionFingerprint?: unknown;
   draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null; lastImport?: ImportOptions; lastConnectionFingerprint?: unknown;
   // This binding is created only from a completed adaptation (or explicit visual
   // input), never inferred from lastImport, which may belong to a failed story.
@@ -87,6 +90,10 @@ export class SetPointsController {
   private visualAbort?: AbortController;
   private visualTask?: Promise<void>;
   private visualStarting = false;
+  private repairStarting = false;
+  private repairAbort?: AbortController;
+  private repairTask?: Promise<void>;
+  private repairCheckpoints: ResponseCheckpoints;
   private entries: string[] = [];
   private persistence: Promise<void> = Promise.resolve();
   private starting = false;
@@ -98,6 +105,7 @@ export class SetPointsController {
     this.publisher = new CardPublisher(api, userId);
     this.checkpoints = new ResponseCheckpoints(api, userId);
     this.visualCheckpoints = new ResponseCheckpoints(api, userId);
+    this.repairCheckpoints = new ResponseCheckpoints(api, userId);
     this.ready = this.restore();
   }
   private async restore() {
@@ -123,6 +131,20 @@ export class SetPointsController {
       await this.api.userStorage.setJson(`recovery/workspace-${Date.now()}.json`, saved, { userId: this.userId });
       this.workspace = { draft: null, saved: null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}), job: { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
       this.note('Invalid saved draft backed up for recovery.');
+    }
+    // Optional repair recovery must not make completed legacy drafts unreadable.
+    try {
+      if (saved.repairInput) this.workspace.repairInput = this.validateRepairInput(saved.repairInput);
+      if (saved.repairResult) this.workspace.repairResult = validateDraft(saved.repairResult);
+      if (saved.repairJob) {
+        if (!['running','complete','failed','cancelled'].includes(saved.repairJob.status) || typeof saved.repairJob.id !== 'string') throw new Error('Invalid repair job');
+        this.workspace.repairJob = saved.repairJob.status === 'running' ? {...saved.repairJob,status:'failed',label:'Scene repair interrupted',error:'Resume scene repair to reuse completed steps. An unknown outcome needs an explicit retry.'} : saved.repairJob;
+      }
+      this.workspace.repairConnectionFingerprint = saved.repairConnectionFingerprint;
+    } catch {
+      await this.api.userStorage.setJson(`recovery/scene-repair-${Date.now()}.json`,{repairInput:saved.repairInput,repairResult:saved.repairResult,repairJob:saved.repairJob},{userId:this.userId});
+      delete this.workspace.repairInput; delete this.workspace.repairResult;
+      this.workspace.repairJob = {id:crypto.randomUUID(),status:'failed',completed:0,total:1,label:'Saved scene repair needs attention',error:'Invalid repair data was backed up. The story draft and paid responses are preserved.'};
     }
     // Optional visual data must never make a valid story draft unreadable.
     let invalidVisuals = false;
@@ -245,6 +267,7 @@ export class SetPointsController {
   }
   private async testConnection(connectionId: unknown): Promise<{ message: string }> {
     this.require('generation');
+    if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
     if (this.checking) throw new Error('A connection check is already running.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before checking a connection.');
     if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish before checking a connection.');
@@ -281,12 +304,13 @@ export class SetPointsController {
       sourceSignature: this.workspace.draftSource?.signature, requestSignature: this.workspace.visualInput ? visualDraftSignature(this.workspace.visualInput.draft) : undefined,
       resumeAvailable: Boolean(this.workspace.visualInput && visualJob && ['failed', 'cancelled'].includes(visualJob.status)), retryUncertain: Boolean(visualJob?.retryUncertain),
       connectionId: this.workspace.visualInput?.connectionId, ...responseSettings(this.workspace.visualInput ?? {}),
-    }, play, diagnostics: [...this.entries] };
+    }, repairs: {job:this.workspace.repairJob??null,result:this.workspace.repairResult??null,requestSignature:this.workspace.repairInput?repairSignature(this.workspace.repairInput.draft):undefined,resumeAvailable:!!this.workspace.repairInput&&['failed','cancelled'].includes(this.workspace.repairJob?.status??''),retryUncertain:!!this.workspace.repairJob?.retryUncertain,connectionId:this.workspace.repairInput?.connectionId}, play, diagnostics: [...this.entries] };
   }
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
     const settings = responseSettings(options);
     this.require('generation');
+    if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
     if (this.checking) throw new Error('Wait for the connection check to finish before adapting the story.');
     if (this.saving) throw new Error('Wait for the card to finish saving before importing another story.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('An import is already running. Cancel it before starting another.');
@@ -298,6 +322,9 @@ export class SetPointsController {
       if (!Number.isInteger(options.chunkSize) || options.chunkSize < 4000 || options.chunkSize > 20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
       string(options.sourceTitle, 'Story title'); string(options.playerRole, 'Player role'); string(options.startingPoint, 'Starting point');
       if (options.sourceTitle.length > 300 || options.playerRole.length > 2000 || options.startingPoint.length > 2000) throw new Error('Keep the title under 300 characters and role/starting point under 2,000 characters.');
+      if (options.narrationMode !== undefined && !['neutral','character'].includes(options.narrationMode)) throw new Error('Choose a valid narration style.');
+      if (options.narrationMode === 'character' && (typeof options.narratorCharacter !== 'string' || !options.narratorCharacter.trim())) throw new Error('Name the supporting character who narrates.');
+      if (options.narratorCharacter !== undefined && (typeof options.narratorCharacter !== 'string' || options.narratorCharacter.length>200) || options.sourceViewpoint !== undefined && (typeof options.sourceViewpoint !== 'string' || options.sourceViewpoint.length>500)) throw new Error('Keep narrator names under 200 characters and source viewpoint under 500.');
       if (options.sourceUrl) options.sourceUrl = storyUrl(options.sourceUrl);
       const connection = await this.selectedConnection(options.connectionId);
       if (resume && !sameSettings(connection.fingerprint, this.workspace.lastConnectionFingerprint)) throw new Error('The saved connection settings have changed. Resume paused before making any model request. Restore those settings, or use Create adaptation to start with the new settings and normal model charges.');
@@ -374,9 +401,53 @@ export class SetPointsController {
       return structuredClone(job);
     } finally { this.starting = false; }
   }
+  private validateRepairInput(value: unknown): RepairInput {
+    const data=record(value), draft=validateDraft(data.draft);
+    if (!Array.isArray(data.sceneIds) || !data.sceneIds.length || new Set(data.sceneIds).size!==data.sceneIds.length || data.sceneIds.some(id=>typeof id!=='string'||!draft.scenes.some(scene=>scene.id===id))) throw new Error('Select existing scenes once each for repair.');
+    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data)};
+  }
+  private async startRepair(value: unknown, retryUncertain=false, resume=false): Promise<ImportJob> {
+    await this.ready; this.require('generation');
+    if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running') throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
+    this.repairStarting=true;
+    try {
+      const options=this.validateRepairInput(value), settings=responseSettings(options),connection=await this.selectedConnection(options.connectionId);
+      if (resume&&!sameSettings(connection.fingerprint,this.workspace.repairConnectionFingerprint)) throw new Error('The saved scene repair connection changed. Restore its settings before resuming, or start a new normally charged repair.');
+      this.repairCheckpoints.beginRun({retryUncertain});
+      const controller=new AbortController(),job:ImportJob={id:crypto.randomUUID(),status:'running',completed:0,total:options.sceneIds.length,label:'Preparing scene repair'};
+      this.repairAbort=controller;
+      this.workspace.repairInput=structuredClone(options);this.workspace.repairJob=job;delete this.workspace.repairResult;this.workspace.repairConnectionFingerprint=structuredClone(connection.fingerprint);
+      try { await this.persist(); } catch { this.repairAbort=undefined;this.workspace.repairJob={...job,status:'failed',label:'Scene repair could not be saved',error:'No model request was sent. Check extension storage.'};this.changed();throw new Error(this.workspace.repairJob.error); }
+      this.changed();
+      this.repairTask=(async()=>{
+        let responseReturned=false;
+        try {
+          const fingerprint=requestFingerprint(connection.fingerprint,settings),reuseFingerprints=OUTPUT_ALLOWANCES.flatMap(maxOutputTokens=>REASONING_MODES.map(reasoningMode=>requestFingerprint(connection.fingerprint,{maxOutputTokens,reasoningMode})));
+          const generate:Generate=async(messages,signal)=>{
+            responseReturned=false;controller.signal.throwIfAborted();
+            const response=await this.repairCheckpoints.request(messages,fingerprint,()=>this.requestModel(connection,messages,signal??controller.signal,settings.maxOutputTokens,600_000,settings.reasoningMode),{reuseFingerprints});
+            responseReturned=true;return this.readModelResponse(response);
+          };
+          this.workspace.repairResult=await repairSceneOpenings(options.draft,options.sceneIds,generate,(completed,total,label)=>{this.workspace.repairJob={...job,completed,total,label,phase:label};this.changed();},controller.signal);
+          controller.signal.throwIfAborted();this.workspace.repairJob={...this.workspace.repairJob!,status:'complete',label:'Repaired scenes ready to review'};
+          this.note('Scene repair completed; result awaits explicit review.');await this.persist();
+        } catch(error) {
+          const cancelled=controller.signal.aborted;
+          let message=error instanceof ImportError||error instanceof ModelRequestError||error instanceof CheckpointError?error.message:'Scene repair could not finish. The current draft is preserved.';
+          if (!cancelled&&responseReturned&&(error instanceof ModelRequestError||error instanceof ImportError&&!['REQUEST_SIZE_LIMIT','OUTPUT_LIMIT'].includes(error.code))) {
+            try {await this.repairCheckpoints.invalidateLast();} catch {message='Could not mark the failed scene response for retry. Saved work was retained.';}
+          }
+          this.workspace.repairJob={...this.workspace.repairJob!,status:cancelled?'cancelled':'failed',label:cancelled?'Scene repair cancelled':'Scene repair needs attention',retryUncertain:error instanceof CheckpointError&&error.code==='UNCERTAIN_REQUEST',error:cancelled?undefined:`${message} Resume scene repair reuses compatible saved steps; remaining requests use normal charges.`};
+          delete this.workspace.repairResult;await this.persist().catch(()=>this.note('Could not persist scene repair status.'));
+        } finally {if(this.repairAbort===controller)this.repairAbort=undefined;this.changed();}
+      })();
+      return structuredClone(job);
+    } finally {this.repairStarting=false;}
+  }
   private async startVisuals(value: unknown, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
     this.require('generation');
+    if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
     if (this.checking) throw new Error('Wait for the connection check to finish before creating image descriptions.');
     if (this.saving) throw new Error('Wait for the card to finish saving before creating image descriptions.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before creating image descriptions.');
@@ -495,6 +566,19 @@ export class SetPointsController {
         this.workspace.visualPack = pack;
         await this.persist(); this.changed(); return structuredClone(pack);
       }
+      case 'start-scene-repair': return this.startRepair(data);
+      case 'resume-scene-repair': {
+        if (!this.workspace.repairInput) throw new Error('No saved scene repair is available.');
+        if (repairSignature(validateDraft(data.draft))!==repairSignature(this.workspace.repairInput.draft)) throw new Error('The saved repair belongs to a different draft version.');
+        return this.startRepair({...this.workspace.repairInput,...responseSettings({...this.workspace.repairInput,...data})},data.retryUncertain===true,true);
+      }
+      case 'cancel-scene-repair': this.repairAbort?.abort(); return {cancelled:true};
+      case 'apply-scene-repair': {
+        const current=validateDraft(data.draft);
+        if (this.starting||this.visualStarting||this.repairStarting||this.repairAbort||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.saving) throw new Error('Wait for the current operation to finish.');
+        if (!this.workspace.repairResult||!this.workspace.repairInput||this.workspace.repairJob?.status!=='complete'||repairSignature(current)!==repairSignature(this.workspace.repairInput.draft)) throw new Error('The repaired scenes belong to a different draft version. Your edits are preserved.');
+        const result=validateDraft(this.workspace.repairResult);this.workspace.draft=result;this.workspace.saved=null;await this.persist();this.changed();return result;
+      }
       case 'save-draft': {
         if (this.saving) throw new Error('Wait for the card to finish saving before replacing the draft.');
         if (this.workspace.job?.status === 'running') throw new Error('Wait for the import to finish or cancel it before replacing the draft.');
@@ -503,6 +587,7 @@ export class SetPointsController {
         await this.persist(); this.changed(); return draft;
       }
       case 'create-card': {
+        if (this.repairStarting||this.repairAbort) throw new Error('Wait for scene repair to finish or cancel it before publishing.');
         if (this.saving) throw new Error('This card is already being saved. Wait for the save to finish.');
         if (this.workspace.job?.status === 'running') throw new Error('Wait for the import to finish before saving a card.');
         const draft = validateDraft(data.draft);
@@ -529,13 +614,14 @@ export class SetPointsController {
       }
       case 'diagnostics': {
         const view = await this.runtime.view();
-        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
+        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, repairJob:this.workspace.repairJob&&{status:this.workspace.repairJob.status,completed:this.workspace.repairJob.completed,total:this.workspace.repairJob.total}, entries: [...this.entries] };
       }
       default: throw new Error('Unknown Set Points action. Reload the extension.');
     }
   }
-  dispose() { this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); }
+  dispose() { this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); this.repairAbort?.abort(); }
   async waitForImport() { await this.jobTask; }
+  async waitForRepair() { await this.repairTask; }
   async waitForVisuals() { await this.visualTask; }
 }
 

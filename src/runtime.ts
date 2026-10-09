@@ -1,4 +1,5 @@
 import type { SpindleAPI, LlmMessageDTO, InterceptorContextDTO, InterceptorResultDTO, MessageContentProcessorCtxDTO, MessageContentProcessorResultDTO, ChatDTO } from 'lumiverse-spindle-types';
+import { validateDisplayText } from './importer';
 import { EXTENSION_ID, type StoryScene, type SceneView } from './types';
 
 const STATE_KEY = `${EXTENSION_ID}_state_v1`;
@@ -19,7 +20,7 @@ interface State extends Position {
   pending: Pending | null; insertion: Insertion | null; intent: Intent | null;
   undoing: Insertion | null; notice: string;
 }
-interface Loaded { chat: ChatDTO; title: string; scenes: StoryScene[]; state: State }
+interface Loaded { chat: ChatDTO; title: string; scenes: StoryScene[]; state: State; roleDirection?: string }
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const clean = (v: string) => v.replace(SIGNAL_RE, '').trimEnd();
 const nonce = () => crypto.randomUUID().replaceAll('-', '');
@@ -63,8 +64,10 @@ export class SceneRuntime {
       if (!scene || typeof scene.id !== 'string' || !scene.id || ids.has(scene.id) || typeof scene.title !== 'string' || typeof scene.greeting !== 'string' || !scene.greeting.trim() || typeof scene.direction !== 'string' || !Array.isArray(scene.assumptions) || !scene.assumptions.every(x => typeof x === 'string')) throw new Error('This card has invalid scene data. Review and save the adaptation again.');
       ids.add(scene.id);
     }
+    let roleDirection: string|undefined;
+    if (source.roleDirection !== undefined) { try {roleDirection=validateDisplayText(source.roleDirection,'Role direction',8000);} catch {throw new Error('This card has invalid role direction. Review and save the adaptation again.');} }
     // A stable digest keeps story prose out of the persisted diagnostic state.
-    const encoded = new TextEncoder().encode(JSON.stringify([chat.character_id, source.draftId, scenes]));
+    const encoded = new TextEncoder().encode(JSON.stringify([chat.character_id, source.draftId, scenes, ...(roleDirection?[roleDirection]:[])]));
     const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', encoded)), n => n.toString(16).padStart(2,'0')).join('');
     let state: State | undefined;
     try { state = JSON.parse(await this.api.variables.chat.get(chatId, STATE_KEY) || 'null') as State | undefined; } catch {}
@@ -83,7 +86,7 @@ export class SceneRuntime {
       state.notice = 'An unfinished reply expired. Check the conversation before enabling progression again.';
       await this.save(state);
     }
-    return {chat,title:typeof source.title === 'string' ? source.title : character?.name ?? 'Set Points',scenes,state};
+    return {chat,title:typeof source.title === 'string' ? source.title : character?.name ?? 'Set Points',scenes,state,roleDirection};
   }
   private async recover(data: Loaded, messages?: Messages): Promise<Messages> {
     const s = data.state;
@@ -221,9 +224,10 @@ export class SceneRuntime {
       try { data = await this.load(chatId); } catch { return messages; }
       await this.recover(data);
       const s = data.state;
-      if (!s.enabled || this.cancelled.has(generationId)) return messages;
+      if (this.cancelled.has(generationId)) return messages;
+      if (!s.enabled) return data.roleDirection ? [...messages,{role:'system',content:data.roleDirection}] : messages;
       const current = data.scenes.find(x => x.id === s.current)!;
-      const presentContext = `Set Points current scene: ${current.title}. Current scene reference: ${current.direction}\nThe existing conversation determines what actually happened and what each character has learned. Keep established character developments and revealed information consistent. Do not replay this scene's opening or assume the player performed its planned actions. The player alone chooses their character's dialogue, actions, thoughts, consent, and commitments.`;
+      const presentContext = `${data.roleDirection ? `${data.roleDirection}\n\n` : ''}Set Points current scene: ${current.title}. Current scene reference: ${current.direction}\nThe existing conversation determines what actually happened and what each character has learned. Keep established character developments and revealed information consistent. Do not replay this scene's opening or assume the player performed its planned actions. The player alone chooses their character's dialogue, actions, thoughts, consent, and commitments.`;
       if (!s.next) return [...messages, {role:'system',content:presentContext}];
       if (s.pending && s.pending.generationId !== generationId && s.pending.expires > Date.now()) return messages;
       const scene = data.scenes.find(x => x.id === s.next)!;

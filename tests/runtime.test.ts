@@ -51,6 +51,21 @@ function harness() {
 }
 
 describe('scene progression', () => {
+  test('published role guidance remains active with Follow the story off without preparing a handoff',async()=>{
+    const h=harness();Object.assign(h.character.extensions[EXTENSION_ID],{roleDirection:'Keep the player identity fixed. Use an external narrator.'});
+    await h.runtime.view('a');const before=h.variables.get(`a:${STATE}`),result=await h.runtime.intercept([],'a',h.context('roles-off'));
+    expect(result).toEqual([{role:'system',content:'Keep the player identity fixed. Use an external narrator.'}]);expect(h.variables.get(`a:${STATE}`)).toBe(before);
+    expect(JSON.stringify(result)).not.toContain('<!--SET_POINTS:');expect(h.chats.get('a')).toHaveLength(0);
+    expect(await h.runtime.intercept([],'a',{generationType:'normal',dryRun:true})).toEqual([]);
+  });
+  test('includes the role guard in story guidance and pauses when that contract changes',async()=>{
+    const h=harness();Object.assign(h.character.extensions[EXTENSION_ID],{roleDirection:'The human controls Mara; Iona is a supporting character.'});await h.runtime.setEnabled('a',true);
+    const {content}=await h.prepare();expect(content).toContain('The human controls Mara');
+    Object.assign(h.character.extensions[EXTENSION_ID],{roleDirection:'The human plays a new visitor.'});expect((await h.runtime.view('a')).enabled).toBe(false);expect((await h.runtime.view('a')).notice).toContain('changed');
+  });
+  test('rejects unsafe role metadata before injecting it',async()=>{
+    const h=harness();Object.assign(h.character.extensions[EXTENSION_ID],{roleDirection:'{{setvar::player::changed}}'});expect(await h.runtime.intercept([],'a',h.context('roles-bad'))).toEqual([]);expect((await h.runtime.view('a')).notice).toContain('invalid role direction');
+  });
   test('starts disabled and isolates each chat; force inserts the selected scene',async()=>{
     const h = harness();
     expect((await h.runtime.view('a')).enabled).toBe(false);

@@ -1,13 +1,14 @@
+import { roleInstruction, requireRoleReview } from './roles';
 import type { SpindleAPI, WorldBookEntryCreateDTO } from 'lumiverse-spindle-types';
 import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, appearanceGuide, cardPayload, validateDraft } from './importer';
 import { EXTENSION_ID, type SavedStory, type StoryDraft } from './types';
 
 type Receipt = { key: string; draftId: string; worldBookId?: string; characterId?: string; complete?: boolean };
 export async function draftKey(draft: StoryDraft): Promise<string> {
-  // Publication guidance changed in 0.1.9. A new receipt creates a fresh card
+  // Publication guidance changed in 0.1.10. A new receipt creates a fresh card
   // instead of returning a pre-update card with the old restrictive rules.
   // Draft identity and paid model-response checkpoints are unaffected.
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 2, draft })));
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 3, draft })));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
@@ -16,7 +17,7 @@ export function worldEntries(draft: StoryDraft): WorldBookEntryCreateDTO[] {
   return [
     ...(approvedAppearances ? [{ comment: 'Approved character appearances', key: [], constant: true,
       probability: 100, use_probability: false, priority: 100, content: `${APPEARANCE_RULE}\n\n${approvedAppearances}` }] : []),
-    { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}` },
+    { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\n\n${roleInstruction(draft)}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}` },
     ...draft.cast.map(member => ({ comment: member.name, key: [member.name, ...member.aliases], constant: false,
       content: `${member.name}\nPersonality: ${member.personality}\nVoice: ${member.voice}\nRelationships at the start: ${member.relationships}\nKnowledge at the start: ${member.knowledge}\nUse subsequent chat events for changes to these starting facts.` })),
     ...draft.lore.map(entry => ({ comment: entry.name, key: entry.keys, constant: entry.keys.length === 0, content: entry.content })),
@@ -34,6 +35,7 @@ export class CardPublisher {
   }
   private async create(draft: StoryDraft): Promise<SavedStory> {
     for (const permission of ['characters', 'world_books']) if (!this.api.permissions.has(permission)) throw new Error(`Grant ${permission} in Lumiverse’s Extensions panel to save a card.`);
+    requireRoleReview(draft);
     const key = await draftKey(draft);
     const path = `receipts/${key}.json`;
     const marker = { key, draftId: draft.id };

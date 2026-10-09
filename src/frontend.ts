@@ -1,6 +1,8 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ReasoningMode, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
 import { styles } from './styles';
+import { defaultRoles, roleIssues, roleReviewFingerprint, requireRoleReview } from './roles';
+import { repairSignature } from './scene-repair';
 import { appearanceMentions } from './appearance-review';
 import { visualCaption, visualDraftSignature, visualTagPrompt, emptyVisualText, incompleteVisualText, type VisualPack } from './visuals';
 import { collectStoryPages, type WebCollection, type WebCollectionProgress } from './web-import';
@@ -79,6 +81,9 @@ export function setup(ctx: SpindleFrontendContext) {
   let adaptationStarting = false;
   let connectionChecking = false;
   let visualsStarting = false;
+  let repairStarting = false;
+  let renderRepairStatus = () => {};
+  const repairBusy = () => repairStarting || snapshot?.repairs?.job?.status === 'running';
   let webAbort: AbortController|null = null;
   let stagedPages: WebCollection|null = null;
   let appliedSourceUrl: string|undefined;
@@ -249,7 +254,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
   function syncImportControls(){
-    const busy=loadingPages||adaptationStarting||connectionChecking||visualsBusy()||snapshot?.job?.status==='running';
+    const busy=repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||snapshot?.job?.status==='running';
     checkConnectionButton.disabled=!!busy||!connection.value;connection.disabled=connectionChecking;
     resumeButton.disabled=!!busy||!snapshot?.resume?.available;
     outputAllowance.input.disabled=!!busy;reasoningChoice.input.disabled=!!busy;resumeAllowance.input.disabled=!!busy;resumeReasoning.input.disabled=!!busy;
@@ -260,6 +265,9 @@ export function setup(ctx: SpindleFrontendContext) {
   sourceCard.append(sourceTools,fileInput,title.wrap,source.wrap,sourceBottom,linkSection.root);panels.import.append(sourceCard);
   const options=node('div','sp-card sp-stack'); options.append(node('h3','','Make a place for yourself'));
   const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'The narrator leaves this character’s dialogue and choices to you.'});
+  const narrationMode=selectField('Narration style',[['neutral','External narrator'],['character','Supporting character in first person']],'neutral',()=>{narratorName.wrap.hidden=narrationMode.input.value!=='character';});
+  const narratorName=field('Who narrates?','',undefined,{placeholder:'Exact supporting-character name or alias',hint:'Choose someone other than the character you play.'});narratorName.wrap.hidden=true;
+  const sourceViewpoint=field('Original story viewpoint · optional','',undefined,{placeholder:'For example: Lina tells the story in first person',hint:'Source context only. It does not assign your player role.'});
   const start=field('Where does it begin?','',undefined,{placeholder:'The beginning, a chapter, or a specific moment'});
   const sceneCount=field('Planned scenes','6',undefined,{type:'number',min:2,max:24,hint:'2–24 major moments, including the opening.'});
   const connectionWrap=node('div','sp-field');const connectionLabel=node('label','sp-label','Adaptation connection');const connection=node('select');connection.id=`sp-${suffix}-connection`;connectionLabel.htmlFor=connection.id;
@@ -280,7 +288,7 @@ export function setup(ctx: SpindleFrontendContext) {
   });checkConnectionButton.disabled=true;
   connection.addEventListener('change',()=>{connectionStatus.textContent='';syncImportControls();});
   connectionWrap.append(checkConnectionButton,paragraph('Sends a small test request without your story. Normal model charges apply.','sp-hint'),connectionStatus);
-  const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,start.wrap,optionGrid);panels.import.append(options);
+  const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,narrationMode.wrap,narratorName.wrap,sourceViewpoint.wrap,start.wrap,optionGrid);panels.import.append(options);
   const advanced=details('Long-story settings');const chunk=field('Characters per section','12000',undefined,{type:'number',min:4000,max:20000,hint:'Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context.'});advanced.body.append(chunk.wrap);panels.import.append(advanced.root);
   const responseSettings=details('Model response settings');
   const outputAllowance=selectField('Response allowance',responseAllowances,'16000');
@@ -314,7 +322,7 @@ export function setup(ctx: SpindleFrontendContext) {
     const sceneNumber=Number(sceneCount.input.value),chunkNumber=Number(chunk.input.value);
     if(!Number.isInteger(sceneNumber)||sceneNumber<2||sceneNumber>24) throw new Error('Choose between 2 and 24 scenes.');
     if(!Number.isInteger(chunkNumber)||chunkNumber<4000||chunkNumber>20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
-    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
+    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,narrationMode:narrationMode.input.value as 'neutral'|'character',narratorCharacter:narratorName.input.value.trim(),sourceViewpoint:sourceViewpoint.input.value.trim(),...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
     adaptationStarting=true;syncImportControls();
     try{const job=await rpc.request<ImportJob>('start-import',{options});if(snapshot)snapshot.job=job;renderJob(job);notify('Your story is being adapted. You can leave this panel open or return later.');await refresh();}
     finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
@@ -332,7 +340,7 @@ export function setup(ctx: SpindleFrontendContext) {
     resumeHint.textContent='Uses the saved story and import settings, not the edits in the current form. Completed steps are reused even when you change the response settings below; remaining requests use normal model charges.'+(snapshot?.resume?.retryUncertain?' Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.':'');
     syncImportControls();
     if(job) { progressText.textContent=job.status==='failed'&&job.phase?`Stopped during ${job.phase}. ${job.error||job.label}`:job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
-    const anyRunning=running||snapshot?.visuals?.job?.status==='running';
+    const anyRunning=repairBusy()||running||snapshot?.visuals?.job?.status==='running';
     if(anyRunning&&!polling) polling=setInterval(()=>{void refresh();},2500);
     if(!anyRunning&&polling) {clearInterval(polling);polling=undefined;}
     tab.setBadge(anyRunning?'…':null);
@@ -433,7 +441,7 @@ export function setup(ctx: SpindleFrontendContext) {
   });loadVisualResult.hidden=true;
   visualBody.append(visualInfo,visualSourceNotice,replaceVisualSource,visualSourceBox,visualConnection.wrap,visualSettings.root,visualCreate,visualProgress,visualResultNotice,loadVisualResult,visualResults);
   function visualsBusy(){return visualsStarting||snapshot?.visuals?.job?.status==='running';}
-  function otherWorkBusy(){return loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running';}
+  function otherWorkBusy(){return repairBusy()||loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running';}
   function syncVisualControls(){
     const busy=!!(otherWorkBusy()||visualsBusy());
     visualCreate.disabled=busy||!draft||!visualConnection.input.value;
@@ -587,20 +595,27 @@ export function setup(ctx: SpindleFrontendContext) {
   }));
 
   function renderReview() {
-    const panel=panels.review;panel.replaceChildren();panelNonce++;approvedControls.clear();
+    const panel=panels.review;panel.replaceChildren();panelNonce++;approvedControls.clear();renderRepairStatus=()=>{};
     if(!draft) {
       const top=intro('Meet your adaptation','A little preparation makes room for a better story.');top.append(row(openDraftButton,pasteDraftButton));panel.append(top);
       const empty=node('div','sp-empty');empty.append(node('span','sp-tag','Your draft belongs here'),paragraph('Import a story to review its cast, lore, and scene openings.'),button('Bring in a story',()=>selectTab('import'),true));panel.append(empty);return;
     }
     const current=draft;const nonce=panelNonce;
     const top=intro('Make it yours','Edit the cast, the world, and the moments you want to reach.');const dirtyTag=node('span','sp-tag',draftDirty?'Unsaved edits':'Draft ready');top.append(group(dirtyTag,row(openDraftButton,pasteDraftButton)));panel.append(top);
-    const markDirty=()=> { draftDirty=true;dirtyTag.textContent='Unsaved edits';renderVisuals(); };
+    let updateRoleReview=()=>{};
+    const markDirty=()=> { draftDirty=true;dirtyTag.textContent='Unsaved edits';renderVisuals();updateRoleReview();renderRepairStatus(); };
     const reviewFields=new Map<string,HTMLElement>();
     const edit=(label:string,value:string,change:(value:string)=>void,area=false,hint?:string,key?:string)=>{const item=field(label,value,v=>{change(v);markDirty();},{area,hint});if(key)reviewFields.set(key,item.input);return item.wrap;};
     const summary=node('div','sp-card sp-stack');summary.append(edit('Title',current.title,v=>current.title=v,false,undefined,'title'),edit('Premise',current.premise,v=>current.premise=v,true,undefined,'premise'));
-    const choices=node('div','sp-grid');choices.append(edit('Your role',current.playerRole,v=>current.playerRole=v,false,undefined,'playerRole'),edit('Starting point',current.startingPoint,v=>current.startingPoint=v,false,undefined,'startingPoint'));summary.append(choices);
+    const choices=node('div','sp-grid');choices.append(edit('Your role',current.playerRole,v=>{current.playerRole=v;if(current.roles)current.roles.playerCharacterId=defaultRoles(current).playerCharacterId;},false,undefined,'playerRole'),edit('Starting point',current.startingPoint,v=>current.startingPoint=v,false,undefined,'startingPoint'));summary.append(choices);
     const counts=node('div','sp-counts');for(const [number,label] of [[current.cast.length,'characters'],[current.lore.length,'lore entries'],[current.scenes.length,'scenes']] as const){ const item=node('div');item.append(node('strong','',String(number)),node('span','',label));counts.append(item);}summary.append(counts);panel.append(summary);
     if(current.warnings.length) { const warnings=details(`${current.warnings.length} adaptation note${current.warnings.length===1?'':'s'}`);for(const warning of current.warnings)warnings.body.append(paragraph(warning,'sp-notice'));panel.append(warnings.root); }
+    const roleSettings=details('Player and narrator roles');roleSettings.root.open=true;
+    const activeRoles=()=>current.roles??defaultRoles(current);
+    const playerIdentity=selectField('Player cast identity',[['','Custom or unbound role'],...current.cast.map(person=>[person.id,person.name] as [string,string])],activeRoles().playerCharacterId??'',()=>{const value=playerIdentity.input.value;current.roles??=defaultRoles(current);current.roles.playerCharacterId=value||null;if(value){current.playerRole=current.cast.find(person=>person.id===value)!.name;}markDirty();renderReview();});
+    const viewMode=selectField('Story narration',[['neutral','External narrator'],['character','Supporting character in first person']],activeRoles().narration,()=>{const value=viewMode.input.value;current.roles??=defaultRoles(current);current.roles.narration=value as 'neutral'|'character';current.roles.viewpointCharacterId=value==='character'?(current.cast.find(person=>person.id!==current.roles!.playerCharacterId)?.id??null):null;markDirty();renderReview();});
+    const viewPerson=selectField('Narrating cast member',[['','Choose a supporting character'],...current.cast.filter(person=>person.id!==activeRoles().playerCharacterId).map(person=>[person.id,person.name] as [string,string])],activeRoles().viewpointCharacterId??'',()=>{const value=viewPerson.input.value;current.roles??=defaultRoles(current);current.roles.viewpointCharacterId=value||null;markDirty();});viewPerson.wrap.hidden=activeRoles().narration!=='character';
+    roleSettings.body.append(paragraph('Your player identity stays fixed even when the source changes viewpoint. External narration is the default. A supporting character may narrate in first person while your character stays under your control. These settings do not rewrite saved scenes.','sp-hint'),playerIdentity.wrap,viewMode.wrap,viewPerson.wrap,edit('Source viewpoint · optional',activeRoles().sourceViewpoint,value=>{current.roles??=defaultRoles(current);current.roles.sourceViewpoint=value;},false,'A note about the original story, not a player assignment.'));panel.append(roleSettings.root);
     const narration=details('Narrator direction');narration.body.append(edit('Instructions',current.narratorInstructions,v=>current.narratorInstructions=v,true,'Describe the narrator’s scope and how it should leave your choices open.','narratorInstructions'));panel.append(narration.root);
     const cast=node('div','sp-review-group');cast.append(node('div','sp-section-label','The people'));
     const appearanceGuide=group(node('h3','','Appearance guide'),paragraph('Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields let the narrator fill missing supporting-character details, using existing story facts first and keeping introduced looks consistent. You can start playing without describing everyone. These choices become lorebook guidance when saved to Lumiverse; editing them uses no model.','sp-small'),paragraph('Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections. Your own character’s unspecified appearance stays yours to choose.','sp-hint'));appearanceGuide.classList.add('sp-card');cast.append(appearanceGuide);
@@ -652,11 +667,63 @@ export function setup(ctx: SpindleFrontendContext) {
       if(scene.assumptions.length) {entry.body.append(node('span','sp-label','Assumptions to review'));scene.assumptions.forEach((assumption,i)=>{const note=paragraph(assumption,'sp-notice');note.tabIndex=-1;reviewFields.set(`scene:${scene.id}:assumption:${i}`,note);entry.body.append(note);});}
       if(scene.sourceRefs.length)entry.body.append(paragraph(`Source: ${scene.sourceRefs.join(' · ')}`,'sp-hint'));scenes.append(entry.root);
     });panel.append(scenes);
+    const quality=details('Player and viewpoint checks');quality.root.open=true;
+    const qualityStatus=paragraph('','sp-hint'),qualityResults=group(),acknowledge=node('input');acknowledge.type='checkbox';acknowledge.id=`sp-${suffix}-review-roles`;
+    const ackLabel=node('label','sp-check','I have reviewed the current possible conflicts');ackLabel.htmlFor=acknowledge.id;
+    acknowledge.addEventListener('change',()=>{if(acknowledge.checked)current.roleReview=roleReviewFingerprint(current);else delete current.roleReview;markDirty();});
+    updateRoleReview=()=>{
+      const issues=roleIssues(current);qualityResults.replaceChildren();
+      acknowledge.checked=current.roleReview===roleReviewFingerprint(current);acknowledge.disabled=!issues.length;
+      qualityStatus.textContent=issues.length?`${issues.length} possible role or viewpoint conflicts. Open each affected field, correct it, or explicitly mark the current checks reviewed if they are intentional. Edits invalidate that acknowledgment.`:'No obvious conflicts found by the local checks. Read the openings: these checks cannot prove semantic consistency.';
+      for(const issue of issues.slice(0,8))qualityResults.append(group(paragraph(issue.sceneId?`Scene ${current.scenes.findIndex(scene=>scene.id===issue.sceneId)+1}`:issue.fieldKey.startsWith('lore:')?'Lore direction':issue.fieldKey.startsWith('cast:')?'Character direction':'Narrator direction','sp-label'),paragraph(issue.message,'sp-small'),button('Open role issue',()=>{const target=reviewFields.get(issue.fieldKey);if(!target)return;for(let parent:HTMLElement|null=target;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')(parent as HTMLDetailsElement).open=true;target.scrollIntoView?.({block:'center'});target.focus();})));
+      if(issues.length>8)qualityResults.append(paragraph(`${issues.length-8} more possible conflicts. Correct the listed fields to refresh the checks. All flagged scene choices are available below.`));
+    };
+    quality.body.append(paragraph('Free local review. Possible matches are not confirmed errors; dialogue and intentional narration need judgment. Saving a draft remains available. Saving to Lumiverse requires current flagged fields to be corrected or explicitly reviewed.','sp-hint'),qualityStatus,qualityResults,row(acknowledge,ackLabel));updateRoleReview();panel.append(quality.root);
+    const repair=details('Repair scene openings · optional'),repairChoices=new Map<string,HTMLInputElement>();
+    const flagged=new Set(roleIssues(current).map(issue=>issue.sceneId).filter(Boolean));
+    for(const [index,scene]of current.scenes.entries()){
+      const check=node('input');check.type='checkbox';check.checked=flagged.has(scene.id);check.id=`sp-${suffix}-repair-${index}`;repairChoices.set(scene.id,check);
+      const label=node('label','sp-check',`${index+1} · ${scene.title}`);label.htmlFor=check.id;repair.body.append(row(check,label));
+    }
+    const repairConnection=selectField('Scene repair connection',snapshot?.connections.map(item=>[item.id,item.name] as [string,string])??[],snapshot?.repairs?.connectionId??connection.value);
+    const repairAllowance=selectField('Scene repair response allowance',responseAllowances,'16000'),repairReasoning=selectField('Scene repair reasoning',reasoningModes,'inherit');
+    const repairStatus=paragraph('','sp-hint'),repairPreview=details('Preview repaired scenes');repairPreview.root.hidden=true;
+    const startRepair=button('Repair selected scenes',async()=>{
+      if(otherWorkBusy()||visualsBusy())throw new Error('Wait for the current operation to finish.');
+      const sceneIds=[...repairChoices].filter(([,check])=>check.checked).map(([id])=>id);if(!sceneIds.length)throw new Error('Select the scenes to repair.');
+      const repairDraft=clone(current),repairBasis=repairSignature(repairDraft);
+      repairStarting=true;syncImportControls();
+      try{const job=await rpc.request<ImportJob>('start-scene-repair',{draft:repairDraft,sceneIds,connectionId:repairConnection.input.value,...readResponseSettings(repairAllowance.input,repairReasoning.input)});if(snapshot){snapshot.repairs={job,result:null,requestSignature:repairBasis,resumeAvailable:false,retryUncertain:false};}await refresh();notify('Scene repair started. The current draft stays in place until you review and load the result.');}finally{repairStarting=false;syncImportControls();renderRepairStatus();}
+    },true);
+    const resumeRepair=button('Resume scene repair',async()=>{
+      if(otherWorkBusy()||visualsBusy())throw new Error('Wait for the current operation to finish.');
+      repairStarting=true;syncImportControls();
+      try{const job=await rpc.request<ImportJob>('resume-scene-repair',{draft:clone(current),retryUncertain:snapshot?.repairs?.retryUncertain===true,...readResponseSettings(repairAllowance.input,repairReasoning.input)});if(snapshot?.repairs)snapshot.repairs.job=job;await refresh();}finally{repairStarting=false;syncImportControls();renderRepairStatus();}
+    });
+    const cancelRepair=button('Cancel scene repair',async()=>{await rpc.request('cancel-scene-repair');notify('Cancellation requested. Completed scene responses are retained.');await refresh();});
+    const applyRepair=button('Load repaired scenes',async()=>{
+      const request=clone(current),before=JSON.stringify(current);const result=await rpc.request<StoryDraft>('apply-scene-repair',{draft:request});
+      if(nonce===panelNonce&&JSON.stringify(current)===before){draft=clone(result);draftDirty=false;draftRevision++;draftVersion=JSON.stringify(result);renderReview();notify('Repaired scenes loaded and saved as a draft. Review them before saving a new card to Lumiverse.');}
+      else{pendingReplacement=result;newDraftNotice.hidden=false;notify('Repaired draft saved. Your newer review edits remain visible; use Load new draft to replace them deliberately.');}
+    });
+    renderRepairStatus=()=>{
+      const state=snapshot?.repairs;let matching=false;try{matching=!!state?.requestSignature&&repairSignature(current)===state.requestSignature;}catch{}
+      repairStatus.textContent=state?.job?`${state.job.label} · ${state.job.completed}/${state.job.total}${state.job.error?' · '+state.job.error:''}${!matching?' · This result or saved request belongs to a different draft version.':''}`:'No scene repair requested.';
+      startRepair.disabled=!!repairBusy()||otherWorkBusy()||visualsBusy();resumeRepair.hidden=!matching||!state?.resumeAvailable;resumeRepair.textContent=state?.retryUncertain?'Retry unfinished scene request':'Resume scene repair';
+      resumeRepair.disabled=startRepair.disabled;applyRepair.disabled=startRepair.disabled;
+      cancelRepair.hidden=state?.job?.status!=='running';applyRepair.hidden=!matching||state?.job?.status!=='complete'||!state.result;
+      repairPreview.root.hidden=applyRepair.hidden;repairPreview.body.replaceChildren();
+      if(!applyRepair.hidden&&state?.result){for(const scene of state.result.scenes){const original=current.scenes.find(item=>item.id===scene.id);if(original&&JSON.stringify(original)!==JSON.stringify(scene)){const preview=group(node('h4','',scene.title));for(const[label,text]of [['Current opening',original.greeting],['Repaired opening',scene.greeting],['Current private direction',original.direction],['Repaired private direction',scene.direction],['Current assumptions',original.assumptions.join('\n')],['Repaired assumptions',scene.assumptions.join('\n')]]){const item=field(label,text,undefined,{area:true,rows:3});item.input.readOnly=true;preview.append(item.wrap);}repairPreview.body.append(preview);}}repairPreview.body.append(paragraph(`${roleIssues(state.result).length} possible role conflicts remain. Repairs are model output and still need review.`));}
+      if(state?.retryUncertain)repairStatus.textContent+=' The earlier request may already have been charged; this explicit retry may charge again.';
+    };
+    repair.body.prepend(paragraph('Uses the completed draft, not another full story import. Each selected scene is one normally charged request, with at most one format repair. Cast, lore, scene IDs, order, and source references stay in place. Repaired text is previewed before you load it. This does not verify the adaptation against the original source.','sp-hint'));
+    repair.body.append(button('Select flagged scenes',()=>{const ids=new Set(roleIssues(current).map(issue=>issue.sceneId));for(const[id,check]of repairChoices)check.checked=ids.has(id);}),repairConnection.wrap,repairAllowance.wrap,repairReasoning.wrap,paragraph(responseSettingsHint,'sp-hint'),startRepair,repairStatus,resumeRepair,cancelRepair,repairPreview.root,applyRepair);panel.append(repair.root);renderRepairStatus();
     const actions=row(button('Save draft',async()=>{
       const requested=clone(current),fingerprint=JSON.stringify(requested);const saved=await rpc.request<StoryDraft>('save-draft',{draft:requested});
       if(nonce===panelNonce&&JSON.stringify(current)===fingerprint){draft=saved;draftDirty=false;draftRevision++;draftVersion=JSON.stringify(saved);renderReview();}notify('Draft saved.');
     }),button('Export draft',()=>download(`${current.title.replace(/[^a-z0-9_-]+/gi,'-').slice(0,60)||'set-points'}-draft.json`,current)));
     const create=button('Save to Lumiverse  →',async()=>{
+      requireRoleReview(current);
       const request=clone(current);notify('Saving the narrator and world book to Lumiverse…');const result=await rpc.request<SavedStory>('create-card',{draft:request},120_000);
       if(snapshot)snapshot.saved=result;
       if(nonce===panelNonce&&JSON.stringify(current)===JSON.stringify(request)){draftDirty=false;draftRevision++;draftVersion=JSON.stringify(current);}
@@ -704,6 +771,7 @@ export function setup(ctx: SpindleFrontendContext) {
         const readRevision=draftRevision;const next=await rpc.request<AppSnapshot>('snapshot',ctx.getActiveChat());if(destroyed)return;
         const completed=snapshot?.job?.status==='running'&&next.job?.status==='complete';
         snapshot=next;updateConnections(next);renderJob(next.job);
+        renderRepairStatus();
         newDraftNotice.hidden=!(pendingReplacement||(draftDirty&&draft&&next.draft&&draft.id!==next.draft.id));
         const nextVersion=JSON.stringify(next.draft);
         if(!openingDraft&&!draftDirty&&readRevision===draftRevision&&nextVersion!==draftVersion){draft=next.draft?clone(next.draft):null;draftVersion=nextVersion;renderReview();}

@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.9";
+var VERSION = "0.1.10";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -20,6 +20,248 @@ var styles = `
 @media(prefers-color-scheme:light){.sp-app{--sp-bg:var(--lumiverse-bg,#faf8f3);--sp-card:var(--lumiverse-bg-secondary,#fffdf8);--sp-ink:var(--lumiverse-text,#28251f);--sp-muted:var(--lumiverse-text-muted,#746e62);--sp-accent:#996219;--sp-accent-ink:#fff9ed;color-scheme:light}.sp-status[data-kind=error]{color:#a43f33}}
 @container(max-width:380px){.sp-grid{grid-template-columns:1fr}.sp-intro{flex-wrap:wrap}.sp-counts{gap:14px}.sp-header{gap:10px}.sp-app h1{font-size:33px}.sp-tab small{margin-right:4px}.sp-button{padding:9px 10px}}
 `;
+
+// src/roles.ts
+var escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+var clean = (text) => text.trim();
+function matchCharacter(cast, label) {
+  const role = label.trim().toLocaleLowerCase();
+  const matches = cast.filter((person) => [person.name, ...person.aliases].some((name) => {
+    const key = name.trim().toLocaleLowerCase();
+    return key && (role === key || role.startsWith(`${key},`) || role.startsWith(`${key} (`));
+  }));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+function defaultRoles(draft) {
+  return { narration: "neutral", playerCharacterId: matchCharacter(draft.cast, draft.playerRole)?.id ?? null, viewpointCharacterId: null, sourceViewpoint: "" };
+}
+function validateRoles(value, cast) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Narration roles must be an object.");
+  const input = value;
+  if (input.narration !== "neutral" && input.narration !== "character")
+    throw new Error("Choose an external narrator or a supporting-character viewpoint.");
+  const id = (value) => {
+    if (value === null)
+      return null;
+    if (typeof value !== "string" || !cast.some((person) => person.id === value))
+      throw new Error("Narration roles must reference existing cast IDs or a custom player.");
+    return value;
+  };
+  const playerCharacterId = id(input.playerCharacterId), viewpointCharacterId = id(input.viewpointCharacterId);
+  if (input.narration === "neutral" && viewpointCharacterId !== null || input.narration === "character" && viewpointCharacterId === null)
+    throw new Error("A supporting-character viewpoint needs one narrator character; external narration has none.");
+  if (viewpointCharacterId && viewpointCharacterId === playerCharacterId)
+    throw new Error("The human controls that character. Choose external narration or a different supporting-character viewpoint.");
+  if (typeof input.sourceViewpoint !== "string" || input.sourceViewpoint.length > 500)
+    throw new Error("Keep the original story viewpoint under 500 characters.");
+  const sourceViewpoint = input.sourceViewpoint.trim();
+  if (/\{\{|\}\}|<%|%>|<\s*\/?\s*[a-z]|\[\[SET_POINTS|<!--SET_POINTS/i.test(sourceViewpoint))
+    throw new Error("Use plain text for the original story viewpoint.");
+  return { narration: input.narration, playerCharacterId, viewpointCharacterId, sourceViewpoint };
+}
+function narrative(text) {
+  return text.replace(/“[^”]*”|"[^"\n]*"|‘[^’\n]*’/g, " ");
+}
+var action = "(?:say|says|said|ask|asks|asked|answer|answers|answered|whisper|whispers|whispered|decide|decides|decided|choose|chooses|chose|agree|agrees|agreed|nod|nods|nodded|smile|smiles|smiled|grin|grins|grinned|lean|leans|leaned|walk|walks|walked|step|steps|stepped|reach|reaches|reached|grab|grabs|grabbed|push|pushes|pushed|pull|pulls|pulled|think|thinks|thought|feel|feels|felt|remember|remembers|remembered|tell|tells|told|know|knows|knew|want|wants|wanted|believe|believes|believed|consent|consents|consented|freeze|freezes|froze)";
+function roleIssues(draft) {
+  const roles = draft.roles ?? defaultRoles(draft), result = [];
+  const player = draft.cast.find((person) => person.id === roles.playerCharacterId);
+  const names = player ? [player.name, ...player.aliases].filter((name) => name.trim().length >= 3 && !/^(?:man|woman|boy|girl|brother|sister|he|she|they|you)$/i.test(name)) : [];
+  const playerActor = names.length ? new RegExp(`(?:\\{\\{user\\}\\}|\\b(?:${names.map(escape).join("|")})\\b)\\s+${action}\\b`, "i") : /\{\{user\}\}\s+(?:says?|said|walks?|decides?|chooses?|thinks?|feels?)\b/i;
+  const youAction = new RegExp(`\\byou\\s+(?:(?:then|already|finally|quietly|slowly|suddenly|reluctantly|still|now|also|just)\\s+)*${action}\\b`, "i");
+  const otherNames = draft.cast.filter((person) => person.id !== roles.playerCharacterId).map((person) => person.name).filter((name) => name.length >= 3);
+  const wrongIdentity = otherNames.length ? new RegExp(`\\b(?:you are|you were|your name is)\\s+(?:${otherNames.map(escape).join("|")})(?=\\W|$)`, "i") : null;
+  for (const scene of draft.scenes) {
+    const body = narrative(scene.greeting), fieldKey = `scene:${scene.id}:greeting`;
+    if (youAction.test(body) || playerActor.test(body))
+      result.push({ fieldKey, sceneId: scene.id, kind: "agency", message: "This opening may assign an action, line, feeling, or decision to the player. Check that the player supplied it or that it belongs in a conditional assumption." });
+    if (roles.narration === "neutral" && /\bI\b|\b[Mm]y\b|\b[Mm]yself\b/.test(body))
+      result.push({ fieldKey, sceneId: scene.id, kind: "viewpoint", message: "Unquoted first-person wording may conflict with the external narrator. Check who is speaking." });
+    if (wrongIdentity?.test(body))
+      result.push({ fieldKey, sceneId: scene.id, kind: "identity", message: "This opening may identify the player as a different cast member." });
+  }
+  const firstPersonRule = /(?:narrate|narration|write|tell|use|perspective|viewpoint|voice|inside).{0,90}first[ -]person|first[ -]person.{0,90}(?:narration|perspective|viewpoint|head)/i;
+  const forbidsFirst = /(?:never|do not|don't|avoid|no).{0,60}first[ -]person/i;
+  const directions = [
+    { fieldKey: "narratorInstructions", text: draft.narratorInstructions },
+    ...draft.scenes.map((scene) => ({ fieldKey: `scene:${scene.id}:direction`, sceneId: scene.id, text: scene.direction })),
+    ...draft.lore.map((entry) => ({ fieldKey: `lore:${entry.id}:content`, text: entry.content })),
+    ...draft.cast.flatMap((person) => ["personality", "voice"].map((key) => ({ fieldKey: `cast:${person.id}:${key}`, text: person[key] })))
+  ];
+  for (const entry of directions)
+    if (roles.narration === "neutral" && firstPersonRule.test(entry.text) && !forbidsFirst.test(entry.text) || roles.narration === "character" && forbidsFirst.test(entry.text))
+      result.push({ fieldKey: entry.fieldKey, sceneId: "sceneId" in entry ? entry.sceneId : undefined, kind: "viewpoint", message: "This direction may contradict the selected narration style. Review the field and role settings together." });
+  return result;
+}
+function roleReviewFingerprint(draft) {
+  const roles = draft.roles ?? defaultRoles(draft);
+  const value = JSON.stringify({ id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice) })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
+  let hash = 14695981039346656037n;
+  for (let i = 0;i < value.length; i++) {
+    hash ^= BigInt(value.charCodeAt(i));
+    hash = BigInt.asUintN(64, hash * 1099511628211n);
+  }
+  return `${value.length}:${hash.toString(16).padStart(16, "0")}`;
+}
+function requireRoleReview(draft) {
+  if (roleIssues(draft).length && draft.roleReview !== roleReviewFingerprint(draft))
+    throw new Error("Review the player and viewpoint checks in Review before saving to Lumiverse. Correct the flagged fields or explicitly mark the current checks reviewed. No model request was made.");
+}
+
+// src/importer.ts
+var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
+
+class ImportError extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "ImportError";
+  }
+}
+function fail(code, message) {
+  throw new ImportError(code, message);
+}
+function object(value, path) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    fail("INVALID_SCHEMA", `${path} must be an object.`);
+  return value;
+}
+function safeText(value, path, max, allowEmpty = false) {
+  if (typeof value !== "string")
+    fail("INVALID_SCHEMA", `${path} must be text.`);
+  const text = value.trim();
+  if (!allowEmpty && !text)
+    fail("INVALID_SCHEMA", `${path} is required.`);
+  if (text.length > max)
+    fail("OUTPUT_LIMIT", `${path} exceeds its ${max.toLocaleString()} character limit. Shorten it and retry.`);
+  const withoutPlaceholders = text.replace(/\{\{(?:user|char)\}\}/g, "");
+  if (/\{\{|\}\}|<%|%>|\[\[SET_POINTS\s*:|<!--\s*SET_POINTS\s*:/i.test(withoutPlaceholders))
+    fail("UNSAFE_TEMPLATE", `${path} contains a reserved template or scene control marker. Remove it and retry.`);
+  if (/<\s*\/?\s*[a-z][a-z0-9:-]*(?:\s[^>]*|\/?)>|(?:javascript|vbscript)\s*:/i.test(text))
+    fail("UNSAFE_MARKUP", `${path} contains HTML or executable markup. Use plain text or Markdown.`);
+  return text;
+}
+function list(value, path, max, min = 0) {
+  if (!Array.isArray(value) || value.length < min || value.length > max)
+    fail("INVALID_SCHEMA", `${path} must contain ${min}–${max} items.`);
+  return value;
+}
+function texts(value, path, max = 32, length = 1000, min = 0) {
+  return list(value, path, max, min).map((item, index) => safeText(item, `${path}[${index}]`, length));
+}
+function number(value, path, min, max) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max)
+    fail("INVALID_SCHEMA", `${path} must be a whole number from ${min} to ${max}.`);
+  return value;
+}
+function identifier(value, path) {
+  const id = safeText(value, path, 80);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id))
+    fail("INVALID_SCHEMA", `${path} must contain only letters, numbers, underscores, or hyphens.`);
+  return id;
+}
+function uniqueIds(items, path) {
+  if (new Set(items.map((item) => item.id)).size !== items.length)
+    fail("INVALID_SCHEMA", `${path} contains duplicate IDs.`);
+}
+function refs(value, path, allowed) {
+  const result = texts(value, path, IMPORT_LIMITS.chunks, 20, 1);
+  if (result.some((ref) => !allowed.has(ref)))
+    fail("INVALID_REFERENCE", `${path} refers to an unknown source chunk.`);
+  return [...new Set(result)];
+}
+function checkSize(value, max, label) {
+  const serialized = JSON.stringify(value);
+  if (!serialized || serialized.length > max)
+    fail("OUTPUT_LIMIT", `${label} exceeds ${max.toLocaleString()} characters. Use a shorter source, fewer scenes, or more concise descriptions.`);
+}
+function sourceUrl(value) {
+  if (value === undefined || value === "")
+    return;
+  const text = safeText(value, "source.url", 2000);
+  try {
+    const url = new URL(text);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
+      throw new Error;
+  } catch {
+    fail("INVALID_SCHEMA", "source.url must be an HTTP or HTTPS URL without credentials.");
+  }
+  return text;
+}
+function validateDraft(value) {
+  checkSize(value, IMPORT_LIMITS.draftCharacters, "The draft");
+  const draft = object(value, "draft");
+  if (draft.version !== 1)
+    fail("INVALID_SCHEMA", "This draft uses an unsupported version.");
+  const source = object(draft.source, "source");
+  const chunks = number(source.chunks, "source.chunks", 1, IMPORT_LIMITS.chunks);
+  const allowed = new Set(Array.from({ length: chunks }, (_, i) => `chunk:${i + 1}`));
+  const cast = list(draft.cast, "cast", 64).map((value, i) => {
+    const person = object(value, `cast[${i}]`), p = `cast[${i}]`;
+    return { id: identifier(person.id, `${p}.id`), name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 4000), voice: safeText(person.voice, `${p}.voice`, 2000), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledge: safeText(person.knowledge, `${p}.knowledge`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
+  });
+  const lore = list(draft.lore, "lore", 96).map((value, i) => {
+    const entry = object(value, `lore[${i}]`), p = `lore[${i}]`;
+    return { id: identifier(entry.id, `${p}.id`), name: safeText(entry.name, `${p}.name`, 200), keys: texts(entry.keys, `${p}.keys`, 24, 100, 1), content: safeText(entry.content, `${p}.content`, 6000) };
+  });
+  const scenes = list(draft.scenes, "scenes", IMPORT_LIMITS.scenes, 1).map((value, i) => {
+    const scene = object(value, `scenes[${i}]`), p = `scenes[${i}]`;
+    return { id: identifier(scene.id, `${p}.id`), title: safeText(scene.title, `${p}.title`, 200), greeting: safeText(scene.greeting, `${p}.greeting`, 8000), direction: safeText(scene.direction, `${p}.direction`, 6000), assumptions: texts(scene.assumptions, `${p}.assumptions`, 24, 1000), sourceRefs: refs(scene.sourceRefs, `${p}.sourceRefs`, allowed) };
+  });
+  uniqueIds(cast, "cast");
+  uniqueIds(lore, "lore");
+  uniqueIds(scenes, "scenes");
+  const castIds = new Set(cast.map((person) => person.id)), appearanceIds = new Set;
+  const appearances = draft.appearances === undefined ? undefined : list(draft.appearances, "appearances", 64).map((value, i) => {
+    const entry = object(value, `appearances[${i}]`), path = `appearances[${i}]`;
+    const characterId = identifier(entry.characterId, `${path}.characterId`);
+    if (!castIds.has(characterId) || appearanceIds.has(characterId))
+      fail("INVALID_SCHEMA", "Approved appearances must refer to unique, existing cast members.");
+    appearanceIds.add(characterId);
+    return { characterId, description: safeText(entry.description, `${path}.description`, 4000, true), startingOutfit: safeText(entry.startingOutfit, `${path}.startingOutfit`, 2000, true) };
+  });
+  let roles;
+  if (draft.roles !== undefined) {
+    try {
+      roles = validateRoles(draft.roles, cast);
+    } catch (error) {
+      fail("INVALID_SCHEMA", error instanceof Error ? error.message : "Invalid narration roles.");
+    }
+  }
+  const playerRole = safeText(draft.playerRole, "playerRole", 2000);
+  const namedPlayer = defaultRoles({ cast, playerRole }).playerCharacterId;
+  if (roles?.playerCharacterId && namedPlayer && roles.playerCharacterId !== namedPlayer)
+    fail("INVALID_SCHEMA", "The player role names a different cast identity. Align Your role and Player cast identity in Review.");
+  const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, "roleReview", 80);
+  if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview))
+    fail("INVALID_SCHEMA", "Invalid player/viewpoint review acknowledgment.");
+  return {
+    ...roles ? { roles } : {},
+    ...roleReview ? { roleReview } : {},
+    version: 1,
+    id: identifier(draft.id, "id"),
+    title: safeText(draft.title, "title", 200),
+    premise: safeText(draft.premise, "premise", 6000),
+    playerRole,
+    startingPoint: safeText(draft.startingPoint, "startingPoint", 2000),
+    narratorInstructions: safeText(draft.narratorInstructions, "narratorInstructions", 8000),
+    cast,
+    ...appearances !== undefined ? { appearances } : {},
+    lore,
+    scenes,
+    warnings: texts(draft.warnings, "warnings", 96, 2000),
+    source: { title: safeText(source.title, "source.title", 200), ...sourceUrl(source.url) ? { url: sourceUrl(source.url) } : {}, characters: number(source.characters, "source.characters", 1, IMPORT_LIMITS.sourceCharacters), chunks },
+    createdAt: number(draft.createdAt, "createdAt", 0, Number.MAX_SAFE_INTEGER)
+  };
+}
+
+// src/scene-repair.ts
+function repairSignature(draft) {
+  const { roleReview: _review, ...input } = validateDraft(draft);
+  return JSON.stringify(input);
+}
 
 // src/appearance-review.ts
 var appearanceWords = /\b(?:hair|haired|blond(?:e)?|brunette|redhead|bald|eyes?|freckles?|complexion|skin|scar(?:s|red)?|tattoo(?:s|ed)?|beard|moustache|mustache|height|physique|clothes|clothing|outfit|dress|coat|jacket|shirt|trousers|pants|skirt|boots|uniform|cloak|robe|glasses|horns?|fur|scales|wings?)\b/i;
@@ -69,9 +311,6 @@ function appearanceMentions(draft) {
   }
   return fields.flatMap((field) => excerpts(field.text).map((text) => ({ ...field, text })));
 }
-
-// src/importer.ts
-var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
 
 // src/visuals.ts
 var VISUAL_LIMITS = Object.freeze({ profiles: 64, tags: 32, outfitTags: 12, tagCharacters: 72, tagWords: 7, packCharacters: 4000000 });
@@ -362,6 +601,9 @@ function setup(ctx) {
   let adaptationStarting = false;
   let connectionChecking = false;
   let visualsStarting = false;
+  let repairStarting = false;
+  let renderRepairStatus = () => {};
+  const repairBusy = () => repairStarting || snapshot?.repairs?.job?.status === "running";
   let webAbort = null;
   let stagedPages = null;
   let appliedSourceUrl;
@@ -727,7 +969,7 @@ function setup(ctx) {
     }
   }
   function syncImportControls() {
-    const busy = loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running";
+    const busy = repairBusy() || loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running";
     checkConnectionButton.disabled = !!busy || !connection.value;
     connection.disabled = connectionChecking;
     resumeButton.disabled = !!busy || !snapshot?.resume?.available;
@@ -747,6 +989,12 @@ function setup(ctx) {
   const options = node("div", "sp-card sp-stack");
   options.append(node("h3", "", "Make a place for yourself"));
   const role = field("Who will you play?", "", undefined, { placeholder: "An existing character, or someone new", hint: "The narrator leaves this character’s dialogue and choices to you." });
+  const narrationMode = selectField("Narration style", [["neutral", "External narrator"], ["character", "Supporting character in first person"]], "neutral", () => {
+    narratorName.wrap.hidden = narrationMode.input.value !== "character";
+  });
+  const narratorName = field("Who narrates?", "", undefined, { placeholder: "Exact supporting-character name or alias", hint: "Choose someone other than the character you play." });
+  narratorName.wrap.hidden = true;
+  const sourceViewpoint = field("Original story viewpoint · optional", "", undefined, { placeholder: "For example: Lina tells the story in first person", hint: "Source context only. It does not assign your player role." });
   const start = field("Where does it begin?", "", undefined, { placeholder: "The beginning, a chapter, or a specific moment" });
   const sceneCount = field("Planned scenes", "6", undefined, { type: "number", min: 2, max: 24, hint: "2–24 major moments, including the opening." });
   const connectionWrap = node("div", "sp-field");
@@ -793,7 +1041,7 @@ function setup(ctx) {
   connectionWrap.append(checkConnectionButton, paragraph("Sends a small test request without your story. Normal model charges apply.", "sp-hint"), connectionStatus);
   const optionGrid = node("div", "sp-grid");
   optionGrid.append(sceneCount.wrap, connectionWrap);
-  options.append(role.wrap, start.wrap, optionGrid);
+  options.append(role.wrap, narrationMode.wrap, narratorName.wrap, sourceViewpoint.wrap, start.wrap, optionGrid);
   panels.import.append(options);
   const advanced = details("Long-story settings");
   const chunk = field("Characters per section", "12000", undefined, { type: "number", min: 4000, max: 20000, hint: "Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context." });
@@ -869,7 +1117,7 @@ function setup(ctx) {
       throw new Error("Choose between 2 and 24 scenes.");
     if (!Number.isInteger(chunkNumber) || chunkNumber < 4000 || chunkNumber > 20000)
       throw new Error("Section size must be between 4,000 and 20,000 characters.");
-    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
+    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, narrationMode: narrationMode.input.value, narratorCharacter: narratorName.input.value.trim(), sourceViewpoint: sourceViewpoint.input.value.trim(), ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
     adaptationStarting = true;
     syncImportControls();
     try {
@@ -915,7 +1163,7 @@ function setup(ctx) {
       progress.max = Math.max(1, job.total);
       progress.value = Math.min(job.completed, progress.max);
     }
-    const anyRunning = running || snapshot?.visuals?.job?.status === "running";
+    const anyRunning = repairBusy() || running || snapshot?.visuals?.job?.status === "running";
     if (anyRunning && !polling)
       polling = setInterval(() => {
         refresh();
@@ -1122,7 +1370,7 @@ function setup(ctx) {
     return visualsStarting || snapshot?.visuals?.job?.status === "running";
   }
   function otherWorkBusy() {
-    return loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running";
+    return repairBusy() || loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running";
   }
   function syncVisualControls() {
     const busy = !!(otherWorkBusy() || visualsBusy());
@@ -1440,6 +1688,7 @@ function setup(ctx) {
     panel.replaceChildren();
     panelNonce++;
     approvedControls.clear();
+    renderRepairStatus = () => {};
     if (!draft) {
       const top = intro("Meet your adaptation", "A little preparation makes room for a better story.");
       top.append(row(openDraftButton, pasteDraftButton));
@@ -1455,10 +1704,13 @@ function setup(ctx) {
     const dirtyTag = node("span", "sp-tag", draftDirty ? "Unsaved edits" : "Draft ready");
     top.append(group(dirtyTag, row(openDraftButton, pasteDraftButton)));
     panel.append(top);
+    let updateRoleReview = () => {};
     const markDirty = () => {
       draftDirty = true;
       dirtyTag.textContent = "Unsaved edits";
       renderVisuals();
+      updateRoleReview();
+      renderRepairStatus();
     };
     const reviewFields = new Map;
     const edit = (label, value, change, area = false, hint, key) => {
@@ -1473,7 +1725,11 @@ function setup(ctx) {
     const summary = node("div", "sp-card sp-stack");
     summary.append(edit("Title", current.title, (v) => current.title = v, false, undefined, "title"), edit("Premise", current.premise, (v) => current.premise = v, true, undefined, "premise"));
     const choices = node("div", "sp-grid");
-    choices.append(edit("Your role", current.playerRole, (v) => current.playerRole = v, false, undefined, "playerRole"), edit("Starting point", current.startingPoint, (v) => current.startingPoint = v, false, undefined, "startingPoint"));
+    choices.append(edit("Your role", current.playerRole, (v) => {
+      current.playerRole = v;
+      if (current.roles)
+        current.roles.playerCharacterId = defaultRoles(current).playerCharacterId;
+    }, false, undefined, "playerRole"), edit("Starting point", current.startingPoint, (v) => current.startingPoint = v, false, undefined, "startingPoint"));
     summary.append(choices);
     const counts = node("div", "sp-counts");
     for (const [number, label] of [[current.cast.length, "characters"], [current.lore.length, "lore entries"], [current.scenes.length, "scenes"]]) {
@@ -1489,6 +1745,39 @@ function setup(ctx) {
         warnings.body.append(paragraph(warning, "sp-notice"));
       panel.append(warnings.root);
     }
+    const roleSettings = details("Player and narrator roles");
+    roleSettings.root.open = true;
+    const activeRoles = () => current.roles ?? defaultRoles(current);
+    const playerIdentity = selectField("Player cast identity", [["", "Custom or unbound role"], ...current.cast.map((person) => [person.id, person.name])], activeRoles().playerCharacterId ?? "", () => {
+      const value = playerIdentity.input.value;
+      current.roles ??= defaultRoles(current);
+      current.roles.playerCharacterId = value || null;
+      if (value) {
+        current.playerRole = current.cast.find((person) => person.id === value).name;
+      }
+      markDirty();
+      renderReview();
+    });
+    const viewMode = selectField("Story narration", [["neutral", "External narrator"], ["character", "Supporting character in first person"]], activeRoles().narration, () => {
+      const value = viewMode.input.value;
+      current.roles ??= defaultRoles(current);
+      current.roles.narration = value;
+      current.roles.viewpointCharacterId = value === "character" ? current.cast.find((person) => person.id !== current.roles.playerCharacterId)?.id ?? null : null;
+      markDirty();
+      renderReview();
+    });
+    const viewPerson = selectField("Narrating cast member", [["", "Choose a supporting character"], ...current.cast.filter((person) => person.id !== activeRoles().playerCharacterId).map((person) => [person.id, person.name])], activeRoles().viewpointCharacterId ?? "", () => {
+      const value = viewPerson.input.value;
+      current.roles ??= defaultRoles(current);
+      current.roles.viewpointCharacterId = value || null;
+      markDirty();
+    });
+    viewPerson.wrap.hidden = activeRoles().narration !== "character";
+    roleSettings.body.append(paragraph("Your player identity stays fixed even when the source changes viewpoint. External narration is the default. A supporting character may narrate in first person while your character stays under your control. These settings do not rewrite saved scenes.", "sp-hint"), playerIdentity.wrap, viewMode.wrap, viewPerson.wrap, edit("Source viewpoint · optional", activeRoles().sourceViewpoint, (value) => {
+      current.roles ??= defaultRoles(current);
+      current.roles.sourceViewpoint = value;
+    }, false, "A note about the original story, not a player assignment."));
+    panel.append(roleSettings.root);
     const narration = details("Narrator direction");
     narration.body.append(edit("Instructions", current.narratorInstructions, (v) => current.narratorInstructions = v, true, "Describe the narrator’s scope and how it should leave your choices open.", "narratorInstructions"));
     panel.append(narration.root);
@@ -1602,6 +1891,162 @@ function setup(ctx) {
       scenes.append(entry.root);
     });
     panel.append(scenes);
+    const quality = details("Player and viewpoint checks");
+    quality.root.open = true;
+    const qualityStatus = paragraph("", "sp-hint"), qualityResults = group(), acknowledge = node("input");
+    acknowledge.type = "checkbox";
+    acknowledge.id = `sp-${suffix}-review-roles`;
+    const ackLabel = node("label", "sp-check", "I have reviewed the current possible conflicts");
+    ackLabel.htmlFor = acknowledge.id;
+    acknowledge.addEventListener("change", () => {
+      if (acknowledge.checked)
+        current.roleReview = roleReviewFingerprint(current);
+      else
+        delete current.roleReview;
+      markDirty();
+    });
+    updateRoleReview = () => {
+      const issues = roleIssues(current);
+      qualityResults.replaceChildren();
+      acknowledge.checked = current.roleReview === roleReviewFingerprint(current);
+      acknowledge.disabled = !issues.length;
+      qualityStatus.textContent = issues.length ? `${issues.length} possible role or viewpoint conflicts. Open each affected field, correct it, or explicitly mark the current checks reviewed if they are intentional. Edits invalidate that acknowledgment.` : "No obvious conflicts found by the local checks. Read the openings: these checks cannot prove semantic consistency.";
+      for (const issue of issues.slice(0, 8))
+        qualityResults.append(group(paragraph(issue.sceneId ? `Scene ${current.scenes.findIndex((scene) => scene.id === issue.sceneId) + 1}` : issue.fieldKey.startsWith("lore:") ? "Lore direction" : issue.fieldKey.startsWith("cast:") ? "Character direction" : "Narrator direction", "sp-label"), paragraph(issue.message, "sp-small"), button("Open role issue", () => {
+          const target = reviewFields.get(issue.fieldKey);
+          if (!target)
+            return;
+          for (let parent = target;parent; parent = parent.parentElement)
+            if (parent.tagName === "DETAILS")
+              parent.open = true;
+          target.scrollIntoView?.({ block: "center" });
+          target.focus();
+        })));
+      if (issues.length > 8)
+        qualityResults.append(paragraph(`${issues.length - 8} more possible conflicts. Correct the listed fields to refresh the checks. All flagged scene choices are available below.`));
+    };
+    quality.body.append(paragraph("Free local review. Possible matches are not confirmed errors; dialogue and intentional narration need judgment. Saving a draft remains available. Saving to Lumiverse requires current flagged fields to be corrected or explicitly reviewed.", "sp-hint"), qualityStatus, qualityResults, row(acknowledge, ackLabel));
+    updateRoleReview();
+    panel.append(quality.root);
+    const repair = details("Repair scene openings · optional"), repairChoices = new Map;
+    const flagged = new Set(roleIssues(current).map((issue) => issue.sceneId).filter(Boolean));
+    for (const [index, scene] of current.scenes.entries()) {
+      const check = node("input");
+      check.type = "checkbox";
+      check.checked = flagged.has(scene.id);
+      check.id = `sp-${suffix}-repair-${index}`;
+      repairChoices.set(scene.id, check);
+      const label = node("label", "sp-check", `${index + 1} · ${scene.title}`);
+      label.htmlFor = check.id;
+      repair.body.append(row(check, label));
+    }
+    const repairConnection = selectField("Scene repair connection", snapshot?.connections.map((item) => [item.id, item.name]) ?? [], snapshot?.repairs?.connectionId ?? connection.value);
+    const repairAllowance = selectField("Scene repair response allowance", responseAllowances, "16000"), repairReasoning = selectField("Scene repair reasoning", reasoningModes, "inherit");
+    const repairStatus = paragraph("", "sp-hint"), repairPreview = details("Preview repaired scenes");
+    repairPreview.root.hidden = true;
+    const startRepair = button("Repair selected scenes", async () => {
+      if (otherWorkBusy() || visualsBusy())
+        throw new Error("Wait for the current operation to finish.");
+      const sceneIds = [...repairChoices].filter(([, check]) => check.checked).map(([id]) => id);
+      if (!sceneIds.length)
+        throw new Error("Select the scenes to repair.");
+      const repairDraft = clone(current), repairBasis = repairSignature(repairDraft);
+      repairStarting = true;
+      syncImportControls();
+      try {
+        const job = await rpc.request("start-scene-repair", { draft: repairDraft, sceneIds, connectionId: repairConnection.input.value, ...readResponseSettings(repairAllowance.input, repairReasoning.input) });
+        if (snapshot) {
+          snapshot.repairs = { job, result: null, requestSignature: repairBasis, resumeAvailable: false, retryUncertain: false };
+        }
+        await refresh();
+        notify("Scene repair started. The current draft stays in place until you review and load the result.");
+      } finally {
+        repairStarting = false;
+        syncImportControls();
+        renderRepairStatus();
+      }
+    }, true);
+    const resumeRepair = button("Resume scene repair", async () => {
+      if (otherWorkBusy() || visualsBusy())
+        throw new Error("Wait for the current operation to finish.");
+      repairStarting = true;
+      syncImportControls();
+      try {
+        const job = await rpc.request("resume-scene-repair", { draft: clone(current), retryUncertain: snapshot?.repairs?.retryUncertain === true, ...readResponseSettings(repairAllowance.input, repairReasoning.input) });
+        if (snapshot?.repairs)
+          snapshot.repairs.job = job;
+        await refresh();
+      } finally {
+        repairStarting = false;
+        syncImportControls();
+        renderRepairStatus();
+      }
+    });
+    const cancelRepair = button("Cancel scene repair", async () => {
+      await rpc.request("cancel-scene-repair");
+      notify("Cancellation requested. Completed scene responses are retained.");
+      await refresh();
+    });
+    const applyRepair = button("Load repaired scenes", async () => {
+      const request = clone(current), before = JSON.stringify(current);
+      const result = await rpc.request("apply-scene-repair", { draft: request });
+      if (nonce === panelNonce && JSON.stringify(current) === before) {
+        draft = clone(result);
+        draftDirty = false;
+        draftRevision++;
+        draftVersion = JSON.stringify(result);
+        renderReview();
+        notify("Repaired scenes loaded and saved as a draft. Review them before saving a new card to Lumiverse.");
+      } else {
+        pendingReplacement = result;
+        newDraftNotice.hidden = false;
+        notify("Repaired draft saved. Your newer review edits remain visible; use Load new draft to replace them deliberately.");
+      }
+    });
+    renderRepairStatus = () => {
+      const state = snapshot?.repairs;
+      let matching = false;
+      try {
+        matching = !!state?.requestSignature && repairSignature(current) === state.requestSignature;
+      } catch {}
+      repairStatus.textContent = state?.job ? `${state.job.label} · ${state.job.completed}/${state.job.total}${state.job.error ? " · " + state.job.error : ""}${!matching ? " · This result or saved request belongs to a different draft version." : ""}` : "No scene repair requested.";
+      startRepair.disabled = !!repairBusy() || otherWorkBusy() || visualsBusy();
+      resumeRepair.hidden = !matching || !state?.resumeAvailable;
+      resumeRepair.textContent = state?.retryUncertain ? "Retry unfinished scene request" : "Resume scene repair";
+      resumeRepair.disabled = startRepair.disabled;
+      applyRepair.disabled = startRepair.disabled;
+      cancelRepair.hidden = state?.job?.status !== "running";
+      applyRepair.hidden = !matching || state?.job?.status !== "complete" || !state.result;
+      repairPreview.root.hidden = applyRepair.hidden;
+      repairPreview.body.replaceChildren();
+      if (!applyRepair.hidden && state?.result) {
+        for (const scene of state.result.scenes) {
+          const original = current.scenes.find((item) => item.id === scene.id);
+          if (original && JSON.stringify(original) !== JSON.stringify(scene)) {
+            const preview = group(node("h4", "", scene.title));
+            for (const [label, text] of [["Current opening", original.greeting], ["Repaired opening", scene.greeting], ["Current private direction", original.direction], ["Repaired private direction", scene.direction], ["Current assumptions", original.assumptions.join(`
+`)], ["Repaired assumptions", scene.assumptions.join(`
+`)]]) {
+              const item = field(label, text, undefined, { area: true, rows: 3 });
+              item.input.readOnly = true;
+              preview.append(item.wrap);
+            }
+            repairPreview.body.append(preview);
+          }
+        }
+        repairPreview.body.append(paragraph(`${roleIssues(state.result).length} possible role conflicts remain. Repairs are model output and still need review.`));
+      }
+      if (state?.retryUncertain)
+        repairStatus.textContent += " The earlier request may already have been charged; this explicit retry may charge again.";
+    };
+    repair.body.prepend(paragraph("Uses the completed draft, not another full story import. Each selected scene is one normally charged request, with at most one format repair. Cast, lore, scene IDs, order, and source references stay in place. Repaired text is previewed before you load it. This does not verify the adaptation against the original source.", "sp-hint"));
+    repair.body.append(button("Select flagged scenes", () => {
+      const ids = new Set(roleIssues(current).map((issue) => issue.sceneId));
+      for (const [id, check] of repairChoices)
+        check.checked = ids.has(id);
+    }), repairConnection.wrap, repairAllowance.wrap, repairReasoning.wrap, paragraph(responseSettingsHint, "sp-hint"), startRepair, repairStatus, resumeRepair, cancelRepair, repairPreview.root, applyRepair);
+    panel.append(repair.root);
+    renderRepairStatus();
     const actions = row(button("Save draft", async () => {
       const requested = clone(current), fingerprint = JSON.stringify(requested);
       const saved = await rpc.request("save-draft", { draft: requested });
@@ -1615,6 +2060,7 @@ function setup(ctx) {
       notify("Draft saved.");
     }), button("Export draft", () => download(`${current.title.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 60) || "set-points"}-draft.json`, current)));
     const create = button("Save to Lumiverse  →", async () => {
+      requireRoleReview(current);
       const request = clone(current);
       notify("Saving the narrator and world book to Lumiverse…");
       const result = await rpc.request("create-card", { draft: request }, 120000);
@@ -1737,6 +2183,7 @@ function setup(ctx) {
         snapshot = next;
         updateConnections(next);
         renderJob(next.job);
+        renderRepairStatus();
         newDraftNotice.hidden = !(pendingReplacement || draftDirty && draft && next.draft && draft.id !== next.draft.id);
         const nextVersion = JSON.stringify(next.draft);
         if (!openingDraft && !draftDirty && readRevision === draftRevision && nextVersion !== draftVersion) {
@@ -1827,6 +2274,7 @@ var state = { version: VERSION, permissions: [], connections: [{ id: "preview-mo
 var receiver = () => {};
 var activate = () => {};
 var undoIndex = 0;
+var repairInput;
 var changes = () => receiver({ type: "set-points:changed" });
 function load() {
   state.draft = structuredClone(demoDraft);
@@ -1836,6 +2284,27 @@ function load() {
 }
 function previewVisuals() {
   return { version: 1, draftId: state.draft.id, profiles: state.draft.cast.map((person) => ({ characterId: person.id, description: "Not specified in the source.", appearanceTags: [], startingOutfit: "Not specified in the source.", outfitTags: [], suggestedDetails: person.id === "iona" ? "A weathered blue sailing coat and a small brass compass." : "A practical grey work jacket.", suggestedTags: person.id === "iona" ? ["blue coat", "brass compass"] : ["grey jacket"], unknowns: ["Hair color, eye color, and precise age are not established."], sourceRefs: ["chunk:1"], subject: person.name, countTag: "" })), warnings: ["Preview descriptions are mocked. Suggested details are choices, not facts from the source."] };
+}
+function previewRepair(input) {
+  repairInput = structuredClone(input);
+  const basis = repairSignature(input.draft);
+  state.repairs = { job: { id: "preview-repair", status: "running", completed: 0, total: input.sceneIds.length, label: "Preview: repairing selected scenes" }, result: null, requestSignature: basis, resumeAvailable: false, retryUncertain: false, connectionId: input.connectionId };
+  setTimeout(() => {
+    if (state.repairs?.job?.status !== "running")
+      return;
+    const candidate = structuredClone(input.draft);
+    candidate.roles ??= defaultRoles(candidate);
+    delete candidate.roleReview;
+    for (const scene of candidate.scenes)
+      if (input.sceneIds.includes(scene.id)) {
+        scene.greeting = "Iona waits beside a moored boat. “A letter for you,” she says.";
+        scene.direction = "Offer the clue if the player chooses to approach.";
+      }
+    state.repairs.result = candidate;
+    state.repairs.job = { ...state.repairs.job, status: "complete", completed: input.sceneIds.length, label: "Preview: repaired scenes ready" };
+    changes();
+  }, 1400);
+  return structuredClone(state.repairs.job);
 }
 var root = document.getElementById("root");
 var previewPageUrl = (index) => `https://preview.example/lighthouse?page=${index}`;
@@ -1919,6 +2388,26 @@ var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: 
             state.visuals.resultSignature = visualDraftSignature(request.input.draft);
             result = state.visuals.pack;
           }
+          break;
+        case "start-scene-repair":
+          result = previewRepair(request.input);
+          break;
+        case "resume-scene-repair":
+          if (!repairInput)
+            throw new Error("No saved repair");
+          result = previewRepair(repairInput);
+          break;
+        case "cancel-scene-repair":
+          if (state.repairs?.job) {
+            state.repairs.job.status = "cancelled";
+            state.repairs.resumeAvailable = true;
+          }
+          break;
+        case "apply-scene-repair":
+          if (!state.repairs?.result || state.repairs.requestSignature !== repairSignature(request.input.draft))
+            throw new Error("Different draft version");
+          state.draft = structuredClone(state.repairs.result);
+          result = state.draft;
           break;
         case "cancel-import":
           if (state.job) {

@@ -1,8 +1,18 @@
-# Set Points 0.1.9 — verification
+# Set Points 0.1.10 — verification
 
 Prepared October 9, 2026.
 
-## Change in 0.1.9
+## Change in 0.1.10
+
+Optional structured roles bind the human player and supporting narrator by cast ID, independently of the original source viewpoint. External narration is the default; a supporting character may narrate in first person while the human remains a different cast character or a custom player. New staged adaptation prompts carry the role contract and validate scene role declarations. Legacy source reading, merging, final-answer recovery, and unfinished staged prompts remain byte-compatible unless the new options were explicitly selected. A known cast name cannot contradict a different bound player ID.
+
+Free local heuristics flag common scripted human actions, named players acting as NPCs, identity switches, external-narrator first person, and narration-style directions in greetings, private scene guidance, cast voice/personality, and lore. They are non-exhaustive and can have false positives. Publication requires corrections or explicit acknowledgment of current flags; a compact edit fingerprint invalidates acknowledgment when relevant fields change. Draft saving and manual edits do not call a model.
+
+Optional selected-scene repair uses the completed draft only. Each selected scene is independently checkpointed and validated, with at most one format repair; semantic concerns are left for human review without automatic retries. Cast, lore, approved appearances, scene IDs/titles/order/references, and original continuity assumptions are preserved. Results remain separate until explicit application after preview of greetings, directions, and assumptions. Exact draft binding, late-edit protection, cancellation, restart recovery, connection-profile checks, and explicit unknown-outcome retries protect existing work. Compatible completed responses can be reused across unfinished-response allowance/reasoning changes. Remaining requests use normal charges. No live source is reread, so repair does not verify source fidelity.
+
+The published role contract is shared by the card prompt/description, constant premise world-book entry, and scene metadata. Normal replies retain that guard when progression is off, without handoff authorization. Existing legacy cards retain their old runtime behavior. Role-contract changes participate in runtime card fingerprints and pause incompatible progression. Publication revision 3 creates a new card/book once on re-saving a legacy draft, leaving old cards/chats intact and retaining scene-control metadata.
+
+## Changes retained from 0.1.9
 
 Published narrator guidance now permits invention of missing supporting-character looks. Existing story and chat details come first, approved traits override incidental conflicts, and blank fields, omitted characters, or unmentioned traits in a partial description remain open. Narrators are instructed to preserve introduced physical traits and change clothing only through an explicit action. The human keeps control of unspecified details of their own character.
 
@@ -68,17 +78,19 @@ The 0.1.5 staged adaptation path and legacy checkpoint `FORMAT 1` recovery remai
 
 ## Current release verification
 
-The complete 0.1.9 suite passes: **352 tests, 1,977 assertions, 13 test files**. TypeScript checking passes. Bun 1.4.2 produced backend **564,982 bytes**, frontend **107,186 bytes**, and mocked preview **120,563 bytes**. The official Lumiverse 1.2.0 capability scanner reports no undeclared capabilities with the existing `base64_decode` declaration.
+The complete 0.1.10 suite passes: **377 tests, 2,117 assertions, 14 test files**. TypeScript checking passes. Bun 1.4.2 produced backend **592,119 bytes**, frontend **136,295 bytes**, and mocked preview **151,631 bytes**. The official Lumiverse 1.2.0 capability scanner reports no undeclared capabilities with the existing `base64_decode` declaration.
 
-New 0.1.9 checks cover published guidance with absent, blank, or partial approvals, unchanged cast/lore/scenes, human control, and a legacy-receipt save producing a new publication exactly once without modifying the original. Earlier 0.1.8 checks cover retained appearance, clothing, identity, and count-only facts; safe bounded review-data roundtrip; exclusion from prompts and approval; incomplete-field preservation; review batches; zero-call recovery of the published 0.1.7 fixture, and completion of all nine profiles after an uncited fact in the first. Earlier regression coverage includes common explicit grounding-reference formats, rejection of unsupported or incompatible references, recovery from the actual published 0.1.6 backend fixture with zero new model calls, eight linked website pages in the description panel, cancellation, late collection results after draft changes, bounded excerpt batches, and focus on the correct editor.
+New 0.1.10 checks cover role binding, source/player separation, supporting-character narration, declaration validation, legacy draft shape, free flag focus, manual acknowledgment/invalidation, blocked publication before resource creation, retained extension metadata, per-scene repair isolation, wrong-role rejection, no automatic semantic retries, partial recovery across restart/settings changes, explicit uncertain retry, preservation of newer edits, competing-operation exclusion, damaged optional-state recovery, and role guards with progression off/on. Fixtures are original neutral text, not user exports.
+
+Earlier 0.1.9 checks cover published guidance with absent, blank, or partial approvals, unchanged cast/lore/scenes, human control, and a legacy-receipt save producing a new publication exactly once without modifying the original. Earlier 0.1.8 checks cover retained appearance, clothing, identity, and count-only facts; safe bounded review-data roundtrip; exclusion from prompts and approval; incomplete-field preservation; review batches; zero-call recovery of the published 0.1.7 fixture, and completion of all nine profiles after an uncited fact in the first. Earlier regression coverage includes common explicit grounding-reference formats, rejection of unsupported or incompatible references, recovery from the actual published 0.1.6 backend fixture with zero new model calls, eight linked website pages in the description panel, cancellation, late collection results after draft changes, bounded excerpt batches, and focus on the correct editor.
 
 Publisher tests cover always-on approved guidance, identical card/world-book prose, JSON roundtrip, unchanged legacy entries, changed-guide receipts, double-click/restart deduplication, and interrupted publication. Backend coverage includes adding and saving approved appearances to a completed 0.1.5 draft with zero model calls and unchanged saved import inputs. Frontend checks cover manual approval, source-only copying, the appearance locator, approved-caption differences, explicit source selection, source/result/request revision binding, separate packs, preservation of edits, cancellation/resume, unknown outcomes, visible JSON backup, paste restoration, and clipboard failure.
 
-No live provider appearance run, successful live story adaptation, or image-generation quality check is claimed. The interface was tested through DOM tests; browser-preview access was blocked, so no live host screenshot review is claimed. Neutral fixtures and mocked requests do not establish source-extraction accuracy, provider acceptance of the selected settings, or compatibility with every live host configuration. No new dependency audit is claimed.
+No live provider scene-repair or appearance run, successful live story adaptation, or image-generation quality check is claimed. The interface was tested through DOM tests; no live Lumiverse screenshot review is claimed. Neutral fixtures and mocked requests do not establish source-extraction accuracy, provider acceptance of the selected settings, or compatibility with every live host configuration. No new dependency audit is claimed.
 
 ## Previous release verification references
 
-These historical results do not verify 0.1.9:
+These historical results do not verify 0.1.10:
 
 | Version | Tests | Assertions | Test files |
 | --- | ---: | ---: | ---: |

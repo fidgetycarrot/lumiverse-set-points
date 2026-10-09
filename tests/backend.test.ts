@@ -3,6 +3,7 @@ import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { SetPointsController, setupBackend } from '../src/backend';
 import { draft } from './fixtures';
 import { DEMO_STORY, type ImportOptions, type ImportJob, type WebStoryPage } from '../src/types';
+import { repairSignature } from '../src/scene-repair';
 
 const options:ImportOptions={text:DEMO_STORY,sourceTitle:'The Lighthouse Letter',playerRole:'Mara',startingPoint:'The harbor',sceneCount:4,chunkSize:12000,connectionId:'model'};
 function stagedReply(input:any) {
@@ -33,6 +34,65 @@ function harness(generate: (input:any)=>Promise<unknown> = async()=>({content:'n
   } as unknown as SpindleAPI;
   return {api,stored,calls};
 }
+function repairReply(input:any){const body=JSON.parse(input.messages[1].content);return {content:JSON.stringify({id:body.scene.id,greeting:'Iona holds a letter beside the boat.',direction:'Offer the clue while leaving the response open.',assumptions:[],roles:{playerCharacterId:body.roles.playerCharacterId,narration:body.roles.narration,viewpointCharacterId:body.roles.viewpointCharacterId}}),finish_reason:'stop'};}
+describe('completed-draft scene repair',()=>{
+  test('does not repeat an uncertain request until an explicit retry and retains completed results after restart',async()=>{
+    let fail=true;const h=harness(async input=>{if(fail)throw new Error('The operation timed out');return repairReply(input);});
+    const app=new SetPointsController(h.api,'alice'),story=draft();await app.handle('save-draft',{draft:story});
+    await app.handle('start-scene-repair',{draft:story,sceneIds:['harbor'],connectionId:'model'});await app.waitForRepair();expect((await app.snapshot(null)).repairs?.retryUncertain).toBe(true);
+    fail=false;await app.handle('resume-scene-repair',{draft:story});await app.waitForRepair();expect(h.calls).toHaveLength(1);
+    await app.handle('resume-scene-repair',{draft:story,retryUncertain:true});await app.waitForRepair();expect(h.calls).toHaveLength(2);
+    const restarted=new SetPointsController(h.api,'alice'),view=await restarted.snapshot(null);expect(view.repairs?.job?.status).toBe('complete');expect(view.draft).toEqual(story);
+    await restarted.handle('apply-scene-repair',{draft:story});expect((await restarted.snapshot(null)).draft?.scenes[0].greeting).toBe('Iona holds a letter beside the boat.');expect(h.calls).toHaveLength(2);
+  });
+  test('does not replace the draft until explicitly applied and rejects an edited input',async()=>{
+    const h=harness(async input=>repairReply(input)),app=new SetPointsController(h.api,'alice'),story=draft();
+    await app.handle('save-draft',{draft:story});await app.handle('start-scene-repair',{draft:story,sceneIds:['harbor'],connectionId:'model'});await app.waitForRepair();
+    const view=await app.snapshot(null);expect(view.repairs?.job?.status).toBe('complete');expect(view.draft).toEqual(story);expect(view.repairs?.result?.scenes[0].greeting).not.toBe(story.scenes[0].greeting);
+    expect(view.repairs?.requestSignature).toBe(repairSignature(story));expect(h.calls).toHaveLength(1);
+    const edited={...story,premise:'My newer premise.'};await expect(app.handle('apply-scene-repair',{draft:edited})).rejects.toThrow('different draft version');expect((await app.snapshot(null)).draft).toEqual(story);
+    await app.handle('apply-scene-repair',{draft:story});expect((await app.snapshot(null)).draft).toEqual(view.repairs!.result);expect(h.calls).toHaveLength(1);
+    const diagnostics=JSON.stringify(await app.handle('diagnostics',{}));expect(diagnostics).not.toContain('Iona');expect(diagnostics).not.toContain('holds a letter');
+  });
+  test('resumes only the failed scene across restart and response allowance changes',async()=>{
+    let fail=true;const h=harness(async input=>{if(JSON.parse(input.messages[1].content).scene.id==='letter'&&fail)throw new Error('OpenRouter generate failed (503): unavailable');return repairReply(input);});
+    const first=new SetPointsController(h.api,'alice'),story=draft();await first.handle('save-draft',{draft:story});
+    await first.handle('start-scene-repair',{draft:story,sceneIds:['harbor','letter'],connectionId:'model'});await first.waitForRepair();
+    expect((await first.snapshot(null)).repairs?.job?.status).toBe('failed');expect(h.calls).toHaveLength(2);fail=false;
+    const second=new SetPointsController(h.api,'alice');await second.handle('resume-scene-repair',{draft:story,maxOutputTokens:32000,reasoningMode:'off'});await second.waitForRepair();
+    expect((await second.snapshot(null)).repairs?.job?.status).toBe('complete');expect(h.calls).toHaveLength(3);
+    expect(h.calls.filter(input=>JSON.parse(input.messages[1].content).scene.id==='harbor')).toHaveLength(1);expect(h.calls.at(-1).parameters.max_tokens).toBe(32000);
+    expect((await second.snapshot(null)).draft).toEqual(story);
+  });
+  test('rejects changed connection or draft on resume without a model request',async()=>{
+    const h=harness(async()=>{throw new Error('HTTP 503');}),app=new SetPointsController(h.api,'alice'),story=draft();
+    await app.handle('start-scene-repair',{draft:story,sceneIds:['harbor'],connectionId:'model'});await app.waitForRepair();
+    await expect(app.handle('resume-scene-repair',{draft:{...story,playerRole:'Another visitor'}})).rejects.toThrow('different draft version');
+    Object.assign(h.api.connections,{get:async()=>({id:'model',model:'changed',provider:'test'})});
+    await expect(app.handle('resume-scene-repair',{draft:story})).rejects.toThrow('connection changed');expect(h.calls).toHaveLength(1);
+  });
+  test('allows saving newer review edits during repair, blocks competing paid work, and cancels',async()=>{
+    const h=harness(async()=>new Promise(()=>{})),app=new SetPointsController(h.api,'alice'),story=draft();
+    await app.handle('start-scene-repair',{draft:story,sceneIds:['harbor'],connectionId:'model'});
+    await expect(app.handle('start-import',{options})).rejects.toThrow('scene repair');await expect(app.handle('test-connection',{connectionId:'model'})).rejects.toThrow('scene repair');
+    const edited={...story,premise:'Keep this newer review edit.'};await app.handle('save-draft',{draft:edited});
+    await app.handle('cancel-scene-repair',{});await app.waitForRepair();expect((await app.snapshot(null)).draft).toEqual(edited);expect((await app.snapshot(null)).repairs?.resumeAvailable).toBe(true);
+    expect(h.calls).toHaveLength(1);expect(h.calls[0].signal.aborted).toBe(true);
+  });
+  test('keeps a valid legacy draft when optional saved repair data is damaged',async()=>{
+    const h=harness();h.stored.set('alice:workspace.json',{draft:draft(),saved:null,job:null,repairInput:{draft:{},sceneIds:['harbor'],connectionId:'model'}});
+    const app=new SetPointsController(h.api,'alice'),view=await app.snapshot(null);expect(view.draft).toEqual(draft());expect(view.repairs?.job?.status).toBe('failed');
+    expect([...h.stored.keys()].some(key=>key.startsWith('alice:recovery/scene-repair-'))).toBe(true);expect(h.calls).toHaveLength(0);
+  });
+  test('modern import binds a supporting narrator separately from the player in every generated scene',async()=>{
+    const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a letter.',cast:['Mara','Iona'].map(name=>({name,aliases:[],personality:'Curious.',voice:'Direct.',relationships:'Harbor acquaintances.',knowledgeAtIntroduction:'A letter is missing.',developments:'No later changes.',sourceRefs:['chunk:1']})),setting:[],events:[{title:'Arrival',summary:'The harbor awaits.',participants:['Mara','Iona'],changes:'A conversation is possible.',sourceRefs:['chunk:1']}],warnings:[]};
+    const h=harness(async input=>{if(input.messages[1].content.startsWith('SOURCE CHUNK'))return {content:JSON.stringify(ledger),finish_reason:'stop'};
+      const body=JSON.parse(input.messages[1].content),result=stagedReply(input);if(body.task==='set-points-scenes-v1')for(const scene of result.scenes)scene.roles={playerCharacterId:'cast-1',narration:'character',viewpointCharacterId:'cast-2'};return {content:JSON.stringify(result),finish_reason:'stop'};});
+    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options:{...options,narrationMode:'character',narratorCharacter:'Iona',sourceViewpoint:'Iona in the source'}});await app.waitForImport();
+    const view=await app.snapshot(null);expect(view.job?.status).toBe('complete');expect(view.draft?.roles).toEqual({narration:'character',playerCharacterId:'cast-1',viewpointCharacterId:'cast-2',sourceViewpoint:'Iona in the source'});
+    for(const input of h.calls.slice(1))expect(input.messages[0].content).toContain('human plays Mara');expect(h.calls).toHaveLength(4);
+  });
+});
 describe('import jobs and draft storage',()=>{
   test('failed model response retains prior draft and diagnostics omit story prose',async()=>{
     const h=harness(),app=new SetPointsController(h.api,'alice');await app.handle('save-draft',{draft:draft()});
