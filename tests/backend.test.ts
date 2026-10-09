@@ -185,22 +185,35 @@ describe('import jobs and draft storage',()=>{
     expect((await resumed.snapshot(null)).diagnostics.join(' ')).toContain('Reused a saved model response');
     expect(JSON.stringify(await resumed.handle('diagnostics',{}))).not.toContain('Mara');
   });
-  test('keeps an oversized paid ledger across restart and only retries its failed shortening step',async()=>{
+  test('keeps an oversized paid ledger across restart without making a shortening request',async()=>{
     const events=Array.from({length:14},(_,index)=>({title:`Event ${index+1}`,summary:'A traveler learns about the harbor. '.repeat(60),participants:[],changes:'A new lead.',sourceRefs:['chunk:1']}));
     const oversized={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events,warnings:[]};
-    const short={...oversized,events:events.map(event=>({...event,summary:'A traveler learns about the harbor.'}))};
     expect(JSON.stringify(oversized).length).toBeGreaterThan(24000);
     let call=0;
     const h=harness(async()=>{
       call++;if(call===2)throw new Error('OpenRouter generate failed (503): unavailable');
-      return {content:JSON.stringify(call===1?oversized:call===3?short:draft()),finish_reason:'stop'};
+      return {content:JSON.stringify(call===1?oversized:draft()),finish_reason:'stop'};
     });
     const first=new SetPointsController(h.api,'alice');await first.handle('start-import',{options});await first.waitForImport();
     expect(h.calls).toHaveLength(2);expect((await first.snapshot(null)).job?.status).toBe('failed');
     const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{});await resumed.waitForImport();
-    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(4);
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(3);
     expect(h.calls.filter(input=>input.messages[1].content.startsWith('SOURCE CHUNK'))).toHaveLength(1);
-    expect(h.calls[2].messages[1].content).toContain('compact-existing-ledger');
+    expect(h.calls.every(input=>!input.messages[1].content.includes('compact-existing-ledger'))).toBe(true);
+    expect(JSON.parse(h.calls[2].messages[1].content).ledger.events).toEqual(events.map(event=>({...event,summary:event.summary.trim()})));
+  });
+  test('upgrades the actual 0.1.3 shortening-failure checkpoint without repurchasing reading or shortening',async()=>{
+    const fixture=await Bun.file(new URL('./fixtures/recovery-v013.json',import.meta.url)).json() as {files:Record<string,string>};
+    const h=harness(async()=>({content:JSON.stringify(draft()),finish_reason:'stop'}));
+    for(const [path,value] of Object.entries(fixture.files))h.stored.set(`alice:${path}`,value);
+    const app=new SetPointsController(h.api,'alice');
+    const before=await app.snapshot(null);expect(before.job?.error).toContain('after one shortening attempt');expect(before.resume?.available).toBe(true);
+    await app.handle('resume-import',{});await app.waitForImport();
+    expect((await app.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(1);
+    const input=JSON.parse(h.calls[0].messages[1].content);
+    expect(input.ledger.events).toHaveLength(14);expect(input.ledger.events[13].summary).toBe('A traveler learns about the harbor. '.repeat(60).trim());
+    expect(h.calls[0].messages[1].content).not.toContain('compact-existing-ledger');
+    const diagnostics=JSON.stringify(await app.handle('diagnostics',{}));expect(diagnostics).toContain('Reused a saved model response');expect(diagnostics).not.toContain('A traveler learns');
   });
   test('prior versions do not pretend a failed import can be recovered',async()=>{
     const h=harness();h.stored.set('alice:workspace.json',{draft:null,saved:null,job:{id:'old',status:'failed',completed:1,total:2,label:'Failed'}});

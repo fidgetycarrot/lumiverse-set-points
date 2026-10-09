@@ -175,4 +175,74 @@ describe('durable paid-response checkpoints', () => {
     await Promise.all([cache.request(messages, fingerprint, async () => { calls++; return response; }), cache.request(messages, fingerprint, async () => { calls++; return response; })]);
     expect(calls).toBe(1); expect(cache.reused).toBe(1);
   });
+  test('peek misses never create intent files or invoke a model, and cache reads leave files unchanged', async () => {
+    const h = harness(); let calls = 0;
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    expect(await cache.peek(messages, fingerprint)).toBeUndefined();
+    expect(h.files.size).toBe(0); expect(cache.reused).toBe(0);
+    await cache.request(messages, fingerprint, async () => { calls++; return response; });
+    const before = [...h.files.entries()];
+    const found = await cache.peek(messages, fingerprint) as Record<string, unknown>;
+    expect(found).toEqual(response); found.content = 'Changed by caller';
+    expect(await cache.peek(messages, fingerprint)).toEqual(response);
+    expect([...h.files.entries()]).toEqual(before); expect(calls).toBe(1);
+    expect(await new ResponseCheckpoints(h.api, 'bob').peek(messages, fingerprint)).toBeUndefined();
+    expect(await cache.peek(messages, { ...fingerprint, model: 'different' })).toBeUndefined();
+  });
+  test('peek includes retained rejected answers only on request without changing rejection state', async () => {
+    const h = harness(); let calls = 0;
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await first.request(messages, fingerprint, async () => { calls++; return response; });
+    await first.invalidateLast();
+    const before = [...h.files.entries()];
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    expect(await cache.peek(messages, fingerprint)).toBeUndefined();
+    expect(await cache.peek(messages, fingerprint, { includeRejected: true })).toEqual(response);
+    expect(cache.reused).toBe(1); expect(calls).toBe(1);
+    expect([...h.files.entries()]).toEqual(before);
+  });
+  test('peek does not change which normally delivered response invalidateLast marks', async () => {
+    const h = harness();
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    const otherMessages = [{ role: 'user' as const, content: 'Another step' }];
+    const otherResponse = { content: 'Another answer', finish_reason: 'stop' };
+    await cache.request(otherMessages, fingerprint, async () => otherResponse);
+    await cache.request(messages, fingerprint, async () => response);
+    expect(await cache.peek(otherMessages, fingerprint)).toEqual(otherResponse);
+    await cache.invalidateLast();
+    expect(await cache.peek(messages, fingerprint)).toBeUndefined();
+    expect(await cache.peek(otherMessages, fingerprint)).toEqual(otherResponse);
+  });
+  test('peek recovers complete temporary files without buying a replacement', async () => {
+    const h = harness(); let calls = 0;
+    h.fail((operation, path) => { if (operation === 'move' && !path.includes('.intent.')) throw new Error('interrupted rename'); });
+    await rejected(new ResponseCheckpoints(h.api, 'alice').request(messages, fingerprint, async () => { calls++; return response; }), 'STORAGE_ERROR');
+    const tempPath = [...h.files.keys()].find(path => /[a-f0-9]{64}\.json\.tmp$/.test(path))!;
+    const exactData = h.files.get(tempPath);
+    h.fail();
+    expect(await new ResponseCheckpoints(h.api, 'alice').peek(messages, fingerprint)).toEqual(response);
+    expect(h.files.get(tempPath.slice(0, -4))).toBe(exactData); expect(h.files.has(tempPath)).toBe(false);
+    expect(calls).toBe(1);
+  });
+  test('peek fails closed on corrupt files without altering them', async () => {
+    const h = harness();
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    await cache.request(messages, fingerprint, async () => response);
+    const path = onlyResponsePath(h.files); h.files.set(path, '{corrupt');
+    const before = [...h.files.entries()];
+    await rejected(cache.peek(messages, fingerprint, { includeRejected: true }), 'STORAGE_ERROR');
+    expect([...h.files.entries()]).toEqual(before);
+  });
+  test('peek retries saving a held paid answer, and refuses to expose it until storage succeeds', async () => {
+    const h = harness(); let calls = 0;
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    h.fail((operation, path) => { if (operation === 'write' && !path.includes('.intent.')) throw new Error('disk full'); });
+    await rejected(cache.request(messages, fingerprint, async () => { calls++; return response; }), 'STORAGE_ERROR');
+    await rejected(cache.peek(messages, fingerprint), 'STORAGE_ERROR');
+    h.fail();
+    expect(await cache.peek(messages, fingerprint)).toEqual(response);
+    await cache.invalidateLast(); // Peek did not make the held result an invalidation target.
+    expect(await cache.peek(messages, fingerprint)).toEqual(response);
+    expect(calls).toBe(1);
+  });
 });

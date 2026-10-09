@@ -1,8 +1,12 @@
 import { EXTENSION_ID, type CastMember, type ImportOptions, type StoryDraft } from './types';
 
-export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000 });
+export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
 export type GenerationMessage = { role: 'system' | 'user' | 'assistant'; content: string };
-export type Generate = (messages: GenerationMessage[], signal?: AbortSignal) => Promise<{ content: string; finish_reason?: string }>;
+type GenerationResponse = { content: string; finish_reason?: string };
+export type Generate = ((messages: GenerationMessage[], signal?: AbortSignal) => Promise<GenerationResponse>) & {
+  /** Read a previous paid answer only; this hook must never dispatch a request. */
+  peek?: (messages: GenerationMessage[], signal?: AbortSignal) => Promise<GenerationResponse | undefined>;
+};
 
 export class ImportError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'ImportError'; }
@@ -105,8 +109,8 @@ export function validateDraft(value: unknown): StoryDraft {
 
 function validateLedger(value: unknown, expectedChunks: string[], expanded = false): Ledger {
   checkSize(value, expanded ? IMPORT_LIMITS.draftCharacters : IMPORT_LIMITS.ledgerCharacters, 'The story ledger');
-  // Expanded validation is only for a bounded shortening request. Identities,
-  // relationships, references and warnings keep their ordinary validation.
+  // The old 24k target is a prompt preference, not a reason to discard valid
+  // paid work. Full ledgers remain bounded by the response's 192k safety cap.
   const descriptionLimit = (usual: number) => expanded ? IMPORT_LIMITS.draftCharacters : usual;
   const ledger = object(value, 'ledger'), allowed = new Set(expectedChunks);
   const coveredChunks = refs(ledger.coveredChunks, 'coveredChunks', allowed);
@@ -129,17 +133,27 @@ function validateLedger(value: unknown, expectedChunks: string[], expanded = fal
 }
 
 function checkCancelled(signal?: AbortSignal) { if (signal?.aborted) throw new DOMException('Import cancelled. Your existing draft was preserved.', 'AbortError'); }
-async function generateWithCancellation(generate: Generate, messages: GenerationMessage[], signal?: AbortSignal) {
+function requestFits(messages: GenerationMessage[]): boolean {
+  return JSON.stringify(messages).length <= IMPORT_LIMITS.requestCharacters;
+}
+function checkRequestSize(messages: GenerationMessage[]) {
+  if (!requestFits(messages)) fail('REQUEST_SIZE_LIMIT', 'The next request exceeds the 256,000 character input limit. No request was sent and completed responses remain saved. Import a smaller story section.');
+}
+async function withCancellation<T>(request: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   checkCancelled(signal);
-  if (!signal) return generate(messages);
+  if (!signal) return request();
   let onAbort: (() => void) | undefined;
   try {
-    return await Promise.race([generate(messages, signal), new Promise<never>((_, reject) => {
+    return await Promise.race([request(), new Promise<never>((_, reject) => {
       onAbort = () => reject(new DOMException('Import cancelled. Your existing draft was preserved.', 'AbortError'));
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) onAbort();
     })]);
   } finally { if (onAbort) signal.removeEventListener('abort', onAbort); }
+}
+async function generateWithCancellation(generate: Generate, messages: GenerationMessage[], signal?: AbortSignal) {
+  checkCancelled(signal); checkRequestSize(messages);
+  return withCancellation(() => generate(messages, signal), signal);
 }
 
 function parseModelJson(content: string, finishReason?: string): unknown {
@@ -163,18 +177,14 @@ function parseModelJson(content: string, finishReason?: string): unknown {
   return result;
 }
 
-async function requestJson<T>(messages: GenerationMessage[], generate: Generate, validate: (value: unknown) => T, signal?: AbortSignal, recoverSize?: (value: unknown) => Promise<T>): Promise<T> {
+async function requestJson<T>(messages: GenerationMessage[], generate: Generate, validate: (value: unknown) => T, signal?: AbortSignal): Promise<T> {
   let attemptMessages = messages;
   for (let attempt = 0; attempt < 2; attempt++) {
     checkCancelled(signal);
     const response = await generateWithCancellation(generate, attemptMessages, signal);
     checkCancelled(signal);
-    let parsed: unknown;
-    try { parsed = parseModelJson(response.content, response.finish_reason); return validate(parsed); }
+    try { return validate(parseModelJson(response.content, response.finish_reason)); }
     catch (error) {
-      // The recovery callback runs once, outside this schema-repair loop. It
-      // cannot cause a fresh extraction or a second shortening attempt.
-      if (parsed !== undefined && recoverSize && error instanceof ImportError && error.code === 'OUTPUT_LIMIT') return recoverSize(parsed);
       if (attempt > 0 || !(error instanceof ImportError) || !['MALFORMED_JSON', 'INVALID_SCHEMA', 'INVALID_REFERENCE', 'INCOMPLETE_SOURCE'].includes(error.code)) throw error;
       // A single bounded repair asks for the same task again, never a content-policy bypass.
       attemptMessages = [...messages, { role: 'assistant', content: response.content }, { role: 'user', content: `Your output did not match the required JSON schema: ${error.message} Return the complete corrected JSON object. Do not omit source material to fix formatting.` }];
@@ -208,40 +218,43 @@ function preserveCompactionRecords(before: Ledger, after: Ledger) {
   if (!castKept || !settingsKept || !eventsKept) fail('COMPACTION_FAILED', 'The shortened story summary changed protected characters, relationships, events, or references. No shortened version was accepted. Retry to resume earlier completed work.');
 }
 
-async function requestLedger(messages: GenerationMessage[], generate: Generate, expected: string[], signal: AbortSignal | undefined, onCompaction: (done: boolean) => void, previous: Ledger[] = []): Promise<Ledger> {
-  const prepare = (value: unknown, expanded = false) => {
-    const result = validateLedger(value, expected, expanded);
+function legacyCompactionMessages(original: Ledger): GenerationMessage[] {
+  // Keep the 0.1.3 prompt byte-for-byte stable to locate paid checkpoints.
+  return [
+      { role: 'system', content: `${sourcePolicy}\nShorten an existing story ledger using this exact shape: ${ledgerSchema}\nThis is a single recovery step; work only from the supplied ledger, without rereading or replacing the source. Aim for at most 18,000 JSON characters and never exceed ${IMPORT_LIMITS.ledgerCharacters}. Preserve every cast, setting, and event record; do not delete, combine, rename, or add records. Preserve coveredChunks and every record's sourceRefs exactly. Keep character names, aliases, relationships, event titles, participants, and setting names unchanged. Keep all input warnings verbatim. Condense repetition in other descriptions while preserving facts, personality, motivations, knowledge changes, chronology, and causal links. If any detail cannot be retained, explain it in an additional warning; never silently discard it. Each cast personality and knowledgeAtIntroduction must stay under 3,000 characters, voice under 1,500, and developments under 4,000. Keep premise and setting details under 4,000, event summary and changes under 3,000, and each warning under 1,500 characters. All fields remain required.` },
+      { role: 'user', content: JSON.stringify({ task: 'compact-existing-ledger', ledger: original }) },
+  ];
+}
+
+async function requestLedger(messages: GenerationMessage[], generate: Generate, expected: string[], signal: AbortSignal | undefined, previous: Ledger[] = []): Promise<Ledger> {
+  const original = await requestJson(messages, generate, value => {
+    const result = validateLedger(value, expected, true);
     // Restore uncertainty even if the merge/shortening model forgets it.
     result.warnings = [...new Set([...previous.flatMap(item => item.warnings), ...result.warnings, ...missingCastWarnings(previous.flatMap(item => item.cast), result.cast)])];
     if (result.warnings.length > 64) fail('COMPACTION_IMPOSSIBLE', 'The story summary has too many warnings to preserve safely in this version. No warnings were discarded. Use a shorter story section; your completed draft was not replaced.');
+    checkSize(result, IMPORT_LIMITS.draftCharacters, 'The story ledger');
     return result;
-  };
-  return requestJson(messages, generate, value => validateLedger(prepare(value, true), expected), signal, async value => {
-    const original = prepare(value, true);
-    checkSize(original, IMPORT_LIMITS.draftCharacters, 'The summary prepared for shortening');
-    // Relationships and warnings are immutable during shortening. Avoid a paid
-    // call when those fields alone already exceed the entire ledger allowance.
-    if (JSON.stringify({ warnings: original.warnings, relationships: original.cast.map(person => person.relationships) }).length >= IMPORT_LIMITS.ledgerCharacters) {
-      fail('COMPACTION_IMPOSSIBLE', 'The protected relationships and warnings alone exceed the story summary limit. They were not discarded. Use a shorter story section.');
-    }
-    checkCancelled(signal); onCompaction(false);
-    const compact = await generateWithCancellation(generate, [
-      { role: 'system', content: `${sourcePolicy}\nShorten an existing story ledger using this exact shape: ${ledgerSchema}\nThis is a single recovery step; work only from the supplied ledger, without rereading or replacing the source. Aim for at most 18,000 JSON characters and never exceed ${IMPORT_LIMITS.ledgerCharacters}. Preserve every cast, setting, and event record; do not delete, combine, rename, or add records. Preserve coveredChunks and every record's sourceRefs exactly. Keep character names, aliases, relationships, event titles, participants, and setting names unchanged. Keep all input warnings verbatim. Condense repetition in other descriptions while preserving facts, personality, motivations, knowledge changes, chronology, and causal links. If any detail cannot be retained, explain it in an additional warning; never silently discard it. Each cast personality and knowledgeAtIntroduction must stay under 3,000 characters, voice under 1,500, and developments under 4,000. Keep premise and setting details under 4,000, event summary and changes under 3,000, and each warning under 1,500 characters. All fields remain required.` },
-      { role: 'user', content: JSON.stringify({ task: 'compact-existing-ledger', ledger: original }) },
-    ], signal);
-    checkCancelled(signal);
-    try {
-      const shortened = validateLedger(parseModelJson(compact.content, compact.finish_reason), expected);
-      preserveCompactionRecords(original, shortened);
-      shortened.warnings = [...new Set([...original.warnings, ...shortened.warnings])];
-      const result = validateLedger(shortened, expected);
-      onCompaction(true); return result;
-    } catch (error) {
-      if (!(error instanceof ImportError)) throw error;
-      if (['MODEL_REFUSAL', 'TRUNCATED_RESPONSE', 'EMPTY_RESPONSE', 'COMPACTION_FAILED'].includes(error.code)) throw error;
-      fail('COMPACTION_FAILED', 'The story summary still does not fit its safe limits after one shortening attempt. No detail was silently cut. Retry to resume earlier completed work and regenerate only the failed step.');
-    }
-  });
+  }, signal);
+  try { return validateLedger(original, expected); }
+  catch (error) { if (!(error instanceof ImportError) || error.code !== 'OUTPUT_LIMIT') throw error; }
+
+  // Reuse an accepted legacy shortening only to preserve downstream cache keys.
+  // An absent or invalid saved candidate falls back to the complete original;
+  // shortening is never a new paid request.
+  if (!generate.peek) return original;
+  checkCancelled(signal);
+  const compact = await withCancellation(() => generate.peek!(legacyCompactionMessages(original), signal), signal);
+  checkCancelled(signal);
+  if (!compact) return original;
+  try {
+    const shortened = validateLedger(parseModelJson(compact.content, compact.finish_reason), expected);
+    preserveCompactionRecords(original, shortened);
+    shortened.warnings = [...new Set([...original.warnings, ...shortened.warnings])];
+    return validateLedger(shortened, expected);
+  } catch (error) {
+    if (!(error instanceof ImportError)) throw error;
+    return original;
+  }
 }
 
 /** Split without deleting, overlapping, or truncating any source characters. */
@@ -278,6 +291,26 @@ function missingCastWarnings(before: Array<{ name: string; aliases: string[] }>,
   return [...new Set(before.filter(person => ![person.name, ...person.aliases].some(name => names.has(normalize(name)))).map(person => `Review missing cast member: ${person.name} appeared in the source ledger but is not identifiable in the resulting cast. Check their relationships and role in the adaptation.`))];
 }
 
+function mergeMessages(group: Ledger[]): GenerationMessage[] {
+  return [
+    { role: 'system', content: `${sourcePolicy}\nMerge these story ledgers into one canonical ledger with this exact shape: ${ledgerSchema}\nReconcile names and aliases across sections, preserve relationships and their evolution, and order events chronologically. Do not invent resolutions for contradictory facts. coveredChunks must contain all input chunk references; all sourceRefs must point to provided chunks. Preserve major events and causal links; condense repetition. Preserve all input warnings and explain any lost detail or condensed subplots in warnings. Keep the complete result below ${IMPORT_LIMITS.ledgerCharacters} characters. All required fields must be present.` },
+    { role: 'user', content: JSON.stringify({ ledgers: group }) },
+  ];
+}
+
+function mergeGroups(ledgers: Ledger[]): Ledger[][] {
+  const groups: Ledger[][] = [];
+  for (let start = 0; start < ledgers.length;) {
+    let group = ledgers.slice(start, start + 3);
+    if (!requestFits(mergeMessages(group)) && group.length === 3) group = group.slice(0, 2);
+    // Never pay for a unary merge merely to try to squeeze two large ledgers
+    // together. A trailing singleton still follows the original cached path.
+    checkRequestSize(mergeMessages(group));
+    groups.push(group); start += group.length;
+  }
+  return groups;
+}
+
 export async function adaptStory(options: ImportOptions, generate: Generate, onProgress: (completed: number, total: number, label: string) => void, signal?: AbortSignal): Promise<StoryDraft> {
   checkCancelled(signal);
   const sceneCount = number(options.sceneCount, 'sceneCount', 1, IMPORT_LIMITS.scenes);
@@ -289,10 +322,6 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   let total = operationCount(chunks.length);
   let completed = 0;
   const progress = (label: string) => onProgress(completed, total, label);
-  const compactionProgress = (done: boolean) => {
-    if (done) completed++; else total++;
-    progress(done ? 'Shortened the existing story summary' : 'Shortening the existing story summary without rereading the source');
-  };
   let ledgers: Ledger[] = [];
   for (let i = 0; i < chunks.length; i++) {
     checkCancelled(signal); progress(`Reading source section ${i + 1} of ${chunks.length}`);
@@ -300,19 +329,18 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
     ledgers.push(await requestLedger([
       { role: 'system', content: `${sourcePolicy}\nExtract a compact, factual story ledger using this exact shape: ${ledgerSchema}\nAll arrays are required, even if empty. Use "Not established in this section" for unknown character facts. events must have at least one event. Every sourceRefs and coveredChunks must use only ${ref}. Track chronology explicitly, including later changes and flashbacks. Use canonical names and aliases without conflating different people. Keep the entire JSON below ${IMPORT_LIMITS.ledgerCharacters} characters. Record significant facts that cannot fit as warnings, never silently discard them.` },
       { role: 'user', content: `SOURCE CHUNK ${i + 1} OF ${chunks.length}\n${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` },
-    ], generate, [ref], signal, compactionProgress));
+    ], generate, [ref], signal));
     completed++; progress(`Read source section ${i + 1} of ${chunks.length}`);
   }
   let round = 1;
   while (ledgers.length > 1) {
+    const groups = mergeGroups(ledgers);
+    total = completed + operationCount(groups.length);
     const next: Ledger[] = [];
-    for (let i = 0; i < ledgers.length; i += 3) {
+    for (const group of groups) {
       checkCancelled(signal); progress(`Reconciling characters and events, pass ${round}`);
-      const group = ledgers.slice(i, i + 3), expected = group.flatMap(item => item.coveredChunks);
-      const merged = await requestLedger([
-        { role: 'system', content: `${sourcePolicy}\nMerge these story ledgers into one canonical ledger with this exact shape: ${ledgerSchema}\nReconcile names and aliases across sections, preserve relationships and their evolution, and order events chronologically. Do not invent resolutions for contradictory facts. coveredChunks must contain all input chunk references; all sourceRefs must point to provided chunks. Preserve major events and causal links; condense repetition. Preserve all input warnings and explain any lost detail or condensed subplots in warnings. Keep the complete result below ${IMPORT_LIMITS.ledgerCharacters} characters. All required fields must be present.` },
-        { role: 'user', content: JSON.stringify({ ledgers: group }) },
-      ], generate, expected, signal, compactionProgress, group);
+      const expected = group.flatMap(item => item.coveredChunks);
+      const merged = await requestLedger(mergeMessages(group), generate, expected, signal, group);
       next.push(merged); completed++; progress(`Reconciled story ledger, pass ${round}`);
     }
     ledgers = next; round++;

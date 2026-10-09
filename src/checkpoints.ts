@@ -120,6 +120,25 @@ export class ResponseCheckpoints {
       return await this.decode(await this.api.userStorage.read(path, this.userId), key, kind);
     } catch { throw storageError(); }
   }
+  /** Inspect a paid result without dispatching or selecting it for invalidation. */
+  peek(messages: GenerationMessage[], connectionFingerprint: unknown, options: { includeRejected?: boolean } = {}): Promise<unknown|undefined> {
+    return this.locked(async () => {
+      let key: string;
+      try { key = await digest(canonical({ format: FORMAT, messages, connectionFingerprint })); }
+      catch { throw storageError(); }
+      const held = this.uncommitted.get(key);
+      if (held) {
+        await this.write(held);
+        this.uncommitted.delete(key);
+        this.reused++;
+        return structuredClone(held.response);
+      }
+      const entry = await this.read(key, 'response') as Entry|undefined;
+      if (!entry || entry.state === 'rejected' && !options.includeRejected) return undefined;
+      this.reused++;
+      return structuredClone(entry.response);
+    });
+  }
   request(messages: GenerationMessage[], connectionFingerprint: unknown, generate: () => Promise<unknown>): Promise<unknown> {
     return this.locked(async () => {
       this.last = undefined;

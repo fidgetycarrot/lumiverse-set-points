@@ -9,7 +9,7 @@ const ledger = (coveredChunks = ['chunk:1']) => ({
   cast: [{ name: 'Mara', aliases: ['Mapmaker'], personality: 'Cautious and curious.', voice: 'Dry humor.', relationships: 'Elias is her brother.', knowledgeAtIntroduction: 'Elias is missing.', developments: 'She may learn he left willingly.', sourceRefs: coveredChunks }],
   setting: [{ name: 'Greyhaven', details: 'A coastal village.', sourceRefs: coveredChunks }],
   events: [{ title: 'The harbor', summary: 'Iona points toward the lighthouse.', participants: ['Mara', 'Iona'], changes: 'Mara receives a lead.', sourceRefs: coveredChunks }],
-  warnings: [],
+  warnings: [] as string[],
 });
 const draft = (overrides: Partial<StoryDraft> = {}): StoryDraft => ({
   version: 1, id: 'test-draft', title: 'The Lighthouse Letter', premise: 'Find Elias before the storm arrives.', playerRole: 'Mara', startingPoint: 'At the harbor',
@@ -200,7 +200,7 @@ describe('adaptation pipeline', () => {
     expect(called).toBe(false);
   });
 
-  test('shortens an oversized valid ledger once without rereading source or losing protected records', async () => {
+  test('accepts an oversized valid ledger without another paid shortening call or lost facts', async () => {
     const original = { ...verboseLedger(), warnings:['The arrival dates conflict.'] };
     expect(JSON.stringify(original).length).toBeGreaterThan(IMPORT_LIMITS.ledgerCharacters);
     const seen:GenerationMessage[][]=[],progress:Array<[number,number,string]>=[];
@@ -208,27 +208,18 @@ describe('adaptation pipeline', () => {
       seen.push(messages);
       if (messages[1].content.startsWith('SOURCE CHUNK')) return response(original);
       const input=JSON.parse(messages[1].content);
-      if (input.task==='compact-existing-ledger') {
-        expect(input.ledger).toEqual(original);
-        expect(messages[0].content).toContain('without rereading');
-        expect(messages[0].content).toContain('relationships');
-        expect(messages[0].content).toContain('Keep all input warnings verbatim');
-        return response({...shortenLedger(input.ledger),warnings:[]});
-      }
-      expect(input.ledger.warnings).toEqual(original.warnings);
-      expect(input.ledger.cast).toEqual(original.cast);
-      expect(input.ledger.events.map((event:{title:string})=>event.title)).toEqual(original.events.map(event=>event.title));
+      expect(input.task).toBeUndefined();
+      expect(input.ledger).toEqual(original);
       return response(draft());
     }, (...entry)=>progress.push(entry));
-    expect(seen.filter(messages=>messages[1].content.startsWith('SOURCE CHUNK'))).toHaveLength(1);
-    expect(seen).toHaveLength(3);expect(result.warnings).toContain(original.warnings[0]);
-    expect(progress.some(entry=>entry[2].includes('without rereading'))).toBe(true);
-    expect(progress.at(-1)?.slice(0,2)).toEqual([3,3]);
+    expect(seen).toHaveLength(2);
+    expect(result.warnings).toContain(original.warnings[0]);
+    expect(progress.at(-1)?.slice(0,2)).toEqual([2,2]);
   });
 
-  test('recovers when restoring merge warnings pushes an otherwise bounded ledger over the limit', async () => {
+  test('restores all merge warnings even when they push the ledger above the old target', async () => {
     const savedWarnings=[`First section: ${'uncertain chronology. '.repeat(60)}`,`Second section: ${'uncertain motives. '.repeat(60)}`].map(value=>value.trim());
-    let compactions=0,mergeCalls=0;
+    let mergeCalls=0;
     const result=await adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),async messages=>{
       if(messages[1].content.startsWith('SOURCE CHUNK')){
         const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
@@ -236,10 +227,7 @@ describe('adaptation pipeline', () => {
         return response({...ledger([input.reference]),warnings:[savedWarnings[index]]});
       }
       const input=JSON.parse(messages[1].content);
-      if(input.task==='compact-existing-ledger'){
-        compactions++;expect(input.ledger.warnings).toEqual(savedWarnings);
-        return response({...shortenLedger(input.ledger),warnings:[]});
-      }
+      expect(input.task).toBeUndefined();
       if(input.ledgers){
         mergeCalls++;
         const merged=verboseLedger(['chunk:1','chunk:2'],9);
@@ -247,16 +235,63 @@ describe('adaptation pipeline', () => {
         expect(JSON.stringify({...merged,warnings:savedWarnings}).length).toBeGreaterThan(IMPORT_LIMITS.ledgerCharacters);
         return response(merged);
       }
+      expect(input.ledger.warnings).toEqual(savedWarnings);
       return response(draft());
     },()=>{});
-    expect(mergeCalls).toBe(1);expect(compactions).toBe(1);
+    expect(mergeCalls).toBe(1);
     for(const warning of savedWarnings)expect(result.warnings).toContain(warning);
   });
 
-  test.each(['cast','relationships','references','events','chronology','settings'] as const)('rejects shortening that loses protected %s without paid repair loops', async field => {
-    const original=verboseLedger();let calls=0;
-    await expect(adaptStory(options(),async()=>{
-      calls++;if(calls===1)return response(original);
+  test('reuses valid saved shortening with byte-identical 0.1.3 extraction, shortening, and final prompts', async () => {
+    const original=verboseLedger();let calls=0,peeks=0;
+    const hash=(messages:GenerationMessage[])=>new Bun.CryptoHasher('sha256').update(JSON.stringify(messages)).digest('hex');
+    const generate:Generate=async messages=>{
+      calls++;
+      if(messages[1].content.startsWith('SOURCE CHUNK')){
+        expect(hash(messages)).toBe('8c3155f55f89e130f7e505abe529a1d0fb0cdba330f06946de8cfeb6cbb1c82b');
+        return response(original);
+      }
+      expect(hash(messages)).toBe('15213314b9440503f884c0e674be4ff5da8e37a13b4a05a128e5babc33d2097b');
+      expect(JSON.parse(messages[1].content).ledger).toEqual(shortenLedger(original));
+      return response(draft());
+    };
+    generate.peek=async messages=>{
+      peeks++;
+      expect(hash(messages)).toBe('45786b2f65b9f678188e78e5131eb503c77ac9e8a0ec6a88dae43498f9596bcb');
+      return response(shortenLedger(original));
+    };
+    await adaptStory(options(),generate,()=>{});
+    expect(calls).toBe(2);expect(peeks).toBe(1);
+  });
+
+  test('retains byte-identical 0.1.3 merge prompts', async () => {
+    await adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK')){
+        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
+        return response(ledger([input.reference]));
+      }
+      const input=JSON.parse(messages[1].content);
+      if(input.ledgers){
+        expect(new Bun.CryptoHasher('sha256').update(JSON.stringify(messages)).digest('hex')).toBe('3c9879356e50c87272d718dedf1ce4ec6a14a4781505185a172ae2f4a54688c9');
+        return response(ledger(['chunk:1','chunk:2']));
+      }
+      return response(draft());
+    },()=>{});
+  });
+
+  test.each(['cast','relationships','references','events','chronology','settings','oversized','malformed','unsafe','absent'] as const)('falls back to the original when saved shortening is %s, with no paid repair', async field => {
+    const original=verboseLedger();let calls=0,peeks=0;
+    const generate:Generate=async messages=>{
+      calls++;
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
+      expect(JSON.parse(messages[1].content).ledger).toEqual(original);
+      return response(draft());
+    };
+    generate.peek=async()=>{
+      peeks++;
+      if(field==='absent')return undefined;
+      if(field==='malformed')return {content:'{broken JSON'};
+      if(field==='oversized')return response(original);
       const compact=shortenLedger(original);
       if(field==='cast')compact.cast=[];
       if(field==='relationships')compact.cast=[{...compact.cast[0],relationships:'Elias is an acquaintance.'}];
@@ -264,90 +299,132 @@ describe('adaptation pipeline', () => {
       if(field==='events')compact.events=compact.events.slice(1);
       if(field==='chronology')compact.events=compact.events.reverse();
       if(field==='settings')compact.setting=[];
+      if(field==='unsafe')compact.premise='{{setvar::secret::value}}';
       return response(compact);
-    },()=>{})).rejects.toMatchObject({code:'COMPACTION_FAILED'});
-    expect(calls).toBe(2);
-  });
-
-  test('stops after one unsuccessful shortening call and rejects responses beyond the hard bound', async () => {
-    let calls=0;
-    await expect(adaptStory(options(),async()=>{calls++;return response(verboseLedger());},()=>{})).rejects.toThrow('one shortening attempt');
-    expect(calls).toBe(2);
-    let oversizedCalls=0;
-    await expect(adaptStory(options(),async()=>{oversizedCalls++;return response({...ledger(),premise:'x'.repeat(IMPORT_LIMITS.draftCharacters)});},()=>{})).rejects.toThrow('too large');
-    expect(oversizedCalls).toBe(1);
-  });
-
-  test('does not compact untrusted markup or rerequest a ledger while shortening is cancelled', async () => {
-    let unsafeCalls=0;
-    await expect(adaptStory(options(),async()=>{
-      unsafeCalls++;return response({...verboseLedger(),premise:'{{setvar::secret::value}}'});
-    },()=>{})).rejects.toMatchObject({code:'UNSAFE_TEMPLATE'});
-    expect(unsafeCalls).toBe(1);
-    const controller=new AbortController();let calls=0;
-    const operation=adaptStory(options(),async()=>{
-      if(++calls===1)return response(verboseLedger());
-      controller.abort();return new Promise(()=>{});
-    },()=>{},controller.signal);
-    await expect(operation).rejects.toMatchObject({name:'AbortError'});expect(calls).toBe(2);
-  });
-
-  test('exact-prompt replay resumes completed extraction and shortening without paying for them again', async () => {
-    const cache=new Map<string,Awaited<ReturnType<Generate>>>();
-    let reads=0,compactions=0,adaptations=0;
-    const generate:Generate=async messages=>{
-      const key=JSON.stringify(messages);if(cache.has(key))return structuredClone(cache.get(key)!);
-      let result;
-      if(messages[1].content.startsWith('SOURCE CHUNK')){reads++;result=response(verboseLedger());}
-      else {
-        const input=JSON.parse(messages[1].content);
-        if(input.task==='compact-existing-ledger'){compactions++;result=response(shortenLedger(input.ledger));}
-        else {if(++adaptations===1)throw new Error('Provider temporarily unavailable');result=response(draft());}
-      }
-      cache.set(key,result);return result;
     };
-    await expect(adaptStory(options(),generate,()=>{})).rejects.toThrow('temporarily unavailable');
-    const result=await adaptStory(options(),generate,()=>{});
-    expect(result.title).toBe('The Lighthouse Letter');expect(reads).toBe(1);expect(compactions).toBe(1);expect(adaptations).toBe(2);
-  });
-
-  test('a cached oversized source ledger can retry only its failed shortening response', async () => {
-    const cache=new Map<string,Awaited<ReturnType<Generate>>>();let last='',reads=0,compactions=0;
-    const generate:Generate=async messages=>{
-      const key=JSON.stringify(messages);last=key;if(cache.has(key))return structuredClone(cache.get(key)!);
-      let result;
-      if(messages[1].content.startsWith('SOURCE CHUNK')){reads++;result=response(verboseLedger());}
-      else {const input=JSON.parse(messages[1].content);result=response(input.task==='compact-existing-ledger'?(++compactions===1?input.ledger:shortenLedger(input.ledger)):draft());}
-      cache.set(key,result);return result;
-    };
-    await expect(adaptStory(options(),generate,()=>{})).rejects.toMatchObject({code:'COMPACTION_FAILED'});
-    cache.delete(last); // Host evicts only the terminal response rejected by validation.
     await adaptStory(options(),generate,()=>{});
-    expect(reads).toBe(1);expect(compactions).toBe(2);
+    expect(calls).toBe(2);expect(peeks).toBe(1);
   });
 
-  test('shortens an overlong descriptive field but avoids a paid call when protected text cannot fit', async () => {
-    let calls=0;
-    await adaptStory(options(),async messages=>{
-      calls++;
-      if(calls===1)return response({...ledger(),premise:'Detailed premise. '.repeat(400).trim()});
-      const input=JSON.parse(messages[1].content);
-      if(input.task==='compact-existing-ledger')return response({...input.ledger,premise:'Mara searches for Elias.'});
-      return response(draft());
-    },()=>{});
-    expect(calls).toBe(3);
-    let impossibleCalls=0;
-    const cache=new Map<string,Awaited<ReturnType<Generate>>>();
+  test('a cached original and rejected shortening resume with only the final adaptation request', async () => {
+    const original=verboseLedger();let paidCalls=0;
     const generate:Generate=async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original); // Saved 0.1.3 response.
+      paidCalls++;
+      expect(JSON.parse(messages[1].content).ledger).toEqual(original);
+      return response(draft());
+    };
+    generate.peek=async()=>response(original); // Saved rejected 0.1.3 shortening.
+    await adaptStory(options(),generate,()=>{});
+    expect(paidCalls).toBe(1);
+  });
+
+  test('preserves original warnings when reusing a saved shortening', async () => {
+    const original={...verboseLedger(),warnings:['The source has conflicting dates.']};
+    const generate:Generate=async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
+      expect(JSON.parse(messages[1].content).ledger.warnings).toEqual(original.warnings);
+      return response(draft());
+    };
+    generate.peek=async()=>response({...shortenLedger(original),warnings:[]});
+    expect((await adaptStory(options(),generate,()=>{})).warnings).toContain(original.warnings[0]);
+  });
+
+  test('accepts expanded descriptive fields and protected relationship text above the old target', async () => {
+    for(const original of [
+      {...ledger(),premise:'Detailed premise. '.repeat(400).trim()},
+      {...ledger(),cast:Array.from({length:7},(_,i)=>({...ledger().cast[0],name:`Character ${i}`,relationships:'A relationship fact. '.repeat(175).trim()}))},
+    ]){
+      let calls=0;
+      await adaptStory(options(),async messages=>{
+        calls++;
+        if(calls===1)return response(original);
+        expect(JSON.parse(messages[1].content).ledger).toEqual(original);
+        return response(draft());
+      },()=>{});
+      expect(calls).toBe(2);
+    }
+  });
+
+  test('rejects hard-bound output and unsafe original markup before requesting more work', async () => {
+    for(const original of [
+      {...ledger(),premise:'x'.repeat(IMPORT_LIMITS.draftCharacters)},
+      {...verboseLedger(),premise:'{{setvar::secret::value}}'},
+    ]){
+      let calls=0;
+      await expect(adaptStory(options(),async()=>{calls++;return response(original);},()=>{})).rejects.toThrow();
+      expect(calls).toBe(1);
+    }
+  });
+
+  test('propagates storage failure and cancellation during cache-only recovery', async () => {
+    let calls=0;
+    const generate:Generate=async()=>{calls++;return response(verboseLedger());};
+    generate.peek=async()=>{throw new Error('Checkpoint storage failed');};
+    await expect(adaptStory(options(),generate,()=>{})).rejects.toThrow('Checkpoint storage failed');
+    expect(calls).toBe(1);
+    const controller=new AbortController();
+    generate.peek=async()=>{controller.abort();return new Promise(()=>{});};
+    await expect(adaptStory(options(),generate,()=>{},controller.signal)).rejects.toMatchObject({name:'AbortError'});
+    expect(calls).toBe(2);
+  });
+
+  test('splits large three-way merges into bounded groups and still completes progress', async () => {
+    const sizes:number[]=[],progress:Array<[number,number,string]>=[];
+    await adaptStory(options({text:'x'.repeat(12000),chunkSize:4000}),async messages=>{
+      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(IMPORT_LIMITS.requestCharacters);
+      if(messages[1].content.startsWith('SOURCE CHUNK')){
+        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
+        return response({...ledger([input.reference]),premise:'A'.repeat(90000)});
+      }
+      const input=JSON.parse(messages[1].content);
+      if(input.ledgers){
+        sizes.push(input.ledgers.length);
+        return response(ledger(input.ledgers.flatMap((item:{coveredChunks:string[]})=>item.coveredChunks)));
+      }
+      return response(draft());
+    },(...entry)=>progress.push(entry));
+    expect(sizes).toEqual([2,1,2]);
+    expect(progress.at(-1)?.slice(0,2)).toEqual([7,7]);
+  });
+
+  test('stops locally when two complete ledgers cannot fit the request bound, with free cached resume', async () => {
+    const cache=new Map<string,Awaited<ReturnType<Generate>>>();let paidCalls=0;
+    const generate:Generate=async messages=>{
+      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(IMPORT_LIMITS.requestCharacters);
       const key=JSON.stringify(messages);if(cache.has(key))return structuredClone(cache.get(key)!);
-      impossibleCalls++;
-      const result=response({...ledger(),cast:Array.from({length:7},(_,i)=>({...ledger().cast[0],name:`Character ${i}`,relationships:'A relationship fact. '.repeat(175).trim()}))});
+      paidCalls++;
+      expect(messages[1].content).toStartWith('SOURCE CHUNK');
+      const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
+      const result=response({...ledger([input.reference]),premise:'A'.repeat(130000)});
       cache.set(key,result);return result;
     };
     for(let attempt=0;attempt<2;attempt++){
-      await expect(adaptStory(options(),generate,()=>{})).rejects.toMatchObject({code:'COMPACTION_IMPOSSIBLE'});
+      await expect(adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),generate,()=>{})).rejects.toMatchObject({code:'REQUEST_SIZE_LIMIT'});
     }
-    expect(impossibleCalls).toBe(1);
+    expect(paidCalls).toBe(2);
+  });
+
+  test('preserves bounded final-format repair after accepting a large ledger', async () => {
+    let calls=0;
+    await adaptStory(options(),async messages=>{
+      calls++;
+      if(calls===1)return response(verboseLedger());
+      if(calls===2)return {content:'{invalid JSON'};
+      expect(messages.at(-1)?.content).toContain('required JSON schema');
+      return response(draft());
+    },()=>{});
+    expect(calls).toBe(3);
+  });
+
+  test('does not dispatch a format repair when its serialized messages exceed the request bound', async () => {
+    let calls=0;
+    await expect(adaptStory(options(),async()=>{
+      calls++;
+      if(calls===1)return response({...ledger(),premise:'A'.repeat(130000)});
+      return {content:`{${' '.repeat(130000)}invalid JSON`};
+    },()=>{})).rejects.toMatchObject({code:'REQUEST_SIZE_LIMIT'});
+    expect(calls).toBe(2);
   });
 
   test('retains cached stages when all merge warnings cannot fit the warning count limit', async () => {

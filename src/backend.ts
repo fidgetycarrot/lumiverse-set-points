@@ -1,5 +1,5 @@
 import type { SpindleAPI, GenerationRequestDTO, GenerationResponseDTO, InterceptorDisposer } from 'lumiverse-spindle-types';
-import { adaptStory, ImportError, validateDraft, type GenerationMessage } from './importer';
+import { adaptStory, ImportError, validateDraft, type Generate, type GenerationMessage } from './importer';
 import { ResponseCheckpoints, CheckpointError } from './checkpoints';
 import { CardPublisher } from './publisher';
 import { SceneRuntime } from './runtime';
@@ -239,7 +239,7 @@ export class SetPointsController {
       this.jobTask = (async () => {
         let responseReturned = false;
         try {
-          const draft = await adaptStory(options, async (messages, signal) => {
+          const generate: Generate = async (messages, signal) => {
             responseReturned = false;
             controller.signal.throwIfAborted();
             const reusedBefore = this.checkpoints.reused;
@@ -247,7 +247,20 @@ export class SetPointsController {
             responseReturned = true;
             if (this.checkpoints.reused > reusedBefore) this.note('Reused a saved model response.');
             return this.readModelResponse(result);
-          }, (completed, total, label) => {
+          };
+          generate.peek = async messages => {
+            controller.signal.throwIfAborted();
+            const result = await this.checkpoints.peek(messages, connection.fingerprint, { includeRejected: true });
+            controller.signal.throwIfAborted();
+            if (result === undefined) return undefined;
+            try { return this.readModelResponse(result); }
+            catch (error) {
+              if (!(error instanceof ModelRequestError)) throw error;
+              this.note('Saved shortening response was unusable; keeping the original summary.');
+              return undefined;
+            }
+          };
+          const draft = await adaptStory(options, generate, (completed, total, label) => {
             if (this.workspace.job?.id !== job.id) return;
             this.workspace.job = { ...job, completed, total, label };
             this.changed();
@@ -261,7 +274,7 @@ export class SetPointsController {
         } catch (error) {
           const cancelled = controller.signal.aborted;
           let message = error instanceof Error ? error.message : 'Import failed. Your last completed draft is preserved.';
-          if (!cancelled && responseReturned && (error instanceof ImportError && error.code !== 'COMPACTION_IMPOSSIBLE' || error instanceof ModelRequestError)) {
+          if (!cancelled && responseReturned && (error instanceof ImportError && !['COMPACTION_IMPOSSIBLE', 'REQUEST_SIZE_LIMIT'].includes(error.code) || error instanceof ModelRequestError)) {
             try { await this.checkpoints.invalidateLast(); }
             catch { message = 'The failed step could not be marked for retry. Saved responses were retained; check extension storage before retrying.'; }
           }
