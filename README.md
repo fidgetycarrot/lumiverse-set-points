@@ -4,7 +4,7 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.1** adds multi-page story collection. It has automated tests and an interactive interface preview; it has not yet been exercised end to end inside a live Lumiverse installation with a real model connection.
+Version **0.1.2** fixes adaptation requests so they explicitly use the provider and model selected in your Lumiverse connection. It also checks that a model is configured and reports connection failures without exposing raw provider responses. Multi-page collection and the existing scene controls remain available. Live generation with a real Lumiverse model connection still needs verification.
 
 ## What it does
 
@@ -45,7 +45,7 @@ The declared `base64_decode` backend capability is needed by a bundled DOM-parse
 ## First story
 
 1. In **Import**, paste a story, open a text file, or choose **Try a sample**. For a multi-page story, open **Import from a link**, enter the first page, and choose **Read linked pages**. Review the collected pages, then choose **Use collected text**. **Read page** loads just the selected page.
-2. Enter the story title, who you will play, and where play begins. Choose the adaptation connection. The role may be an existing character or a new one.
+2. Enter the story title, who you will play, and where play begins. Choose an adaptation connection with a model configured in Lumiverse. Set Points sends that connection’s provider and model with each adaptation request. The role may be an existing character or a new one.
 3. Choose **Create adaptation**. Each section, merge, and final adaptation uses that connection and its normal provider charges. You can cancel while keeping your previous completed draft.
 4. In **Review**, edit the premise, cast, starting knowledge, world lore, narrator instructions, and scenes. Check adaptation notes and each scene's continuity assumptions. Export the draft if you want a backup.
 5. Choose **Save to Lumiverse**. Set Points creates one narrator card and attaches its world book. It does not activate the world book globally or overwrite existing cards. Repeating the identical save recovers the existing card rather than duplicating it.
@@ -101,6 +101,8 @@ Only `{{user}}` and `{{char}}` display placeholders are accepted in generated/re
 
 - **Only part of a web story loads:** use **Read linked pages** from the first page. Check the collected-page list and stopping message. Supply explicit URLs in **Other page links** if automatic navigation cannot identify the next page.
 - **No adaptation connection:** add a model connection in Lumiverse and grant `generation`, then refresh Set Points.
+- **Connection has no model:** select and save a model in that Lumiverse connection before trying again. Set Points validates the model before requesting an adaptation.
+- **An adaptation fails at the first request:** update to 0.1.2 or later, then check the selected connection’s provider, model, and credentials. Earlier versions could send an empty model name even when the connection had a model configured. The new categorized errors provide troubleshooting guidance without displaying raw provider responses, story prose, or credentials.
 - **Refused, incomplete, or malformed output:** inspect the displayed error. Check the connection, shorten the source, reduce scenes, or reduce section size as appropriate. A refusal and a broken response are different outcomes.
 - **Scene will not advance:** check Follow is on, a next scene is selected, and all scene permissions are granted. Automatic handoff depends on the model following its direction. Force remains available.
 - **An interrupted save:** retry the same reviewed draft. Owned resource markers let Set Points find an existing card or complete a partial world book. It does not delete partial work automatically. A changed draft is a new save and may produce another card.
@@ -120,7 +122,7 @@ The backend and frontend are bundled separately. Source/API compatibility was ch
 
 The local preview in `dev/preview.html` uses a mocked host and model. Build it with `bun build dev/preview.ts --outdir dev/build --target browser`, serve the repository with a static HTTP server, and open `/dev/preview.html`. It demonstrates the interface; it does not validate a real provider or installation.
 
-Tests cover source extraction, long-source merging, schema/refusal/truncation errors, cancellation, draft isolation, partial-save recovery, permission changes, direct host-shaped generated replies, duplicate/stale handoffs, scene edits, Undo, and interface state preservation.
+The test suite covers source extraction, long-source merging, schema/refusal/truncation errors, cancellation, draft isolation, partial-save recovery, permission changes, direct host-shaped generated replies, duplicate/stale handoffs, scene edits, Undo, and interface state preservation. See `BUILD-REPORT.md` for release-specific verification and outstanding live checks.
 
 ## Credits
 

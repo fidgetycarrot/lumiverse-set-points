@@ -1,4 +1,4 @@
-import type { SpindleAPI, GenerationResponseDTO, InterceptorDisposer } from 'lumiverse-spindle-types';
+import type { SpindleAPI, GenerationRequestDTO, GenerationResponseDTO, InterceptorDisposer } from 'lumiverse-spindle-types';
 import { adaptStory, validateDraft } from './importer';
 import { CardPublisher } from './publisher';
 import { SceneRuntime } from './runtime';
@@ -9,14 +9,36 @@ const STATE_PATH = 'workspace.json';
 type Workspace = { draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null };
 function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function string(value: unknown, name: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required.`); return value; }
-function providerError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/abort|cancel/i.test(message)) return new Error('The model request was cancelled or timed out. Your previous draft is still available.');
-  if (/401|unauthori|api.?key/i.test(message)) return new Error('The model connection could not authenticate. Check that connection in Lumiverse.');
-  if (/429|rate.limit|quota|credits|balance/i.test(message)) return new Error('The model provider reported a rate or credit limit. Check your connection and try again later.');
-  if (/context|too.long|maximum.*token/i.test(message)) return new Error('The model could not fit this request. Choose a larger-context connection or a smaller section size.');
-  if (/refus|content.filter|safety|moderation/i.test(message)) return new Error('The model provider declined this request. No replacement content was saved.');
-  return new Error('The model request failed. Check the selected connection in Lumiverse. No source text was written to diagnostic logs.');
+// Lumiverse 1.2's raw worker API requires these fields even with connection_id.
+// spindle-types 0.6.40 omits them from GenerationRequestDTO.
+type RawModelRequest = GenerationRequestDTO & { provider: string; model: string };
+type ModelFailureCode = 'TIMEOUT' | 'CANCELLED' | 'AUTHENTICATION' | 'RATE_LIMIT' | 'CONTEXT_LIMIT' | 'DECLINED' | 'MODEL_UNAVAILABLE' | 'INVALID_REQUEST' | 'PROVIDER_UNAVAILABLE' | 'CONNECTION_FAILED' | 'REQUEST_FAILED';
+class ModelRequestError extends Error {
+  constructor(readonly code: ModelFailureCode, message: string, readonly status?: number) {
+    super(`${message} (${code}${status ? `; HTTP ${status}` : ''})`);
+  }
+}
+function providerError(error: unknown): ModelRequestError {
+  const value = record(error);
+  const message = typeof value.message === 'string' ? value.message : typeof error === 'string' ? error : '';
+  // Providers can echo the prompt, URL, or credentials. Only fixed categories and
+  // a validated HTTP status may leave this function; never retain the raw error.
+  const candidate = value.status ?? value.statusCode ?? record(value.response).status
+    ?? message.match(/\b(?:HTTP(?:\s+error)?|API\s+error|status(?:\s+code)?)\s*[:=]?\s*([45]\d{2})\b/i)?.[1]
+    ?? message.match(/\bfailed\s*\(([45]\d{2})\):/i)?.[1];
+  const status = /^[45]\d{2}$/.test(String(candidate)) ? Number(candidate) : undefined;
+  const failure = (code: ModelFailureCode, text: string) => new ModelRequestError(code, text, status);
+  if (/timeout|timed?\s*out/i.test(message) || value.name === 'TimeoutError') return failure('TIMEOUT', 'The model request took too long. Retry with a smaller section size or a faster connection.');
+  if (/abort|cancel/i.test(message) || value.name === 'AbortError') return failure('CANCELLED', 'The model request was cancelled. Your previous draft is still available.');
+  if (/fetch failed|network|ECONN|ENOTFOUND|connection refused/i.test(message)) return failure('CONNECTION_FAILED', 'Lumiverse could not reach the model provider. Check the connection and try again.');
+  if (/refus|content.filter|safety|moderation/i.test(message)) return failure('DECLINED', 'The model provider declined this request. No replacement content was saved.');
+  if (status === 401 || status === 403 || /\b401\b|unauthori|api.?key|authentication/i.test(message)) return failure('AUTHENTICATION', 'The model connection could not authenticate or access this model. Check that connection in Lumiverse.');
+  if (status === 429 || status === 402 || /\b429\b|rate.limit|quota|credits|balance/i.test(message)) return failure('RATE_LIMIT', 'The model provider reported a rate or credit limit. Check your connection and try again later.');
+  if (/context|too.long|maximum.*token/i.test(message)) return failure('CONTEXT_LIMIT', 'The model could not fit this request. Choose a larger-context connection or a smaller section size.');
+  if (/model.{0,80}(?:not found|not available|does not exist|invalid|unknown|required|missing|empty|unsupported)|(?:unknown|invalid|missing|unsupported)\s+model/i.test(message)) return failure('MODEL_UNAVAILABLE', 'The provider could not use the selected model. Re-select the model in your Lumiverse connection and retry.');
+  if (status === 400 || status === 422 || /unsupported.{0,60}(?:parameter|temperature|max_tokens)|invalid.{0,30}(?:parameter|request)/i.test(message)) return failure('INVALID_REQUEST', 'The model rejected the request settings. Share the error code and your provider/model to help troubleshoot.');
+  if (status && status >= 500) return failure('PROVIDER_UNAVAILABLE', 'The model provider reported a server error. Try again later.');
+  return failure('REQUEST_FAILED', 'The model request failed. Share the error code and your provider/model to help troubleshoot. No source text was written to diagnostic logs.');
 }
 
 export class SetPointsController {
@@ -92,7 +114,11 @@ export class SetPointsController {
       if (options.sourceTitle.length > 300 || options.playerRole.length > 2000 || options.startingPoint.length > 2000) throw new Error('Keep the title under 300 characters and role/starting point under 2,000 characters.');
       if (options.sourceUrl) options.sourceUrl = storyUrl(options.sourceUrl);
       const connectionId = string(options.connectionId, 'Adaptation model connection');
-      if (!await this.api.connections.get(connectionId, this.userId)) throw new Error('The selected model connection is no longer available.');
+      const connection = await this.api.connections.get(connectionId, this.userId);
+      if (!connection) throw new Error('The selected model connection is no longer available.');
+      if (!connection.model?.trim()) throw new Error('The selected connection has no model. Choose a model for that connection in Lumiverse, then retry.');
+      if (!connection.provider?.trim()) throw new Error('The selected connection has no provider. Edit that connection in Lumiverse, then retry.');
+      const { model, provider } = connection;
       this.abort = new AbortController();
       const controller = this.abort;
       const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: 'Preparing the story' };
@@ -107,8 +133,13 @@ export class SetPointsController {
             const deadline = AbortSignal.timeout(180_000);
             let result: unknown;
             try {
-              result = await this.api.generate.raw({ type: 'raw', connection_id: connectionId, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: 16000 }, signal: AbortSignal.any([signal ?? controller.signal, deadline]) });
-            } catch (error) { throw providerError(error); }
+              const request: RawModelRequest = { type: 'raw', connection_id: connectionId, provider, model, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: 16000 }, signal: AbortSignal.any([signal ?? controller.signal, deadline]) };
+              result = await this.api.generate.raw(request);
+            } catch (error) {
+              const failure = providerError(deadline.aborted && !controller.signal.aborted ? new DOMException('The model request timed out.', 'TimeoutError') : error);
+              this.note(`Model request failed: ${failure.code}${failure.status ? `; HTTP ${failure.status}` : ''}.`);
+              throw failure;
+            }
             const value = record(result);
             if (value.refusal || /content_filter|safety|refusal/i.test(String(value.finish_reason))) throw new Error('The model provider declined this request. No replacement content was saved.');
             if (typeof value.content !== 'string') throw new Error('The model returned no readable content. Check your selected connection.');

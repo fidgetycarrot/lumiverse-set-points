@@ -1,5 +1,5 @@
 export const EXTENSION_ID = 'lumiverse_set_points';
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 export interface CastMember { id: string; name: string; aliases: string[]; personality: string; voice: string; relationships: string; knowledge: string; sourceRefs: string[] }
 export interface LoreEntry { id: string; name: string; keys: string[]; content: string }
 export interface StoryScene { id: string; title: string; greeting: string; direction: string; assumptions: string[]; sourceRefs: string[] }
