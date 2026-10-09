@@ -2,7 +2,7 @@ import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ReasoningMode, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
 import { styles } from './styles';
 import { appearanceMentions } from './appearance-review';
-import { visualCaption, visualDraftSignature, visualTagPrompt, UNSPECIFIED_APPEARANCE, type VisualPack } from './visuals';
+import { visualCaption, visualDraftSignature, visualTagPrompt, emptyVisualText, incompleteVisualText, type VisualPack } from './visuals';
 import { collectStoryPages, type WebCollection, type WebCollectionProgress } from './web-import';
 
 const MAX_SOURCE = 500_000;
@@ -461,6 +461,17 @@ export function setup(ctx: SpindleFrontendContext) {
     for(const profile of pack.profiles){
       const name=draft?.cast.find(person=>person.id===profile.characterId)?.name??profile.characterId;
       const entry=details(name);let includeSuggestions=false;
+      if(profile.reviewFacts?.length){
+        entry.root.open=true;
+        const review=details('Source facts to review'),facts=profile.reviewFacts,items=group(),count=paragraph('','sp-hint');let shown=0;
+        const more=button('Show more source facts',()=>showFacts());
+        function showFacts(){
+          for(const fact of facts.slice(shown,shown+8))items.append(group(node('span','sp-label',fact.kind==='identity'?'Subject':fact.kind==='clothing'?'Starting outfit':'Appearance'),paragraph(fact.text,'sp-small'),paragraph(`Source: ${fact.sourceRefs.join(' · ')}`,'sp-hint')));
+          shown=Math.min(facts.length,shown+8);count.textContent=`Showing ${shown} of ${facts.length} retained source facts.`;more.hidden=shown>=facts.length;
+        }
+        showFacts();review.root.open=true;
+        review.body.append(paragraph('These extracted facts were not cited in the generated description. Some may already be expressed in different words. Compare them with the fields below and add any missing details you want. They stay in this backup but are not automatically included in copied prompts or approved appearances.','sp-hint'),count,items,more);entry.body.append(review.root);
+      }
       const editable=(label:string,value:string,assign:(value:string)=>void,hint?:string)=>field(label,value,v=>{assign(v);change();updatePrompts();},{area:true,rows:3,hint});
       const appearance=editable(`${name}: appearance from the story`,profile.description,v=>profile.description=v,'Source facts only. Keep invented choices in Suggested details below.');
       const outfit=editable(`${name}: starting outfit from the story`,profile.startingOutfit,v=>profile.startingOutfit=v);
@@ -479,7 +490,7 @@ export function setup(ctx: SpindleFrontendContext) {
       const caption=field(`${name}: caption to copy`,'',undefined,{area:true,rows:3});caption.input.readOnly=true;
       function updatePrompts(){tags.input.value=visualTagPrompt(profile,includeSuggestions);caption.input.value=visualCaption(profile,includeSuggestions);}
       updatePrompts();
-      entry.body.append(appearance.wrap,button(`Copy ${name} appearance`,()=>copyVisualText(profile.description,appearance.input,'Appearance')),outfit.wrap,button(`Copy ${name} outfit`,()=>copyVisualText(profile.startingOutfit,outfit.input,'Outfit')),subject.wrap,count.wrap,appearanceTags.wrap,button(`Copy ${name} appearance tags`,()=>copyVisualText(profile.appearanceTags.join(', '),appearanceTags.input,'Appearance tags')),outfitTags.wrap,button(`Copy ${name} outfit tags`,()=>copyVisualText(profile.outfitTags.join(', '),outfitTags.input,'Outfit tags')),suggestions.root);
+      entry.body.append(appearance.wrap,button(`Copy ${name} appearance`,()=>{if(emptyVisualText(profile.description))throw new Error('Enter the reviewed appearance before copying it.');return copyVisualText(profile.description,appearance.input,'Appearance');}),outfit.wrap,button(`Copy ${name} outfit`,()=>{if(emptyVisualText(profile.startingOutfit))throw new Error('Enter the reviewed outfit before copying it.');return copyVisualText(profile.startingOutfit,outfit.input,'Outfit');}),subject.wrap,count.wrap,appearanceTags.wrap,button(`Copy ${name} appearance tags`,()=>copyVisualText(profile.appearanceTags.join(', '),appearanceTags.input,'Appearance tags')),outfitTags.wrap,button(`Copy ${name} outfit tags`,()=>copyVisualText(profile.outfitTags.join(', '),outfitTags.input,'Outfit tags')),suggestions.root);
       if(profile.unknowns.length){entry.body.append(node('span','sp-label','Not established in the source'));for(const unknown of profile.unknowns)entry.body.append(paragraph(unknown,'sp-notice'));}
       if(profile.sourceRefs.length)entry.body.append(paragraph(`Source: ${profile.sourceRefs.join(' · ')}`,'sp-hint'));
       entry.body.append(includeLabel,tags.wrap,button(`Copy ${name} Anima tags`,()=>copyVisualText(tags.input.value,tags.input,'Anima tags')),caption.wrap,button(`Copy ${name} caption`,()=>copyVisualText(caption.input.value,caption.input,'Caption')));visualResults.append(entry.root);
@@ -488,12 +499,14 @@ export function setup(ctx: SpindleFrontendContext) {
       if(!draft||visualDraftSignature(draft)!==signature)throw new Error('These descriptions belong to an earlier version of the draft.');
       for(const profile of pack.profiles){
         if(!draft.cast.some(person=>person.id===profile.characterId))continue;
-        const approved={characterId:profile.characterId,description:profile.description===UNSPECIFIED_APPEARANCE?'':profile.description,startingOutfit:profile.startingOutfit===UNSPECIFIED_APPEARANCE?'':profile.startingOutfit};
+        const existing=draft.appearances?.find(item=>item.characterId===profile.characterId);
+        const approve=(value:string,previous?:string)=>incompleteVisualText(value)?previous??'':emptyVisualText(value)?'':value;
+        const approved={characterId:profile.characterId,description:approve(profile.description,existing?.description),startingOutfit:approve(profile.startingOutfit,existing?.startingOutfit)};
         const index=draft.appearances?.findIndex(item=>item.characterId===profile.characterId)??-1;
         if(index>=0)draft.appearances![index]=approved;else(draft.appearances??=[]).push(approved);
       }
-      draftDirty=true;renderReview();notify('Source appearances copied into the approved story fields. Review them, then Save draft or Save to Lumiverse. Suggestions were not copied.');
-    }),paragraph('Replaces the approved appearance and starting outfit fields with the source facts shown here. Unspecified details stay blank. Suggested details are not copied; choose them yourself in the approved fields if wanted.','sp-hint'));
+      draftDirty=true;renderReview();notify('Source appearances copied into the approved story fields. Review them, then Save draft or Save to Lumiverse. Suggestions were not copied. Retained source facts stay separate; incomplete fields keep your earlier approved choice.');
+    }),paragraph('Replaces the approved appearance and starting outfit fields with the source prose shown here. Unspecified details stay blank; incomplete fields keep your earlier approved choice. Retained source facts and suggested details are not copied. Review and edit the prose before approving it.','sp-hint'));
     visualResults.append(row(button('Save descriptions',async()=>{
       if(!draft||visualDraftSignature(draft)!==signature)throw new Error('These descriptions belong to an earlier version of the draft.');
       const requested=clone(pack),fingerprint=JSON.stringify(requested);
@@ -603,7 +616,7 @@ export function setup(ctx: SpindleFrontendContext) {
       function updateApproved(){
         const choice=approved();approvedCaption.input.value=[choice?.description,choice?.startingOutfit].map(value=>value?.trim()??'').filter(Boolean).join(' ');approvedCopy.disabled=!approvedCaption.input.value;
         const signature=visualDraftSignature(current),profile=snapshot?.visuals?.resultSignature===signature?visualEditors.get(signature)?.pack.profiles.find(item=>item.characterId===person.id):undefined;
-        const normalized=(value:string)=>value===UNSPECIFIED_APPEARANCE?'':value.trim().replace(/\s+/g,' ');
+        const normalized=(value:string)=>emptyVisualText(value)?'':value.trim().replace(/\s+/g,' ');
         appearanceMismatch.hidden=!(choice&&profile&&(normalized(choice.description)!==normalized(profile.description)||normalized(choice.startingOutfit)!==normalized(profile.startingOutfit)));
       }
       approvedControls.set(person.id,updateApproved);updateApproved();

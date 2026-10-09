@@ -3,7 +3,7 @@ import { Window } from 'happy-dom';
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { createRpc, setup } from '../src/frontend';
 import { validateDraft } from '../src/importer';
-import { visualDraftSignature, type VisualPack } from '../src/visuals';
+import { INCOMPLETE_APPEARANCE, visualDraftSignature, type VisualPack } from '../src/visuals';
 import type { AppSnapshot, StoryDraft, WebStoryPage } from '../src/types';
 
 const cleanups:Array<()=>void>=[];
@@ -261,6 +261,30 @@ const visualFixture=():VisualPack=>({version:1,draftId:'draft-a',profiles:[{char
 function readyVisuals(app:ReturnType<typeof harness>){const signature=visualDraftSignature(app.state.draft!);app.state.visuals={job:null,pack:visualFixture(),resultSignature:signature,sourceSignature:signature,requestSignature:signature,resumeAvailable:false,retryUncertain:false};}
 
 describe('optional image descriptions',()=>{
+  test('shows retained facts for review in batches and saves them without approving or copying them',async()=>{
+    const app=harness();readyVisuals(app);
+    const facts=Array.from({length:10},(_,i)=>({kind:'identity' as const,text:`Retained source detail ${i+1}.`,sourceRefs:['chunk:1']}));
+    app.state.visuals!.pack!.profiles[0].reviewFacts=facts;await tick();
+    expect(app.root.textContent).toContain('Showing 8 of 10 retained source facts');
+    const review=Array.from(app.root.querySelectorAll('details')).find(item=>item.querySelector(':scope > summary')?.textContent==='Source facts to review')!;
+    expect(review.open).toBe(true);expect(review.parentElement?.closest('details')?.hasAttribute('open')).toBe(true);
+    expect(app.field('Iona: caption to copy').value).not.toContain('Retained source detail');
+    app.button('Show more source facts').click();expect(review.textContent).toContain('Retained source detail 10.');expect(app.button('Show more source facts').hidden).toBe(true);
+    app.button('Use these appearances in story').click();expect(JSON.stringify(app.state.draft)).not.toContain('Retained source detail');
+    app.button('Save descriptions').click();await tick();expect(app.requests.find(item=>item.action==='save-visuals')?.input.pack.profiles[0].reviewFacts).toEqual(facts);
+    app.button('Export descriptions').click();await tick();expect(JSON.parse(app.field('JSON backup').value).profiles[0].reviewFacts).toEqual(facts);
+    expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+  });
+  test('incomplete source descriptions preserve prior approved choices and keep notices out of captions',async()=>{
+    const app=harness();readyVisuals(app);const value=app.state.visuals!.pack!.profiles[0];
+    value.description=INCOMPLETE_APPEARANCE;value.startingOutfit=INCOMPLETE_APPEARANCE;value.appearanceTags=[];value.outfitTags=[];
+    value.reviewFacts=[{kind:'appearance',text:'A retained look to review.',sourceRefs:['chunk:1']}];await tick();
+    app.input('Iona: approved appearance','My chosen green eyes');app.input('Iona: approved starting outfit','My chosen coat');
+    expect(app.field('Iona: caption to copy').value).not.toContain(INCOMPLETE_APPEARANCE);
+    app.button('Use these appearances in story').click();expect(app.field('Iona: approved appearance').value).toBe('My chosen green eyes');expect(app.field('Iona: approved starting outfit').value).toBe('My chosen coat');
+    app.button('Copy Iona appearance').click();await tick();expect(app.root.querySelector('[role="status"]')?.textContent).toContain('Enter the reviewed appearance');
+    app.input('Iona: appearance from the story','The reviewed look.');app.button('Use these appearances in story').click();expect(app.field('Iona: approved appearance').value).toBe('The reviewed look.');
+  });
   test('requires explicit matching source and keeps Import text separate until copied',async()=>{
     const app=harness();await tick();app.input('Story text','Original story. '.repeat(20));app.button('Review').click();
     expect(app.field('Original story for these descriptions').value).toBe('');app.button('Create image descriptions').click();await tick();expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);

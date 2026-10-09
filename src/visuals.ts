@@ -13,10 +13,14 @@ export interface VisualProfile {
   sourceRefs: string[];
   subject: string;
   countTag: '1girl' | '1boy' | '1other' | '';
+  reviewFacts?: { kind: FactKind; text: string; sourceRefs: string[] }[];
 }
 export interface VisualPack { version: 1; draftId: string; profiles: VisualProfile[]; warnings: string[] }
 export const VISUAL_LIMITS = Object.freeze({ profiles: 64, tags: 32, outfitTags: 12, tagCharacters: 72, tagWords: 7, packCharacters: 4_000_000 });
 export const UNSPECIFIED_APPEARANCE = 'Not specified in the source.';
+export const INCOMPLETE_APPEARANCE = 'Source facts available; description needs review.';
+export const incompleteVisualText = (value: string) => value === INCOMPLETE_APPEARANCE;
+export const emptyVisualText = (value: string) => value === UNSPECIFIED_APPEARANCE || incompleteVisualText(value);
 
 type RecordValue = Record<string, unknown>;
 type FactKind = 'appearance' | 'clothing' | 'identity';
@@ -87,9 +91,14 @@ export function validateVisualPack(value: unknown, draft?: StoryDraft, chunks = 
     const countTag = text(profile.countTag, `${path}.countTag`, 8, true);
     if (!['', '1girl', '1boy', '1other'].includes(countTag)) fail('INVALID_SCHEMA', `${path}.countTag must be empty, 1girl, 1boy, or 1other.`);
     const result: VisualProfile = { characterId, description: text(profile.description, `${path}.description`, 4000), appearanceTags: tags(profile.appearanceTags, `${path}.appearanceTags`), startingOutfit: text(profile.startingOutfit, `${path}.startingOutfit`, 2000), outfitTags: tags(profile.outfitTags, `${path}.outfitTags`, VISUAL_LIMITS.outfitTags), suggestedDetails: text(profile.suggestedDetails, `${path}.suggestedDetails`, 2000, true), suggestedTags: tags(profile.suggestedTags, `${path}.suggestedTags`), unknowns: texts(profile.unknowns, `${path}.unknowns`, 32, 200), sourceRefs: sourceRefs(profile.sourceRefs, `${path}.sourceRefs`, chunks), subject: text(profile.subject, `${path}.subject`, 200, true), countTag: countTag as VisualProfile['countTag'] };
+    if (profile.reviewFacts !== undefined) result.reviewFacts = list(profile.reviewFacts, `${path}.reviewFacts`, 48 * 128).map((value, index) => {
+      const factPath = `${path}.reviewFacts[${index}]`, fact = object(value, factPath), kind = text(fact.kind, `${factPath}.kind`, 20);
+      if (!['appearance', 'clothing', 'identity'].includes(kind)) fail('INVALID_SCHEMA', `${factPath} has an unsupported fact kind.`);
+      return { kind: kind as FactKind, text: text(fact.text, `${factPath}.text`, 1000), sourceRefs: sourceRefs(fact.sourceRefs, `${factPath}.sourceRefs`, chunks) };
+    });
     if (result.suggestedTags.length && !result.suggestedDetails) fail('INVALID_SCHEMA', 'Suggested tags need a separate suggested-details explanation.');
-    if (result.description === UNSPECIFIED_APPEARANCE && result.appearanceTags.length) fail('INVALID_SCHEMA', 'An unspecified appearance cannot include canonical appearance tags.');
-    if (result.startingOutfit === UNSPECIFIED_APPEARANCE && result.outfitTags.length) fail('INVALID_SCHEMA', 'An unspecified outfit cannot include canonical outfit tags.');
+    if (emptyVisualText(result.description) && result.appearanceTags.length) fail('INVALID_SCHEMA', 'An unspecified appearance cannot include canonical appearance tags.');
+    if (emptyVisualText(result.startingOutfit) && result.outfitTags.length) fail('INVALID_SCHEMA', 'An unspecified outfit cannot include canonical outfit tags.');
     return result;
   });
   if (expected && (profiles.length !== expected.size || [...expected].some(id => !seen.has(id)))) fail('INVALID_SCHEMA', 'Appearance profiles must include every cast member from the selected draft.');
@@ -100,7 +109,7 @@ export function visualTagPrompt(profile: VisualProfile, includeSuggestions = fal
   return [...new Set([profile.countTag, ...profile.appearanceTags, ...profile.outfitTags, ...(includeSuggestions ? profile.suggestedTags : [])].map(value => value.trim()).filter(Boolean))].join(', ');
 }
 export function visualCaption(profile: VisualProfile, includeSuggestions = false): string {
-  return [profile.subject, profile.description, profile.startingOutfit, ...(includeSuggestions ? [profile.suggestedDetails] : [])].map(value => value.trim()).filter(value => value && value !== UNSPECIFIED_APPEARANCE).join(' ');
+  return [profile.subject, profile.description, profile.startingOutfit, ...(includeSuggestions ? [profile.suggestedDetails] : [])].map(value => value.trim()).filter(value => value && !emptyVisualText(value)).join(' ');
 }
 
 function unknownProfile(characterId: string): VisualProfile {
@@ -127,17 +136,17 @@ function validateFacts(value: unknown, ids: Set<string>, source: { ref: string; 
 function validateConstructed(value: unknown, characterId: string, facts: VisualFact[], draft: StoryDraft, chunks: number): { profile: VisualProfile; warnings: string[] } {
   const input = object(value, 'visual profile'), raw = object(input.profile, 'profile'), grounding = object(input.grounding, 'grounding');
   if (raw.characterId !== characterId) fail('INVALID_SCHEMA', 'The visual profile must keep the requested character ID.');
-  const byId = new Map(facts.map(fact => [fact.id, fact])), used = new Set<string>();
+  const byId = new Map(facts.map(fact => [fact.id, fact]));
   const grounded = (value: unknown, path: string, kind: FactKind, required: boolean) => {
     const ids = supportingFactIds(value, path, facts.length);
     if (required && !ids.length) fail('INVALID_REFERENCE', `${path} needs at least one supporting source fact.`);
     if (!required && ids.length) fail('INVALID_REFERENCE', `${path} must be empty when the corresponding canonical field is unspecified.`);
     if (ids.some(id => !byId.has(id) || byId.get(id)!.kind !== kind || byId.get(id)!.timing !== 'start')) fail('INVALID_REFERENCE', `${path} uses an unknown, future, or incompatible source fact.`);
-    ids.forEach(id => used.add(id));return ids;
+    return ids;
   };
-  const candidate = validateVisualPack({ version: 1, draftId: draft.id, profiles: [{ ...raw, sourceRefs: [] }], warnings: [] }, undefined, chunks).profiles[0];
-  const descriptionFacts = grounded(grounding.description, 'grounding.description', 'appearance', candidate.description !== UNSPECIFIED_APPEARANCE);
-  const outfitFacts = grounded(grounding.startingOutfit, 'grounding.startingOutfit', 'clothing', candidate.startingOutfit !== UNSPECIFIED_APPEARANCE);
+  const candidate = validateVisualPack({ version: 1, draftId: draft.id, profiles: [{ ...raw, sourceRefs: [], reviewFacts: undefined }], warnings: [] }, undefined, chunks).profiles[0];
+  const descriptionFacts = grounded(grounding.description, 'grounding.description', 'appearance', !emptyVisualText(candidate.description));
+  const outfitFacts = grounded(grounding.startingOutfit, 'grounding.startingOutfit', 'clothing', !emptyVisualText(candidate.startingOutfit));
   const identityFacts = grounded(grounding.subject, 'grounding.subject', 'identity', candidate.subject !== '');
   grounded(grounding.countTag, 'grounding.countTag', 'identity', candidate.countTag !== '');
   for (const [key, kind] of [['appearanceTags', 'appearance'], ['outfitTags', 'clothing']] as const) {
@@ -145,15 +154,21 @@ function validateConstructed(value: unknown, characterId: string, facts: VisualF
     if (references.length !== candidate[key].length) fail('INVALID_REFERENCE', `Every ${key} tag needs its own supporting source facts.`);
     references.forEach((ids, index) => grounded(ids, `grounding.${key}[${index}]`, kind, true));
   }
-  // Source descriptions cannot disappear merely because the tag renderer omits
-  // them. Every starting visual fact must contribute to a canonical field.
+  // Coverage is a review concern, not a reason to buy another model repair.
+  // Preserve uncited facts separately; do not guess whether prose covers them
+  // or silently append potentially conflicting traits to a copied prompt.
   const described = new Set([...descriptionFacts, ...outfitFacts, ...identityFacts]);
-  if (facts.some(fact => !described.has(fact.id))) fail('INVALID_REFERENCE', 'The profile did not account for every supplied starting visual fact. Include those details in the description, outfit, or subject.');
-  candidate.sourceRefs = [...new Set(facts.filter(fact => used.has(fact.id)).flatMap(fact => fact.sourceRefs))];
+  const missing = facts.filter(fact => !described.has(fact.id));
+  if (missing.length) candidate.reviewFacts = missing.map(fact => ({ kind: fact.kind, text: fact.text, sourceRefs: [...fact.sourceRefs] }));
+  if (emptyVisualText(candidate.description) && missing.some(fact => fact.kind === 'appearance')) candidate.description = INCOMPLETE_APPEARANCE;
+  if (emptyVisualText(candidate.startingOutfit) && missing.some(fact => fact.kind === 'clothing')) candidate.startingOutfit = INCOMPLETE_APPEARANCE;
+  candidate.sourceRefs = [...new Set(facts.flatMap(fact => fact.sourceRefs))];
   if (!facts.some(fact => fact.kind === 'appearance')) candidate.unknowns = [...new Set([...candidate.unknowns, 'Appearance at the chosen starting point.'])];
   if (!facts.some(fact => fact.kind === 'clothing')) candidate.unknowns = [...new Set([...candidate.unknowns, 'Outfit at the chosen starting point.'])];
   const profile = validateVisualPack({ version: 1, draftId: draft.id, profiles: [candidate], warnings: [] }, undefined, chunks).profiles[0];
-  return { profile, warnings: texts(input.warnings, 'warnings', 8, 1000) };
+  const warnings = texts(input.warnings, 'warnings', 8, 1000);
+  if (missing.length) warnings.push(`Character ${draft.cast.findIndex(person => person.id === characterId) + 1}: ${missing.length} extracted starting facts were not cited in the generated prose. They are retained under Source facts to review. Review them before approving or copying this profile.`);
+  return { profile, warnings };
 }
 
 /** Models sometimes wrap IDs in per-sentence lists or reference objects.

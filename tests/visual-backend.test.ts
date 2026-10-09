@@ -75,6 +75,25 @@ async function completeMain(h: ReturnType<typeof harness>, app: SetPointsControl
 function paidResponsePaths(h: ReturnType<typeof harness>) { return [...h.stored.keys()].filter(path => /imports\/responses\/[a-f0-9]{64}\.json$/.test(path)); }
 
 describe('optional visual jobs keep story and appearance recovery separate', () => {
+  test('resumes a published 0.1.7 coverage failure and retains uncited facts with zero new paid requests', async () => {
+    const saved = await Bun.file(new URL('./fixtures/visual-coverage-v017.json', import.meta.url)).json();
+    const h = harness(async () => { throw new Error('Recovery must not call the provider'); });
+    for (const [path, value] of saved.stored) h.stored.set(path, value);
+    const before = h.workspace(), app = new SetPointsController(h.api, 'alice');
+    expect((await app.snapshot(null)).visuals?.job?.error).toContain('The profile did not account for every supplied starting visual fact.');
+    await app.handle('resume-visuals', {}); await app.waitForVisuals();
+    const result = await app.snapshot(null);
+    expect(result.visuals?.job?.status).toBe('complete');
+    expect(result.visuals?.pack?.profiles[0].appearanceTags).toEqual(['brown hair']);
+    expect(result.visuals?.pack?.profiles[0].reviewFacts).toEqual([{kind:'identity',text:'30 years old.',sourceRefs:['chunk:1']}]);
+    expect(result.draft).toEqual(before.draft);
+    expect(h.workspace().visualInput).toEqual(before.visualInput);
+    expect(h.calls).toHaveLength(0);
+    await app.handle('save-visuals', {draft:result.draft,pack:result.visuals?.pack});
+    const restored = new SetPointsController(h.api, 'alice');
+    expect((await restored.snapshot(null)).visuals?.pack).toEqual(result.visuals?.pack);
+    expect(h.calls).toHaveLength(0);
+  });
   test('resumes a published 0.1.6 grounding-format failure using its paid responses without a new request', async () => {
     const saved = await Bun.file(new URL('./fixtures/visual-references-v016.json', import.meta.url)).json();
     const h = harness(async () => { throw new Error('Recovery must not call the provider'); });

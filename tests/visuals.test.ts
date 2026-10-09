@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { APPEARANCE_RULE, adaptStory, appearanceGuide, cardPayload, validateDraft, type Generate, type GenerationMessage } from '../src/importer';
 import type { StoryDraft } from '../src/types';
-import { enrichVisuals, UNSPECIFIED_APPEARANCE, validateVisualPack, visualCaption, visualDraftSignature, visualTagPrompt, type VisualPack, type VisualProfile } from '../src/visuals';
+import { enrichVisuals, INCOMPLETE_APPEARANCE, UNSPECIFIED_APPEARANCE, validateVisualPack, visualCaption, visualDraftSignature, visualTagPrompt, type VisualPack, type VisualProfile } from '../src/visuals';
 
 const source = 'Mira is a woman, 30 years old. She has dark hair and green eyes. At the beginning, she wears a blue coat. Later, she changes into a red cloak. Rowan waits beside the harbor, with no appearance described.';
 const draft = (): StoryDraft => ({ version:1,id:'story-1',title:'The Harbor',premise:'A meeting at the harbor.',playerRole:'Mira',startingPoint:'The beginning, before anyone changes clothes.',narratorInstructions:'Leave the player choices open.',cast:['Mira','Rowan'].map((name,index)=>({id:`cast-${index+1}`,name,aliases:[],personality:'Curious.',voice:'Plain speech.',relationships:'Harbor acquaintances.',knowledge:'A meeting is planned.',sourceRefs:['chunk:1']})),lore:[],scenes:[{id:'scene-1',title:'Meeting',greeting:'The harbor bell rings. Someone is waiting by the dock.',direction:'Offer a chance to talk.',assumptions:[],sourceRefs:['chunk:1']}],warnings:[],source:{title:'The Harbor',characters:source.length,chunks:1},createdAt:1 });
@@ -120,6 +120,18 @@ describe('visual profile validation and copy helpers',()=>{
     expect(accepted.profiles[0].startingOutfit).toBe(value.startingOutfit);
     expect(accepted.profiles[0].outfitTags).toHaveLength(12);
   });
+  test('retained facts round-trip separately from copied prompts with bounded safe provenance',()=>{
+    const original={...pack(),profiles:[{...profile(),reviewFacts:[{kind:'identity' as const,text:'An extracted age needing review.',sourceRefs:['chunk:1']}]}]};
+    const checked=validateVisualPack(original,knownOnlyDraft());
+    expect(validateVisualPack(JSON.parse(JSON.stringify(checked)),knownOnlyDraft())).toEqual(checked);
+    expect(visualCaption(checked.profiles[0],true)).not.toContain('extracted age');
+    expect(visualTagPrompt(checked.profiles[0],true)).not.toContain('extracted age');
+    checked.profiles[0].reviewFacts![0].sourceRefs.push('chunk:2');
+    expect(original.profiles[0].reviewFacts[0].sourceRefs).toEqual(['chunk:1']);
+    for(const fact of [{kind:'future',text:'Later look.',sourceRefs:['chunk:1']},{kind:'appearance',text:'x'.repeat(1001),sourceRefs:['chunk:1']},{kind:'appearance',text:'<script>bad</script>',sourceRefs:['chunk:1']},{kind:'appearance',text:'Brown hair.',sourceRefs:['chunk:2']}])expect(()=>validateVisualPack({...pack(),profiles:[{...profile(),reviewFacts:[fact]}]},undefined,1)).toThrow();
+    expect('reviewFacts' in validateVisualPack(pack()).profiles[0]).toBe(false);
+    expect(visualCaption({...profile(),description:INCOMPLETE_APPEARANCE,startingOutfit:INCOMPLETE_APPEARANCE})).toBe(profile().subject);
+  });
   test('revision signature covers exactly the fields used in visual requests',()=>{
     const original=draft(),signature=visualDraftSignature(original);
     expect(visualDraftSignature({...original,createdAt:2,narratorInstructions:'Changed narration',scenes:[],warnings:['Changed warning']})).toBe(signature);
@@ -195,7 +207,29 @@ describe('source-grounded visual enrichment',()=>{
     },()=>{})).rejects.toMatchObject({code:'INVALID_REFERENCE'});
     expect(calls).toBe(2);
   });
-  test.each(['identity','tag','omission','later','character','unspecified','identity-omission'] as const)('rejects unsupported profile grounding: %s',async fault=>{
+  test.each(['appearance','clothing','identity','count-only'] as const)('retains uncited starting facts without a repair request: %s',async omission=>{
+    let calls=0;
+    const result=await enrichVisuals({draft:knownOnlyDraft(),sourceText:source},async messages=>{
+      calls++;
+      if(JSON.parse(messages[1].content).task==='set-points-visual-facts-v1')return reply(sourceFacts());
+      const output=profileResponse(messages);
+      if(omission==='appearance'){output.profile.description=UNSPECIFIED_APPEARANCE;output.profile.appearanceTags=[];output.grounding.description=[];output.grounding.appearanceTags=[];}
+      if(omission==='clothing'){output.profile.startingOutfit=UNSPECIFIED_APPEARANCE;output.profile.outfitTags=[];output.grounding.startingOutfit=[];output.grounding.outfitTags=[];}
+      if(omission==='identity'||omission==='count-only'){output.profile.subject='';output.grounding.subject=[];}
+      if(omission==='identity'){output.profile.countTag='';output.grounding.countTag=[];}
+      (output.profile as any).reviewFacts=[{kind:'appearance',text:'Model-invented review detail.',sourceRefs:['chunk:1']}];
+      return reply(output);
+    },()=>{});
+    expect(calls).toBe(2);
+    const value=result.profiles[0],kind=omission==='count-only'?'identity':omission;
+    expect(value.reviewFacts).toEqual([{kind,text:sourceFacts().characters[0].facts.find(fact=>fact.kind===kind)!.text,sourceRefs:['chunk:1']}]);
+    expect(result.warnings.some(warning=>warning.includes('1 extracted starting facts'))).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('Model-invented');
+    if(omission==='appearance')expect(value.description).toBe(INCOMPLETE_APPEARANCE);
+    if(omission==='clothing')expect(value.startingOutfit).toBe(INCOMPLETE_APPEARANCE);
+    expect(visualCaption(value)).not.toContain(INCOMPLETE_APPEARANCE);
+  });
+  test.each(['identity','tag','later','character','unspecified'] as const)('rejects unsupported profile grounding: %s',async fault=>{
     let calls=0;
     await expect(enrichVisuals({draft:draft(),sourceText:source},async messages=>{
       calls++;
@@ -203,14 +237,27 @@ describe('source-grounded visual enrichment',()=>{
       const result=profileResponse(messages);
       if(fault==='identity')result.grounding.subject=[];
       if(fault==='tag')result.grounding.appearanceTags[0]=[];
-      if(fault==='omission'){result.grounding.countTag=[];result.grounding.subject=[];result.profile.subject='';result.profile.countTag='';}
       if(fault==='later')result.grounding.startingOutfit=['visual-1-1-4'];
       if(fault==='character')result.profile.characterId='cast-2';
       if(fault==='unspecified'){result.profile.description=UNSPECIFIED_APPEARANCE;result.profile.appearanceTags=[];result.grounding.appearanceTags=[];}
-      if(fault==='identity-omission'){result.profile.subject='';result.grounding.subject=[];}
       return reply(result);
     },()=>{})).rejects.toThrow();
     expect(calls).toBe(3);
+  });
+  test('an uncited fact in profile one does not stop the other eight profiles',async()=>{
+    const original=draft();original.cast=Array.from({length:9},(_,i)=>({...original.cast[0],id:`cast-${i+1}`,name:`Harbor visitor ${i+1}`}));
+    let calls=0;
+    const result=await enrichVisuals({draft:original,sourceText:source},async messages=>{
+      calls++;const input=JSON.parse(messages[1].content);
+      if(input.task==='set-points-visual-facts-v1')return reply({characters:original.cast.map(person=>({...sourceFacts().characters[0],characterId:person.id})),warnings:[]});
+      const answer=profileResponse(messages);
+      if(input.characterId==='cast-1'){answer.profile.subject='';answer.profile.countTag='';answer.grounding.subject=[];answer.grounding.countTag=[];}
+      return reply(answer);
+    },()=>{});
+    expect(result.profiles).toHaveLength(9);expect(calls).toBe(10);
+    expect(result.profiles[0].reviewFacts).toHaveLength(1);
+    expect(result.profiles.slice(1).every(value=>!value.reviewFacts&&value.subject==='30 year old woman')).toBe(true);
+    expect(JSON.stringify(original)).not.toContain('reviewFacts');
   });
   test('completed fact extraction resumes from exact-prompt cache when profile generation fails',async()=>{
     const cache=new Map<string,Awaited<ReturnType<Generate>>>();let reads=0,profiles=0;

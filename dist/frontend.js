@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.7";
+var VERSION = "0.1.8";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -76,6 +76,9 @@ var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes
 // src/visuals.ts
 var VISUAL_LIMITS = Object.freeze({ profiles: 64, tags: 32, outfitTags: 12, tagCharacters: 72, tagWords: 7, packCharacters: 4000000 });
 var UNSPECIFIED_APPEARANCE = "Not specified in the source.";
+var INCOMPLETE_APPEARANCE = "Source facts available; description needs review.";
+var incompleteVisualText = (value) => value === INCOMPLETE_APPEARANCE;
+var emptyVisualText = (value) => value === UNSPECIFIED_APPEARANCE || incompleteVisualText(value);
 function visualDraftSignature(draft) {
   const clean = (value) => value.trim();
   const url = draft.source.url?.trim();
@@ -85,7 +88,7 @@ function visualTagPrompt(profile, includeSuggestions = false) {
   return [...new Set([profile.countTag, ...profile.appearanceTags, ...profile.outfitTags, ...includeSuggestions ? profile.suggestedTags : []].map((value) => value.trim()).filter(Boolean))].join(", ");
 }
 function visualCaption(profile, includeSuggestions = false) {
-  return [profile.subject, profile.description, profile.startingOutfit, ...includeSuggestions ? [profile.suggestedDetails] : []].map((value) => value.trim()).filter((value) => value && value !== UNSPECIFIED_APPEARANCE).join(" ");
+  return [profile.subject, profile.description, profile.startingOutfit, ...includeSuggestions ? [profile.suggestedDetails] : []].map((value) => value.trim()).filter((value) => value && !emptyVisualText(value)).join(" ");
 }
 
 // src/web-import.ts
@@ -1174,6 +1177,23 @@ function setup(ctx) {
       const name = draft?.cast.find((person) => person.id === profile.characterId)?.name ?? profile.characterId;
       const entry = details(name);
       let includeSuggestions = false;
+      if (profile.reviewFacts?.length) {
+        let showFacts = function() {
+          for (const fact of facts.slice(shown, shown + 8))
+            items.append(group(node("span", "sp-label", fact.kind === "identity" ? "Subject" : fact.kind === "clothing" ? "Starting outfit" : "Appearance"), paragraph(fact.text, "sp-small"), paragraph(`Source: ${fact.sourceRefs.join(" · ")}`, "sp-hint")));
+          shown = Math.min(facts.length, shown + 8);
+          count.textContent = `Showing ${shown} of ${facts.length} retained source facts.`;
+          more.hidden = shown >= facts.length;
+        };
+        entry.root.open = true;
+        const review = details("Source facts to review"), facts = profile.reviewFacts, items = group(), count = paragraph("", "sp-hint");
+        let shown = 0;
+        const more = button("Show more source facts", () => showFacts());
+        showFacts();
+        review.root.open = true;
+        review.body.append(paragraph("These extracted facts were not cited in the generated description. Some may already be expressed in different words. Compare them with the fields below and add any missing details you want. They stay in this backup but are not automatically included in copied prompts or approved appearances.", "sp-hint"), count, items, more);
+        entry.body.append(review.root);
+      }
       const editable = (label, value, assign, hint) => field(label, value, (v) => {
         assign(v);
         change();
@@ -1209,7 +1229,15 @@ function setup(ctx) {
       const caption = field(`${name}: caption to copy`, "", undefined, { area: true, rows: 3 });
       caption.input.readOnly = true;
       updatePrompts();
-      entry.body.append(appearance.wrap, button(`Copy ${name} appearance`, () => copyVisualText(profile.description, appearance.input, "Appearance")), outfit.wrap, button(`Copy ${name} outfit`, () => copyVisualText(profile.startingOutfit, outfit.input, "Outfit")), subject.wrap, count.wrap, appearanceTags.wrap, button(`Copy ${name} appearance tags`, () => copyVisualText(profile.appearanceTags.join(", "), appearanceTags.input, "Appearance tags")), outfitTags.wrap, button(`Copy ${name} outfit tags`, () => copyVisualText(profile.outfitTags.join(", "), outfitTags.input, "Outfit tags")), suggestions.root);
+      entry.body.append(appearance.wrap, button(`Copy ${name} appearance`, () => {
+        if (emptyVisualText(profile.description))
+          throw new Error("Enter the reviewed appearance before copying it.");
+        return copyVisualText(profile.description, appearance.input, "Appearance");
+      }), outfit.wrap, button(`Copy ${name} outfit`, () => {
+        if (emptyVisualText(profile.startingOutfit))
+          throw new Error("Enter the reviewed outfit before copying it.");
+        return copyVisualText(profile.startingOutfit, outfit.input, "Outfit");
+      }), subject.wrap, count.wrap, appearanceTags.wrap, button(`Copy ${name} appearance tags`, () => copyVisualText(profile.appearanceTags.join(", "), appearanceTags.input, "Appearance tags")), outfitTags.wrap, button(`Copy ${name} outfit tags`, () => copyVisualText(profile.outfitTags.join(", "), outfitTags.input, "Outfit tags")), suggestions.root);
       if (profile.unknowns.length) {
         entry.body.append(node("span", "sp-label", "Not established in the source"));
         for (const unknown of profile.unknowns)
@@ -1226,7 +1254,9 @@ function setup(ctx) {
       for (const profile of pack.profiles) {
         if (!draft.cast.some((person) => person.id === profile.characterId))
           continue;
-        const approved = { characterId: profile.characterId, description: profile.description === UNSPECIFIED_APPEARANCE ? "" : profile.description, startingOutfit: profile.startingOutfit === UNSPECIFIED_APPEARANCE ? "" : profile.startingOutfit };
+        const existing = draft.appearances?.find((item) => item.characterId === profile.characterId);
+        const approve = (value, previous) => incompleteVisualText(value) ? previous ?? "" : emptyVisualText(value) ? "" : value;
+        const approved = { characterId: profile.characterId, description: approve(profile.description, existing?.description), startingOutfit: approve(profile.startingOutfit, existing?.startingOutfit) };
         const index = draft.appearances?.findIndex((item) => item.characterId === profile.characterId) ?? -1;
         if (index >= 0)
           draft.appearances[index] = approved;
@@ -1235,8 +1265,8 @@ function setup(ctx) {
       }
       draftDirty = true;
       renderReview();
-      notify("Source appearances copied into the approved story fields. Review them, then Save draft or Save to Lumiverse. Suggestions were not copied.");
-    }), paragraph("Replaces the approved appearance and starting outfit fields with the source facts shown here. Unspecified details stay blank. Suggested details are not copied; choose them yourself in the approved fields if wanted.", "sp-hint"));
+      notify("Source appearances copied into the approved story fields. Review them, then Save draft or Save to Lumiverse. Suggestions were not copied. Retained source facts stay separate; incomplete fields keep your earlier approved choice.");
+    }), paragraph("Replaces the approved appearance and starting outfit fields with the source prose shown here. Unspecified details stay blank; incomplete fields keep your earlier approved choice. Retained source facts and suggested details are not copied. Review and edit the prose before approving it.", "sp-hint"));
     visualResults.append(row(button("Save descriptions", async () => {
       if (!draft || visualDraftSignature(draft) !== signature)
         throw new Error("These descriptions belong to an earlier version of the draft.");
@@ -1473,7 +1503,7 @@ function setup(ctx) {
         approvedCaption.input.value = [choice?.description, choice?.startingOutfit].map((value) => value?.trim() ?? "").filter(Boolean).join(" ");
         approvedCopy.disabled = !approvedCaption.input.value;
         const signature = visualDraftSignature(current), profile = snapshot?.visuals?.resultSignature === signature ? visualEditors.get(signature)?.pack.profiles.find((item) => item.characterId === person.id) : undefined;
-        const normalized = (value) => value === UNSPECIFIED_APPEARANCE ? "" : value.trim().replace(/\s+/g, " ");
+        const normalized = (value) => emptyVisualText(value) ? "" : value.trim().replace(/\s+/g, " ");
         appearanceMismatch.hidden = !(choice && profile && (normalized(choice.description) !== normalized(profile.description) || normalized(choice.startingOutfit) !== normalized(profile.startingOutfit)));
       };
       const entry = details(person.name);
