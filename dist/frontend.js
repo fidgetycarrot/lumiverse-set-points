@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.5";
+var VERSION = "0.1.6";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -20,6 +20,50 @@ var styles = `
 @media(prefers-color-scheme:light){.sp-app{--sp-bg:var(--lumiverse-bg,#faf8f3);--sp-card:var(--lumiverse-bg-secondary,#fffdf8);--sp-ink:var(--lumiverse-text,#28251f);--sp-muted:var(--lumiverse-text-muted,#746e62);--sp-accent:#996219;--sp-accent-ink:#fff9ed;color-scheme:light}.sp-status[data-kind=error]{color:#a43f33}}
 @container(max-width:380px){.sp-grid{grid-template-columns:1fr}.sp-intro{flex-wrap:wrap}.sp-counts{gap:14px}.sp-header{gap:10px}.sp-app h1{font-size:33px}.sp-tab small{margin-right:4px}.sp-button{padding:9px 10px}}
 `;
+
+// src/appearance-review.ts
+var appearanceWords = /\b(?:hair|haired|blond(?:e)?|brunette|redhead|bald|eyes?|freckles?|complexion|skin|scar(?:s|red)?|tattoo(?:s|ed)?|beard|moustache|mustache|height|physique|clothes|clothing|outfit|dress|coat|jacket|shirt|trousers|pants|skirt|boots|uniform|cloak|robe|glasses|horns?|fur|scales|wings?)\b/i;
+function appearanceMentions(draft) {
+  const fields = [
+    { location: "Story title", text: draft.title },
+    { location: "Premise", text: draft.premise },
+    { location: "Player role", text: draft.playerRole },
+    { location: "Starting point", text: draft.startingPoint },
+    { location: "Narrator direction", text: draft.narratorInstructions }
+  ];
+  for (const person of draft.cast) {
+    fields.push({ location: `${person.name} · name and aliases`, text: [person.name, ...person.aliases].join(", ") });
+    for (const [label, field] of [["Personality", "personality"], ["Voice & manner", "voice"], ["Relationships at the start", "relationships"], ["Knowledge at the start", "knowledge"]])
+      fields.push({ location: `${person.name} · ${label}`, text: person[field] });
+  }
+  for (const entry of draft.lore)
+    fields.push({ location: `Lore · ${entry.name}`, text: entry.content });
+  for (const [index, scene] of draft.scenes.entries()) {
+    fields.push({ location: `Scene ${index + 1} · title`, text: scene.title });
+    fields.push({ location: `Scene ${index + 1} · ${scene.title} · opening`, text: scene.greeting });
+    fields.push({ location: `Scene ${index + 1} · ${scene.title} · private direction`, text: scene.direction });
+    scene.assumptions.forEach((text, i) => fields.push({ location: `Scene ${index + 1} · ${scene.title} · assumption ${i + 1}`, text }));
+  }
+  return fields.filter((field) => appearanceWords.test(field.text));
+}
+
+// src/importer.ts
+var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
+
+// src/visuals.ts
+var VISUAL_LIMITS = Object.freeze({ profiles: 64, tags: 32, outfitTags: 12, tagCharacters: 72, tagWords: 7, packCharacters: 4000000 });
+var UNSPECIFIED_APPEARANCE = "Not specified in the source.";
+function visualDraftSignature(draft) {
+  const clean = (value) => value.trim();
+  const url = draft.source.url?.trim();
+  return JSON.stringify({ id: clean(draft.id), title: clean(draft.title), premise: clean(draft.premise), playerRole: clean(draft.playerRole), startingPoint: clean(draft.startingPoint), source: { title: clean(draft.source.title), url: url || undefined, characters: draft.source.characters, chunks: draft.source.chunks }, cast: draft.cast.map((person) => ({ id: clean(person.id), name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice), relationships: clean(person.relationships), knowledge: clean(person.knowledge), sourceRefs: [...new Set(person.sourceRefs.map(clean))] })) });
+}
+function visualTagPrompt(profile, includeSuggestions = false) {
+  return [...new Set([profile.countTag, ...profile.appearanceTags, ...profile.outfitTags, ...includeSuggestions ? profile.suggestedTags : []].map((value) => value.trim()).filter(Boolean))].join(", ");
+}
+function visualCaption(profile, includeSuggestions = false) {
+  return [profile.subject, profile.description, profile.startingOutfit, ...includeSuggestions ? [profile.suggestedDetails] : []].map((value) => value.trim()).filter((value) => value && value !== UNSPECIFIED_APPEARANCE).join(" ");
+}
 
 // src/web-import.ts
 var WEB_IMPORT_LIMITS = { pages: 100, characters: 500000 };
@@ -181,6 +225,7 @@ ${page.url}
 // src/frontend.ts
 var MAX_SOURCE = 500000;
 var MAX_DRAFT = 192000;
+var MAX_BACKUP = MAX_DRAFT * 2;
 var ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="6" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="M6 8v6a5 5 0 0 0 5 5h4M9 5h9"/></svg>';
 function createRpc(ctx, onChanged, timeoutMs = 45000) {
   let sequence = 0;
@@ -285,9 +330,12 @@ function setup(ctx) {
   let draftVersion = "";
   let draftRevision = 0;
   let openingDraft = false;
+  let pendingReplacement = null;
+  const approvedControls = new Map;
   let loadingPages = false;
   let adaptationStarting = false;
   let connectionChecking = false;
+  let visualsStarting = false;
   let webAbort = null;
   let stagedPages = null;
   let appliedSourceUrl;
@@ -459,20 +507,56 @@ function setup(ctx) {
     value.append(text);
     return value;
   }
-  function download(name, value) {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+  const backupPanel = node("section", "sp-card sp-stack");
+  backupPanel.hidden = true;
+  backupPanel.setAttribute("aria-label", "JSON backup");
+  const backupName = field("Backup filename", "");
+  backupName.input.readOnly = true;
+  const backupText = field("JSON backup", "", undefined, { area: true, rows: 12 });
+  backupText.input.readOnly = true;
+  const downloadUrls = new Map;
+  function requestBackupDownload() {
+    const url = URL.createObjectURL(new Blob([backupText.input.value], { type: "application/json" }));
+    const timer = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      downloadUrls.delete(url);
+    }, 30000);
+    downloadUrls.set(url, timer);
     const anchor = node("a");
     anchor.href = url;
-    anchor.download = name;
+    anchor.download = backupName.input.value;
     app.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    try {
+      anchor.click();
+      notify("Download requested. If no file appears, copy the visible backup and save it using the filename shown.");
+    } finally {
+      anchor.remove();
+    }
   }
-  newDraftNotice.append(paragraph("A new adaptation is ready. Loading it replaces your unsaved review edits.", "sp-small"), button("Load new draft", () => {
-    if (!snapshot?.draft)
+  backupPanel.append(node("h3", "", "Your JSON backup"), paragraph("The complete backup is visible below even if your browser blocks downloading. Copy backup, paste it into a plain-text editor, and save it using the shown .json filename.", "sp-hint"), backupName.wrap, backupText.wrap, row(button("Download JSON", () => requestBackupDownload()), button("Copy backup", () => copyVisualText(backupText.input.value, backupText.input, "Backup")), button("Close backup", () => {
+    backupPanel.hidden = true;
+  })));
+  app.insertBefore(backupPanel, panels.import);
+  teardown.push(() => {
+    for (const [url, timer] of downloadUrls) {
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+    }
+    downloadUrls.clear();
+  });
+  function download(name, value) {
+    backupName.input.value = name;
+    backupText.input.value = JSON.stringify(value, null, 2);
+    backupPanel.hidden = false;
+    backupText.input.focus();
+    requestBackupDownload();
+  }
+  newDraftNotice.append(paragraph("A replacement draft is ready. Loading it replaces your unsaved review edits.", "sp-small"), button("Load new draft", () => {
+    const replacement = pendingReplacement ?? snapshot?.draft;
+    if (!replacement)
       return;
-    draft = clone(snapshot.draft);
+    draft = clone(replacement);
+    pendingReplacement = null;
     draftDirty = false;
     draftRevision++;
     draftVersion = JSON.stringify(draft);
@@ -545,7 +629,7 @@ function setup(ctx) {
   });
   cancelLoading.hidden = true;
   const useCollected = button("Use collected text", () => {
-    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+    if (loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running")
       throw new Error("Wait for the current operation to finish before replacing the story text.");
     if (!stagedPages?.pages.length)
       throw new Error("No pages have been collected yet.");
@@ -586,7 +670,7 @@ function setup(ctx) {
     syncImportControls();
   }
   async function readPages(linked) {
-    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+    if (loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running")
       throw new Error("Wait for the current page loading, connection check, or adaptation to finish.");
     const controller = new AbortController;
     webAbort = controller;
@@ -617,7 +701,7 @@ function setup(ctx) {
     }
   }
   function syncImportControls() {
-    const busy = loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running";
+    const busy = loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running";
     checkConnectionButton.disabled = !!busy || !connection.value;
     connection.disabled = connectionChecking;
     resumeButton.disabled = !!busy || !snapshot?.resume?.available;
@@ -629,6 +713,7 @@ function setup(ctx) {
     fetchButton.disabled = !!busy;
     fetchLinkedButton.disabled = !!busy;
     useCollected.disabled = !!busy || !stagedPages?.pages.length;
+    syncVisualControls();
   }
   linkSection.body.append(paragraph("Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.", "sp-hint"), url.wrap, otherUrls.wrap, row(fetchButton, fetchLinkedButton), paragraph("Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.", "sp-hint"), collectionBox);
   sourceCard.append(sourceTools, fileInput, title.wrap, source.wrap, sourceBottom, linkSection.root);
@@ -649,7 +734,7 @@ function setup(ctx) {
   connectionStatus.setAttribute("role", "status");
   connectionStatus.setAttribute("aria-live", "polite");
   const checkConnectionButton = button("Check connection", async () => {
-    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+    if (loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running")
       throw new Error("Wait for the current page loading, connection check, or adaptation to finish.");
     const connectionId = connection.value;
     if (!connectionId)
@@ -721,7 +806,7 @@ function setup(ctx) {
   resumeGrid.append(resumeAllowance.wrap, resumeReasoning.wrap);
   resumeSettings.append(node("div", "sp-section-label", "Settings for unfinished requests"), resumeGrid, paragraph(responseSettingsHint, "sp-hint"));
   const resumeButton = button("Resume saved import", async () => {
-    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+    if (loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running")
       throw new Error("Wait for page loading, the connection check, or the current adaptation to finish.");
     if (!snapshot?.resume?.available)
       throw new Error("There is no saved import available to resume.");
@@ -747,7 +832,7 @@ function setup(ctx) {
   progressBox.append(progressText, progress, cancel, resumeHint, resumeSettings, resumeButton);
   panels.import.append(progressBox);
   const importButton = button("Create adaptation  →", async () => {
-    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+    if (loadingPages || adaptationStarting || connectionChecking || visualsBusy() || snapshot?.job?.status === "running")
       throw new Error("Wait for page loading, the connection check, or the current adaptation to finish.");
     if (!source.input.value.trim())
       throw new Error("Add story text before creating an adaptation.");
@@ -778,6 +863,7 @@ function setup(ctx) {
   panels.import.append(importButton, paragraph("Creates a draft for you to review. Reading, planning, and each character, lore, or scene batch use your model’s normal charges. Completed steps are saved for reuse.", "sp-footnote"));
   function updateSourceCount() {
     count.textContent = `${source.input.value.length.toLocaleString()} characters`;
+    syncVisualControls();
   }
   function renderJob(job) {
     const running = job?.status === "running";
@@ -803,15 +889,16 @@ function setup(ctx) {
       progress.max = Math.max(1, job.total);
       progress.value = Math.min(job.completed, progress.max);
     }
-    if (running && !polling)
+    const anyRunning = running || snapshot?.visuals?.job?.status === "running";
+    if (anyRunning && !polling)
       polling = setInterval(() => {
         refresh();
       }, 2500);
-    if (!running && polling) {
+    if (!anyRunning && polling) {
       clearInterval(polling);
       polling = undefined;
     }
-    tab.setBadge(running ? "…" : null);
+    tab.setBadge(anyRunning ? "…" : null);
   }
   function updateConnections(next) {
     const signature = JSON.stringify(next.connections);
@@ -827,6 +914,327 @@ function setup(ctx) {
     if (next.connections.some((item) => item.id === current))
       connection.value = current;
   }
+  const visualPanel = details("Image descriptions · optional").root;
+  const visualBody = visualPanel.querySelector(".sp-stack");
+  const visualInfo = paragraph("Reads the original story again for appearance details. Uses normal text-model charges; it does not generate images.", "sp-hint");
+  const visualSourceNotice = paragraph("", "sp-notice");
+  const visualSource = field("Original story for these descriptions", "", undefined, { area: true, rows: 5, hint: "Paste the original story for this draft. Review it before creating descriptions. This stays separate from your Import form." });
+  visualSource.input.maxLength = MAX_SOURCE;
+  const visualSources = new Map;
+  const visualSourceOverrides = new Set;
+  let visualSourceKey = "";
+  visualSource.input.addEventListener("input", () => {
+    visualSources.set(visualSourceKey, visualSource.input.value);
+    syncVisualControls();
+  });
+  const copyImportSource = button("Use story text from Import", () => {
+    visualSource.input.value = source.input.value;
+    visualSources.set(visualSourceKey, source.input.value);
+    notify("Story text copied from Import for your review. Check that it belongs to this draft before creating descriptions.");
+    syncVisualControls();
+  });
+  const visualSourceBox = group(visualSource.wrap, copyImportSource);
+  const replaceVisualSource = button("Use different story text", () => {
+    if (draft) {
+      visualSourceOverrides.add(visualDraftSignature(draft));
+      renderVisuals();
+      visualSource.input.focus();
+    }
+  });
+  const visualConnection = selectField("Image description connection", [], "");
+  const visualSettings = details("Description response settings");
+  let visualSettingsDirty = false;
+  let visualSettingsJobId;
+  const visualAllowance = selectField("Description response allowance", responseAllowances, "16000", () => {
+    visualSettingsDirty = true;
+  });
+  const visualReasoning = selectField("Description reasoning mode", reasoningModes, "inherit", () => {
+    visualSettingsDirty = true;
+  });
+  const visualSettingsGrid = node("div", "sp-grid");
+  visualSettingsGrid.append(visualAllowance.wrap, visualReasoning.wrap);
+  visualSettings.body.append(visualSettingsGrid, paragraph(responseSettingsHint, "sp-hint"));
+  const visualProgress = node("div", "sp-progress");
+  visualProgress.hidden = true;
+  const visualProgressText = paragraph("", "sp-small");
+  visualProgressText.setAttribute("role", "status");
+  visualProgressText.setAttribute("aria-live", "polite");
+  const visualProgressBar = node("progress");
+  visualProgressBar.max = 1;
+  visualProgressBar.value = 0;
+  visualProgressBar.setAttribute("aria-label", "Image description progress");
+  const visualCancel = button("Cancel descriptions", async () => {
+    await rpc.request("cancel-visuals");
+    notify("Description cancellation requested. Completed steps are retained.");
+    await refresh();
+  });
+  const visualResumeHint = paragraph("", "sp-hint");
+  const visualResume = button("Resume saved descriptions", async () => {
+    if (otherWorkBusy() || visualsBusy())
+      throw new Error("Wait for the current operation to finish before resuming descriptions.");
+    if (!snapshot?.visuals?.resumeAvailable || !draft || snapshot.visuals.requestSignature !== visualDraftSignature(draft))
+      throw new Error("The saved descriptions belong to a different version of the draft.");
+    const retryUncertain = snapshot.visuals.retryUncertain;
+    visualsStarting = true;
+    syncImportControls();
+    try {
+      await rpc.request("resume-visuals", { ...readResponseSettings(visualAllowance.input, visualReasoning.input), ...retryUncertain ? { retryUncertain: true } : {} });
+      visualSettingsDirty = false;
+      notify("Resuming the saved description request. Current story edits and source fields are unchanged.");
+      await refresh();
+    } finally {
+      visualsStarting = false;
+      if (!destroyed)
+        syncImportControls();
+    }
+  });
+  visualProgress.append(visualProgressText, visualProgressBar, visualCancel, visualResumeHint, visualResume);
+  const visualCreate = button("Create image descriptions", async () => {
+    if (otherWorkBusy() || visualsBusy())
+      throw new Error("Wait for the current operation to finish before creating descriptions.");
+    if (!draft)
+      throw new Error("Create or open a story draft first.");
+    const requested = clone(draft), signature = visualDraftSignature(requested), sourceBound = snapshot?.visuals?.sourceSignature === signature && !visualSourceOverrides.has(signature);
+    if (!visualConnection.input.value)
+      throw new Error("Choose an image description connection.");
+    const sourceText = visualSource.input.value;
+    if (!sourceBound && (sourceText.trim().length < 100 || sourceText.length > MAX_SOURCE))
+      throw new Error("Supply between 100 and 500,000 characters of the original story for these descriptions.");
+    visualsStarting = true;
+    syncImportControls();
+    try {
+      await rpc.request("start-visuals", { draft: requested, connectionId: visualConnection.input.value, ...readResponseSettings(visualAllowance.input, visualReasoning.input), ...!sourceBound ? { sourceText } : {} });
+      visualSourceOverrides.delete(signature);
+      visualSettingsDirty = false;
+      notify("Creating optional image descriptions. Your story draft remains editable.");
+      await refresh();
+    } finally {
+      visualsStarting = false;
+      if (!destroyed)
+        syncImportControls();
+    }
+  }, true);
+  const visualResultNotice = paragraph("", "sp-notice");
+  visualResultNotice.hidden = true;
+  visualResultNotice.dataset.visualResultNotice = "";
+  const visualResults = node("div", "sp-stack");
+  const visualEditors = new Map;
+  let visualEditorKey = "";
+  let visualEditorRef;
+  const loadVisualResult = button("Load new descriptions", () => {
+    const current = snapshot?.visuals;
+    if (!draft || !current?.pack || current.resultSignature !== visualDraftSignature(draft))
+      return;
+    visualEditors.set(current.resultSignature, { pack: clone(current.pack), dirty: false, serverVersion: JSON.stringify(current.pack) });
+    visualEditorRef = undefined;
+    renderVisuals();
+    notify("New descriptions loaded.");
+  });
+  loadVisualResult.hidden = true;
+  visualBody.append(visualInfo, visualSourceNotice, replaceVisualSource, visualSourceBox, visualConnection.wrap, visualSettings.root, visualCreate, visualProgress, visualResultNotice, loadVisualResult, visualResults);
+  function visualsBusy() {
+    return visualsStarting || snapshot?.visuals?.job?.status === "running";
+  }
+  function otherWorkBusy() {
+    return loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running";
+  }
+  function syncVisualControls() {
+    const busy = !!(otherWorkBusy() || visualsBusy());
+    visualCreate.disabled = busy || !draft || !visualConnection.input.value;
+    visualResume.disabled = busy || !snapshot?.visuals?.resumeAvailable || !draft || snapshot.visuals.requestSignature !== visualDraftSignature(draft);
+    visualConnection.input.disabled = busy;
+    visualAllowance.input.disabled = busy;
+    visualReasoning.input.disabled = busy;
+    visualSource.input.disabled = busy;
+    replaceVisualSource.disabled = busy;
+    copyImportSource.disabled = busy || !source.input.value.trim();
+  }
+  async function copyVisualText(value, field, label) {
+    if (!value.trim())
+      throw new Error(`There is no ${label.toLowerCase()} to copy yet.`);
+    try {
+      const clipboard = field.ownerDocument.defaultView?.navigator.clipboard;
+      if (!clipboard?.writeText)
+        throw new Error("Clipboard unavailable");
+      await clipboard.writeText(value);
+      notify(`${label} copied.`);
+    } catch {
+      field.focus();
+      field.select();
+      notify("Clipboard access is unavailable. The text is selected; copy it using your keyboard or context menu.");
+    }
+  }
+  function renderVisualEditor(editor, signature) {
+    visualResults.replaceChildren();
+    const pack = editor.pack;
+    const badge = node("span", "sp-tag", editor.dirty ? "Unsaved description edits" : "Descriptions ready");
+    visualResults.append(badge);
+    const change = () => {
+      editor.dirty = true;
+      badge.textContent = "Unsaved description edits";
+      for (const update of approvedControls.values())
+        update();
+    };
+    for (const warning of pack.warnings)
+      visualResults.append(paragraph(warning, "sp-notice"));
+    const copyHint = paragraph("Copy appearance tags and outfit tags into the corresponding Lumi Studio fields. Use the combined Anima tags or caption for a prompt. Suggested details are excluded until you choose to include them. No images are generated or sent automatically.", "sp-hint");
+    visualResults.append(copyHint);
+    for (const profile of pack.profiles) {
+      let updatePrompts = function() {
+        tags.input.value = visualTagPrompt(profile, includeSuggestions);
+        caption.input.value = visualCaption(profile, includeSuggestions);
+      };
+      const name = draft?.cast.find((person) => person.id === profile.characterId)?.name ?? profile.characterId;
+      const entry = details(name);
+      let includeSuggestions = false;
+      const editable = (label, value, assign, hint) => field(label, value, (v) => {
+        assign(v);
+        change();
+        updatePrompts();
+      }, { area: true, rows: 3, hint });
+      const appearance = editable(`${name}: appearance from the story`, profile.description, (v) => profile.description = v, "Source facts only. Keep invented choices in Suggested details below.");
+      const outfit = editable(`${name}: starting outfit from the story`, profile.startingOutfit, (v) => profile.startingOutfit = v);
+      const subject = editable(`${name}: caption subject`, profile.subject, (v) => profile.subject = v);
+      const count = selectField(`${name}: Anima subject tag`, [["", "No count tag"], ["1girl", "1girl"], ["1boy", "1boy"], ["1other", "1other"]], profile.countTag, () => {
+        profile.countTag = count.input.value;
+        change();
+        updatePrompts();
+      });
+      const tagField = (label, values, assign, limit = 32) => editable(label, values.join(", "), (v) => assign(v.split(",").map((tag) => tag.trim()).filter(Boolean)), `Up to ${limit} tags, separated by commas. Use short, lowercase descriptions.`);
+      const appearanceTags = tagField(`${name}: appearance tags`, profile.appearanceTags, (v) => profile.appearanceTags = v);
+      const outfitTags = tagField(`${name}: outfit tags`, profile.outfitTags, (v) => profile.outfitTags = v, 12);
+      const suggestions = details("Suggested details · not source facts");
+      const suggested = editable(`${name}: suggested details`, profile.suggestedDetails, (v) => profile.suggestedDetails = v);
+      const suggestedTags = tagField(`${name}: suggested tags`, profile.suggestedTags, (v) => profile.suggestedTags = v);
+      suggestions.body.append(suggested.wrap, suggestedTags.wrap);
+      const include = node("input");
+      include.type = "checkbox";
+      include.setAttribute("aria-label", `${name}: include suggested details in copied prompts`);
+      include.style.width = "auto";
+      const includeLabel = node("label", "sp-small", "Include suggested details in copied prompts");
+      includeLabel.prepend(include);
+      include.addEventListener("change", () => {
+        includeSuggestions = include.checked;
+        updatePrompts();
+      });
+      const tags = field(`${name}: Anima tags to copy`, "", undefined, { area: true, rows: 3 });
+      tags.input.readOnly = true;
+      const caption = field(`${name}: caption to copy`, "", undefined, { area: true, rows: 3 });
+      caption.input.readOnly = true;
+      updatePrompts();
+      entry.body.append(appearance.wrap, button(`Copy ${name} appearance`, () => copyVisualText(profile.description, appearance.input, "Appearance")), outfit.wrap, button(`Copy ${name} outfit`, () => copyVisualText(profile.startingOutfit, outfit.input, "Outfit")), subject.wrap, count.wrap, appearanceTags.wrap, button(`Copy ${name} appearance tags`, () => copyVisualText(profile.appearanceTags.join(", "), appearanceTags.input, "Appearance tags")), outfitTags.wrap, button(`Copy ${name} outfit tags`, () => copyVisualText(profile.outfitTags.join(", "), outfitTags.input, "Outfit tags")), suggestions.root);
+      if (profile.unknowns.length) {
+        entry.body.append(node("span", "sp-label", "Not established in the source"));
+        for (const unknown of profile.unknowns)
+          entry.body.append(paragraph(unknown, "sp-notice"));
+      }
+      if (profile.sourceRefs.length)
+        entry.body.append(paragraph(`Source: ${profile.sourceRefs.join(" · ")}`, "sp-hint"));
+      entry.body.append(includeLabel, tags.wrap, button(`Copy ${name} Anima tags`, () => copyVisualText(tags.input.value, tags.input, "Anima tags")), caption.wrap, button(`Copy ${name} caption`, () => copyVisualText(caption.input.value, caption.input, "Caption")));
+      visualResults.append(entry.root);
+    }
+    visualResults.append(button("Use these appearances in story", () => {
+      if (!draft || visualDraftSignature(draft) !== signature)
+        throw new Error("These descriptions belong to an earlier version of the draft.");
+      for (const profile of pack.profiles) {
+        if (!draft.cast.some((person) => person.id === profile.characterId))
+          continue;
+        const approved = { characterId: profile.characterId, description: profile.description === UNSPECIFIED_APPEARANCE ? "" : profile.description, startingOutfit: profile.startingOutfit === UNSPECIFIED_APPEARANCE ? "" : profile.startingOutfit };
+        const index = draft.appearances?.findIndex((item) => item.characterId === profile.characterId) ?? -1;
+        if (index >= 0)
+          draft.appearances[index] = approved;
+        else
+          (draft.appearances ??= []).push(approved);
+      }
+      draftDirty = true;
+      renderReview();
+      notify("Source appearances copied into the approved story fields. Review them, then Save draft or Save to Lumiverse. Suggestions were not copied.");
+    }), paragraph("Replaces the approved appearance and starting outfit fields with the source facts shown here. Unspecified details stay blank. Suggested details are not copied; choose them yourself in the approved fields if wanted.", "sp-hint"));
+    visualResults.append(row(button("Save descriptions", async () => {
+      if (!draft || visualDraftSignature(draft) !== signature)
+        throw new Error("These descriptions belong to an earlier version of the draft.");
+      const requested = clone(pack), fingerprint = JSON.stringify(requested);
+      await rpc.request("save-visuals", { draft: clone(draft), pack: requested });
+      if (JSON.stringify(editor.pack) === fingerprint) {
+        editor.dirty = false;
+        editor.serverVersion = fingerprint;
+        badge.textContent = "Descriptions saved";
+      }
+      notify("Image descriptions saved separately from your story draft.");
+      await refresh();
+    }), button("Export descriptions", () => download(`${draft?.title.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 60) || "set-points"}-image-descriptions.json`, pack))));
+  }
+  function renderVisuals() {
+    if (!draft)
+      return;
+    const signature = visualDraftSignature(draft), visuals = snapshot?.visuals;
+    if (visualSourceKey !== signature) {
+      visualSourceKey = signature;
+      visualSource.input.value = visualSources.get(signature) ?? "";
+    }
+    const sourceBound = visuals?.sourceSignature === signature && !visualSourceOverrides.has(signature);
+    visualSourceBox.hidden = sourceBound;
+    replaceVisualSource.hidden = !sourceBound;
+    visualSourceNotice.textContent = sourceBound ? "The original source is available for this draft." : "The original source is not verified for this version of the draft. Supply its story text below; older or opened drafts may need it once.";
+    const connectionsSignature = JSON.stringify(snapshot?.connections ?? []);
+    if (visualConnection.input.dataset.signature !== connectionsSignature) {
+      const previous = visualConnection.input.value;
+      visualConnection.input.replaceChildren();
+      visualConnection.input.dataset.signature = connectionsSignature;
+      for (const item of snapshot?.connections ?? [])
+        visualConnection.input.append(option(`${item.name}${item.model ? ` · ${item.model}` : ""}`, item.id));
+      if (!visualConnection.input.options.length)
+        visualConnection.input.append(option("Add a model connection in Settings", ""));
+      if ((snapshot?.connections ?? []).some((item) => item.id === previous))
+        visualConnection.input.value = previous;
+      else if (visuals?.connectionId && (snapshot?.connections ?? []).some((item) => item.id === visuals.connectionId))
+        visualConnection.input.value = visuals.connectionId;
+    }
+    const job = visuals?.job, running = job?.status === "running", requestMatches = visuals?.requestSignature === signature, canResume = !!visuals?.resumeAvailable && !running && requestMatches;
+    if (!visualSettingsDirty || visualSettingsJobId !== (job?.id ?? null)) {
+      visualSettingsJobId = job?.id ?? null;
+      visualSettingsDirty = false;
+      visualAllowance.input.value = String(visuals?.maxOutputTokens ?? 16000);
+      visualReasoning.input.value = visuals?.reasoningMode ?? "inherit";
+    }
+    visualProgress.hidden = !job && !canResume;
+    visualCancel.hidden = !running;
+    visualResume.hidden = !canResume;
+    visualResumeHint.hidden = !canResume;
+    if (job) {
+      visualProgressText.textContent = (!requestMatches ? "Descriptions for another version of the draft. " : "") + (job.status === "failed" && job.phase ? `Stopped during ${job.phase}. ${job.error || job.label}` : job.error || job.label);
+      visualProgressBar.max = Math.max(1, job.total);
+      visualProgressBar.value = Math.min(job.completed, visualProgressBar.max);
+    }
+    visualResume.textContent = visuals?.retryUncertain ? "Retry unfinished description request" : "Resume saved descriptions";
+    visualResumeHint.textContent = "Resumes the saved draft and source, independent of current edits. Completed steps are reused; remaining requests use normal model charges." + (visuals?.retryUncertain ? " Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again." : "");
+    const matching = !!visuals?.pack && visuals.resultSignature === signature;
+    let editor = visualEditors.get(signature);
+    if (matching) {
+      const version = JSON.stringify(visuals.pack);
+      if (!editor || !editor.dirty && editor.serverVersion !== version) {
+        editor = { pack: clone(visuals.pack), dirty: false, serverVersion: version };
+        visualEditors.set(signature, editor);
+      }
+    }
+    const newer = !!(matching && editor?.dirty && editor.serverVersion !== JSON.stringify(visuals?.pack));
+    loadVisualResult.hidden = !newer;
+    visualResultNotice.hidden = !(newer || !matching && (visuals?.pack || visualEditors.size));
+    if (!matching)
+      editor = undefined;
+    visualResultNotice.textContent = newer ? "New descriptions are ready. Loading them replaces your unsaved description edits." : "Descriptions for a different version of the draft are hidden. Your story edits and saved descriptions are preserved.";
+    if (visualEditorKey !== signature || visualEditorRef !== editor) {
+      visualEditorKey = signature;
+      visualEditorRef = editor;
+      if (editor)
+        renderVisualEditor(editor, signature);
+      else
+        visualResults.replaceChildren();
+    }
+    for (const update of approvedControls.values())
+      update();
+    syncVisualControls();
+  }
   const draftFileInput = node("input");
   draftFileInput.type = "file";
   draftFileInput.accept = ".json,application/json";
@@ -834,41 +1242,73 @@ function setup(ctx) {
   draftFileInput.setAttribute("aria-label", "Open saved Set Points draft");
   app.append(draftFileInput);
   const openDraftButton = button("Open draft", () => draftFileInput.click());
-  draftFileInput.addEventListener("change", () => void run(openDraftButton, async () => {
-    const file = draftFileInput.files?.[0];
-    if (!file)
-      return;
+  const pasteDraftPanel = node("section", "sp-card sp-stack");
+  pasteDraftPanel.hidden = true;
+  pasteDraftPanel.setAttribute("aria-label", "Restore draft backup");
+  const pastedDraft = field("Paste draft JSON", "", undefined, { area: true, rows: 10, hint: "Paste a complete Set Points story-draft backup. Opening it replaces the current Review draft only after validation." });
+  const pasteDraftButton = button("Paste draft backup", () => {
+    pasteDraftPanel.hidden = false;
+    pastedDraft.input.focus();
+  });
+  const openPastedDraft = button("Open pasted draft", async () => {
+    await restoreDraftText(pastedDraft.input.value);
+    pasteDraftPanel.hidden = true;
+  });
+  pasteDraftPanel.append(node("h3", "", "Restore a draft backup"), pastedDraft.wrap, row(openPastedDraft, button("Close restore", () => {
+    pasteDraftPanel.hidden = true;
+  })));
+  app.insertBefore(pasteDraftPanel, panels.import);
+  async function restoreDraftText(text) {
+    if (openingDraft)
+      throw new Error("Wait for the current draft to finish opening.");
     openingDraft = true;
     try {
-      if (!/\.json$/i.test(file.name))
-        throw new Error("Choose a Set Points draft saved as a .json file.");
-      if (file.size > MAX_DRAFT * 4)
-        throw new Error("This draft file is too large. Open a draft with up to 192,000 characters.");
-      const text = await file.text();
-      if (text.length > MAX_DRAFT)
-        throw new Error("This draft file is too large. Open a draft with up to 192,000 characters.");
+      if (text.length > MAX_BACKUP)
+        throw new Error("This draft backup is too large. Open a backup with up to 384,000 characters; the validated story draft must fit within 192,000 characters.");
       let imported;
       try {
         imported = JSON.parse(text);
       } catch {
-        throw new Error("This file could not be read. Choose a Set Points draft exported from Review.");
+        throw new Error("This backup could not be read. Use a complete Set Points draft exported from Review.");
       }
+      const before = JSON.stringify(draft), revision = draftRevision;
       notify("Checking the saved draft…");
       const restored = await rpc.request("save-draft", { draft: imported });
       if (destroyed)
         return;
+      if (snapshot)
+        snapshot.draft = clone(restored);
+      if (JSON.stringify(draft) !== before || draftRevision !== revision) {
+        pendingReplacement = clone(restored);
+        newDraftNotice.hidden = false;
+        selectTab("review");
+        notify("The backup was validated and saved. Your newer Review edits were kept. Choose Load new draft when ready to replace them.");
+        return;
+      }
       draft = clone(restored);
+      pendingReplacement = null;
       draftDirty = false;
       draftRevision++;
       draftVersion = JSON.stringify(restored);
-      if (snapshot)
-        snapshot.draft = clone(restored);
       newDraftNotice.hidden = true;
       renderReview();
       selectTab("review");
       notify("Draft opened and saved. Review it before saving the character card.");
     } finally {
       openingDraft = false;
+    }
+  }
+  draftFileInput.addEventListener("change", () => void run(openDraftButton, async () => {
+    const file = draftFileInput.files?.[0];
+    if (!file)
+      return;
+    try {
+      if (!/\.json$/i.test(file.name))
+        throw new Error("Choose a Set Points draft saved as a .json file.");
+      if (file.size > MAX_BACKUP * 4)
+        throw new Error("This draft file is too large. Open a backup with up to 384,000 characters.");
+      await restoreDraftText(await file.text());
+    } finally {
       draftFileInput.value = "";
     }
   }));
@@ -876,9 +1316,10 @@ function setup(ctx) {
     const panel = panels.review;
     panel.replaceChildren();
     panelNonce++;
+    approvedControls.clear();
     if (!draft) {
       const top = intro("Meet your adaptation", "A little preparation makes room for a better story.");
-      top.append(openDraftButton);
+      top.append(row(openDraftButton, pasteDraftButton));
       panel.append(top);
       const empty = node("div", "sp-empty");
       empty.append(node("span", "sp-tag", "Your draft belongs here"), paragraph("Import a story to review its cast, lore, and scene openings."), button("Bring in a story", () => selectTab("import"), true));
@@ -889,11 +1330,12 @@ function setup(ctx) {
     const nonce = panelNonce;
     const top = intro("Make it yours", "Edit the cast, the world, and the moments you want to reach.");
     const dirtyTag = node("span", "sp-tag", draftDirty ? "Unsaved edits" : "Draft ready");
-    top.append(group(dirtyTag, openDraftButton));
+    top.append(group(dirtyTag, row(openDraftButton, pasteDraftButton)));
     panel.append(top);
     const markDirty = () => {
       draftDirty = true;
       dirtyTag.textContent = "Unsaved edits";
+      renderVisuals();
     };
     const edit = (label, value, change, area = false, hint) => field(label, value, (v) => {
       change(v);
@@ -923,17 +1365,62 @@ function setup(ctx) {
     panel.append(narration.root);
     const cast = node("div", "sp-review-group");
     cast.append(node("div", "sp-section-label", "The people"));
+    const appearanceGuide = group(node("h3", "", "Appearance guide"), paragraph("Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields stay unspecified. These choices are included in the draft and become lorebook guidance when saved to Lumiverse; editing them uses no model.", "sp-small"), paragraph("Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections.", "sp-hint"));
+    appearanceGuide.classList.add("sp-card");
+    cast.append(appearanceGuide);
     for (const person of current.cast) {
+      let updateApproved = function() {
+        const choice = approved();
+        approvedCaption.input.value = [choice?.description, choice?.startingOutfit].map((value) => value?.trim() ?? "").filter(Boolean).join(" ");
+        approvedCopy.disabled = !approvedCaption.input.value;
+        const signature = visualDraftSignature(current), profile = snapshot?.visuals?.resultSignature === signature ? visualEditors.get(signature)?.pack.profiles.find((item) => item.characterId === person.id) : undefined;
+        const normalized = (value) => value === UNSPECIFIED_APPEARANCE ? "" : value.trim().replace(/\s+/g, " ");
+        appearanceMismatch.hidden = !(choice && profile && (normalized(choice.description) !== normalized(profile.description) || normalized(choice.startingOutfit) !== normalized(profile.startingOutfit)));
+      };
       const entry = details(person.name);
       entry.body.append(edit("Name", person.name, (v) => {
         person.name = v;
         entry.summary.textContent = v;
       }), edit("Also known as", person.aliases.join(", "), (v) => person.aliases = v.split(",").map((x) => x.trim()).filter(Boolean)), edit("Personality", person.personality, (v) => person.personality = v, true), edit("Voice & manner", person.voice, (v) => person.voice = v, true), edit("Relationships at the start", person.relationships, (v) => person.relationships = v, true), edit("Knowledge at the start", person.knowledge, (v) => person.knowledge = v, true));
+      const approved = () => current.appearances?.find((item) => item.characterId === person.id);
+      const setApproved = (key, value) => {
+        let appearance = approved();
+        if (!appearance) {
+          appearance = { characterId: person.id, description: "", startingOutfit: "" };
+          (current.appearances ??= []).push(appearance);
+        }
+        appearance[key] = value;
+        updateApproved();
+      };
+      const approvedCaption = field(`${person.name}: approved caption to copy`, "", undefined, { area: true, rows: 2, hint: "Copies only the appearance and outfit you approved. Free text is not automatically converted to image tags." });
+      approvedCaption.input.readOnly = true;
+      const approvedCopy = button(`Copy ${person.name} approved caption`, () => copyVisualText(approvedCaption.input.value, approvedCaption.input, "Approved caption"));
+      const appearanceMismatch = paragraph("Your approved look differs from the source-analysis descriptions. The source tag and caption buttons still contain that older look. Use the approved caption here, or deliberately update the source-analysis fields before copying their prompts.", "sp-notice");
+      appearanceMismatch.hidden = true;
+      approvedControls.set(person.id, updateApproved);
+      updateApproved();
+      entry.body.append(edit(`${person.name}: approved appearance`, approved()?.description ?? "", (v) => setApproved("description", v), true, "Your chosen physical details. Leave blank when unspecified. This is independent of generated source facts."), edit(`${person.name}: approved starting outfit`, approved()?.startingOutfit ?? "", (v) => setApproved("startingOutfit", v), true, "Your chosen outfit at the start. Leave blank when unspecified. Edit conflicting lore or scene openings separately."), appearanceMismatch, approvedCaption.wrap, approvedCopy);
       if (person.sourceRefs.length)
         entry.body.append(paragraph(`Source: ${person.sourceRefs.join(" · ")}`, "sp-hint"));
       cast.append(entry.root);
     }
     panel.append(cast);
+    const mentions = details("Existing appearance mentions");
+    const mentionResults = group(), mentionStatus = paragraph("", "sp-hint");
+    mentionStatus.setAttribute("role", "status");
+    const scanMentions = button("Scan appearance mentions", () => {
+      const found = appearanceMentions(current);
+      mentionResults.replaceChildren();
+      mentionStatus.textContent = found.length ? `${found.length} possible appearance mention${found.length === 1 ? "" : "s"} found.` : "No matching appearance words found. This does not prove there are no other descriptions.";
+      for (const mention of found) {
+        const item = group(node("h3", "", mention.location), paragraph(mention.text, "sp-preview"));
+        mentionResults.append(item);
+      }
+      scanMentions.textContent = "Refresh appearance mentions";
+    });
+    mentions.body.append(paragraph("Finds possible appearance words in the existing draft for you to compare with approved looks. This is not an exhaustive check or a conflict detector. It makes no model request and does not rewrite anything. Edit the corresponding fields below when needed.", "sp-hint"), scanMentions, mentionStatus, mentionResults);
+    panel.append(mentions.root, visualPanel);
+    renderVisuals();
     const lore = node("div", "sp-review-group");
     lore.append(node("div", "sp-section-label", "The world"));
     for (const item of current.lore) {
@@ -1098,13 +1585,14 @@ function setup(ctx) {
         snapshot = next;
         updateConnections(next);
         renderJob(next.job);
-        newDraftNotice.hidden = !(draftDirty && draft && next.draft && draft.id !== next.draft.id);
+        newDraftNotice.hidden = !(pendingReplacement || draftDirty && draft && next.draft && draft.id !== next.draft.id);
         const nextVersion = JSON.stringify(next.draft);
         if (!openingDraft && !draftDirty && readRevision === draftRevision && nextVersion !== draftVersion) {
           draft = next.draft ? clone(next.draft) : null;
           draftVersion = nextVersion;
           renderReview();
         }
+        renderVisuals();
         renderPlay(next.play);
         if (completed) {
           notify(newDraftNotice.hidden ? "Your adaptation is ready. Review the cast and scene assumptions before saving." : "Your new adaptation is ready. Your unsaved review edits have been kept.");

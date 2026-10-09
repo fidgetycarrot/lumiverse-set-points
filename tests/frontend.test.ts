@@ -3,6 +3,7 @@ import { Window } from 'happy-dom';
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { createRpc, setup } from '../src/frontend';
 import { validateDraft } from '../src/importer';
+import { visualDraftSignature, type VisualPack } from '../src/visuals';
 import type { AppSnapshot, StoryDraft, WebStoryPage } from '../src/types';
 
 const cleanups:Array<()=>void>=[];
@@ -14,9 +15,10 @@ function harness(hasDraft=true) {
   Object.assign(globalThis,{document:window.document,HTMLInputElement:window.HTMLInputElement,HTMLTextAreaElement:window.HTMLTextAreaElement});
   const root=window.document.createElement('div');window.document.body.append(root);
   const state:AppSnapshot={version:'0.1.0',permissions:[],connections:[{id:'model',name:'Writing model',provider:'test',model:'test'}],job:null,draft:hasDraft?fixture():null,saved:null,play:{chatId:'chat',characterId:'card',title:'The Letter',enabled:true,current:0,next:1,scenes:fixture().scenes,canUndo:false,busy:false,notice:''},diagnostics:[]};
-  let receive:(message:unknown)=>void=()=>{};let webFetch:((url:string)=>Promise<WebStoryPage>)|null=null;let connectionTest:((id:string)=>Promise<{message:string}>)=async()=>({message:'The provider accepted the neutral test request.'});let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
+  let receive:(message:unknown)=>void=()=>{};let webFetch:((url:string)=>Promise<WebStoryPage>)|null=null;let connectionTest:((id:string)=>Promise<{message:string}>)=async()=>({message:'The provider accepted the neutral test request.'});let draftSave:((draft:unknown)=>Promise<StoryDraft>)|null=null;let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
   const ctx={ui:{registerDrawerTab:()=>({root,tabId:'set-points',setBadge:()=>{},onActivate:()=>()=>{},activate:()=>{active=true;},destroy:()=>{}}),registerInputBarAction:()=>({onClick:()=>()=>{},destroy:()=>{}})},dom:{addStyle:(css:string)=>{const style=window.document.createElement('style');style.textContent=css;window.document.head.append(style);return()=>style.remove();}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'chat',characterId:'card'}),ready:()=>{},onBackendMessage:(callback:(message:unknown)=>void)=>{receive=callback;return()=>{receive=()=>{};};},sendToBackend:(message:any)=>{requests.push(message);queueMicrotask(()=>{
     if(failure&&message.action!=='snapshot'){receive({type:'set-points:response',id:message.id,error:failure});return;}
+    if(message.action==='save-draft'&&draftSave){draftSave(message.input.draft).then(result=>{state.draft=result;receive({type:'set-points:response',id:message.id,result:structuredClone(result)});},error=>receive({type:'set-points:response',id:message.id,error:String(error)}));return;}
     if(message.action==='test-connection'){Promise.resolve().then(()=>connectionTest(message.input.connectionId)).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     if(message.action==='fetch-url'){Promise.resolve().then(()=>{if(!webFetch)throw new Error('No readable page');return webFetch(message.input.url);}).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     let result:unknown;
@@ -24,6 +26,10 @@ function harness(hasDraft=true) {
     else if(message.action==='save-draft'){try{state.draft=validateDraft(message.input.draft);result=state.draft;}catch(error){receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)});return;}}
     else if(message.action==='start-import'||message.action==='resume-import'){state.resume={available:false,retryUncertain:false};state.job={id:'job-a',status:'running',completed:0,total:3,label:'Reading section one'};result=state.job;}
     else if(message.action==='cancel-import'){state.job={id:'job-a',status:'cancelled',completed:0,total:3,label:'Cancelled'};state.resume={available:true,retryUncertain:false};}
+    else if(message.action==='start-visuals'){state.visuals={...state.visuals,pack:state.visuals?.pack??null,job:{id:'visual-job',status:'running',completed:0,total:3,label:'Reading appearances'},requestSignature:visualDraftSignature(message.input.draft),sourceSignature:visualDraftSignature(message.input.draft),resumeAvailable:false,retryUncertain:false,connectionId:message.input.connectionId,maxOutputTokens:message.input.maxOutputTokens,reasoningMode:message.input.reasoningMode};result=state.visuals.job;}
+    else if(message.action==='resume-visuals'){state.visuals={...state.visuals!,job:{id:'resumed-visual-job',status:'running',completed:1,total:3,label:'Resuming appearances'},resumeAvailable:false};result=state.visuals.job;}
+    else if(message.action==='cancel-visuals'){state.visuals!.job={...state.visuals!.job!,status:'cancelled',label:'Descriptions cancelled'};state.visuals!.resumeAvailable=true;}
+    else if(message.action==='save-visuals'){state.visuals={...state.visuals!,pack:structuredClone(message.input.pack),resultSignature:visualDraftSignature(message.input.draft)};result=state.visuals.pack;}
     else if(message.action==='play-force'){state.play.current=1;state.play.next=null;state.play.canUndo=true;result=state.play;}
     receive({type:'set-points:response',id:message.id,result:structuredClone(result)});
   });}} as unknown as SpindleFrontendContext;
@@ -32,7 +38,7 @@ function harness(hasDraft=true) {
   const field=(label:string)=>{const caption=Array.from(root.querySelectorAll('label')).find(item=>item.textContent===label)!;return root.querySelector(`#${caption.htmlFor}`) as unknown as HTMLInputElement;};
   const input=(label:string,value:string)=>{const el=field(label);el.value=value;el.dispatchEvent(new window.Event('input',{bubbles:true}) as unknown as Event);return el;};
   const openDraft=(text:string)=>{const input=root.querySelector('input[accept=".json,application/json"]')!;Object.defineProperty(input,'files',{configurable:true,value:[new window.File([text],'saved-draft.json',{type:'application/json'})]});input.dispatchEvent(new window.Event('change',{bubbles:true}));};
-  return {root,state,requests,button,field,input,openDraft,setConnectionTest:(checker:(id:string)=>Promise<{message:string}>)=>{connectionTest=checker;},setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
+  return {root,state,requests,button,field,input,openDraft,setDraftSave:(handler:(draft:unknown)=>Promise<StoryDraft>)=>{draftSave=handler;},setConnectionTest:(checker:(id:string)=>Promise<{message:string}>)=>{connectionTest=checker;},setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
 }
 
 describe('request handling',()=>{
@@ -80,8 +86,8 @@ describe('Set Points workspace',()=>{
   });
   test('unreadable and oversized draft files are rejected before sending to the backend',async()=>{
     const app=harness();await tick();app.button('Review').click();app.input('Premise','Keep these edits');
-    app.openDraft('not a saved draft');await tick();expect(app.field('Premise').value).toBe('Keep these edits');expect(app.root.textContent).toContain('This file could not be read.');
-    app.openDraft(' '.repeat(192_001));await tick();expect(app.root.textContent).toContain('too large');expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);
+    app.openDraft('not a saved draft');await tick();expect(app.field('Premise').value).toBe('Keep these edits');expect(app.root.textContent).toContain('This backup could not be read.');
+    app.openDraft(' '.repeat(384_001));await tick();expect(app.root.textContent).toContain('too large');expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);
   });
   test('renders story strings as text and uses active chat for snapshots',async()=>{
     const app=harness();app.state.draft!.cast[0].name='<img src=x onerror=alert(1)>';await tick();app.changed();await tick();
@@ -247,5 +253,162 @@ describe('model response settings',()=>{
     app.input('Unfinished response allowance','32000');app.input('Unfinished reasoning mode','low');app.fail('The provider rejected these settings.');app.button('Resume saved import').click();await tick();expect(app.field('Unfinished response allowance').value).toBe('32000');expect(app.field('Unfinished reasoning mode').value).toBe('low');expect(app.button('Resume saved import').disabled).toBe(false);
     app.fail('');let accept!:(value:{message:string})=>void;app.setConnectionTest(async()=>new Promise(resolve=>{accept=resolve;}));app.button('Check connection').click();await tick();expect(app.field('Response allowance').disabled).toBe(true);expect(app.field('Unfinished reasoning mode').disabled).toBe(true);
     accept({message:'Accepted'});await tick();expect(app.field('Response allowance').disabled).toBe(false);expect(app.field('Unfinished reasoning mode').disabled).toBe(false);
+  });
+});
+
+
+const visualFixture=():VisualPack=>({version:1,draftId:'draft-a',profiles:[{characterId:'captain',description:'Iona has grey eyes.',appearanceTags:['grey eyes'],startingOutfit:'A blue coat.',outfitTags:['blue coat'],suggestedDetails:'A brass compass could suit her.',suggestedTags:['brass compass'],unknowns:['Hair color is not established.'],sourceRefs:['chunk:1'],subject:'Iona, an adult sailor',countTag:'1girl'}],warnings:[]});
+function readyVisuals(app:ReturnType<typeof harness>){const signature=visualDraftSignature(app.state.draft!);app.state.visuals={job:null,pack:visualFixture(),resultSignature:signature,sourceSignature:signature,requestSignature:signature,resumeAvailable:false,retryUncertain:false};}
+
+describe('optional image descriptions',()=>{
+  test('requires explicit matching source and keeps Import text separate until copied',async()=>{
+    const app=harness();await tick();app.input('Story text','Original story. '.repeat(20));app.button('Review').click();
+    expect(app.field('Original story for these descriptions').value).toBe('');app.button('Create image descriptions').click();await tick();expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+    app.button('Use story text from Import').click();expect(app.field('Original story for these descriptions').value).toBe('Original story. '.repeat(20));expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+    app.input('Image description connection','model');app.input('Description response allowance','32000');app.input('Description reasoning mode','low');app.button('Create image descriptions').click();await tick();
+    const request=app.requests.find(item=>item.action==='start-visuals');expect(request?.input).toEqual({draft:fixture(),connectionId:'model',maxOutputTokens:32000,reasoningMode:'low',sourceText:'Original story. '.repeat(20)});expect(app.field('Story text').value).toBe('Original story. '.repeat(20));
+    expect(app.root.textContent).toContain('normal text-model charges');expect(app.root.textContent).toContain('does not generate images');
+  });
+  test('verified source is used only for the exact current draft and no unrelated form text is sent',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.input('Story text','A different source in Import');app.button('Review').click();app.button('Create image descriptions').click();await tick();
+    const request=app.requests.find(item=>item.action==='start-visuals');expect(request?.input.sourceText).toBeUndefined();expect(JSON.stringify(request)).not.toContain('different source');
+    app.button('Cancel descriptions').click();await tick();app.input('Premise','Changed cast context');app.button('Create image descriptions').click();await tick();expect(app.requests.filter(item=>item.action==='start-visuals')).toHaveLength(1);expect(app.root.textContent).toContain('Supply between 100 and 500,000 characters');
+  });
+  test('replacing a bound source is explicit and submits only after review and a deliberate create',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.button('Use different story text').click();app.input('Original story for these descriptions','Corrected original text. '.repeat(12));
+    expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);app.button('Create image descriptions').click();await tick();expect(app.requests.find(item=>item.action==='start-visuals')?.input.sourceText).toBe('Corrected original text. '.repeat(12));
+  });
+  test('description jobs block overlapping operations while preserving editable story and source form',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.input('Story text','Keep this source');app.button('Create image descriptions').click();app.button('Create image descriptions').click();await tick();
+    expect(app.requests.filter(item=>item.action==='start-visuals')).toHaveLength(1);expect(app.button('Create adaptation').disabled).toBe(true);expect(app.button('Check connection').disabled).toBe(true);expect(app.button('Read linked pages').disabled).toBe(true);expect(app.field('Description response allowance').disabled).toBe(true);
+    app.input('Premise','My edit during generation');app.changed();await tick();expect(app.field('Premise').value).toBe('My edit during generation');expect(app.field('Story text').value).toBe('Keep this source');
+    app.button('Cancel descriptions').click();await tick();expect(app.button('Create adaptation').disabled).toBe(false);expect(app.button('Create image descriptions').disabled).toBe(false);expect(app.button('Resume saved descriptions').hidden).toBe(true);
+  });
+  test('hides results for changed draft context without losing story or description edits',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.button('Review').click();app.input('Iona: appearance from the story','Iona has dark grey eyes.');
+    app.input('Premise','A different premise');expect(app.root.textContent).toContain('Descriptions for a different version of the draft are hidden');expect(app.button('Copy Iona Anima tags')).toBeUndefined();
+    app.changed();await tick();expect(app.field('Premise').value).toBe('A different premise');app.input('Premise',fixture().premise);expect(app.field('Iona: appearance from the story').value).toBe('Iona has dark grey eyes.');
+  });
+  test('incoming results never overwrite unsaved description edits until explicitly loaded',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.input('Iona: appearance from the story','My local appearance edit');app.state.visuals!.pack!.profiles[0].description='Newly generated appearance';app.changed();await tick();
+    expect(app.field('Iona: appearance from the story').value).toBe('My local appearance edit');expect(app.button('Load new descriptions').hidden).toBe(false);
+    app.button('Load new descriptions').click();expect(app.field('Iona: appearance from the story').value).toBe('Newly generated appearance');expect(app.button('Load new descriptions').hidden).toBe(true);
+  });
+  test('saves descriptions independently from the story draft, with all field edits',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.input('Iona: appearance from the story','Iona has green eyes.');app.input('Iona: appearance tags','green eyes, silver hair');app.input('Iona: suggested details','A small compass.');
+    app.button('Save descriptions').click();await tick();const request=app.requests.find(item=>item.action==='save-visuals');expect(request?.input.draft).toEqual(fixture());expect(request?.input.pack.profiles[0].appearanceTags).toEqual(['green eyes','silver hair']);expect(request?.input.pack.profiles[0].description).toBe('Iona has green eyes.');
+    expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);expect(app.state.draft).toEqual(fixture());expect(app.root.textContent).toContain('Image descriptions saved separately');
+  });
+  test('copies canonical Anima tags by default and includes suggestions only on explicit choice',async()=>{
+    const app=harness();readyVisuals(app);await tick();let copied='';Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async(value:string)=>{copied=value;}}});
+    app.button('Copy Iona Anima tags').click();await tick();expect(copied).toBe('1girl, grey eyes, blue coat');expect(copied).not.toContain('brass compass');
+    const include=app.root.querySelector('[aria-label="Iona: include suggested details in copied prompts"]')! as InstanceType<typeof app.window.HTMLInputElement>;include.checked=true;include.dispatchEvent(new app.window.Event('change'));app.button('Copy Iona Anima tags').click();await tick();expect(copied).toContain('brass compass');
+    app.button('Copy Iona caption').click();await tick();expect(copied).toContain('Iona has grey eyes');expect(copied).toContain('brass compass');app.button('Copy Iona outfit').click();await tick();expect(copied).toBe('A blue coat.');
+  });
+  test('dedicated Lumi Studio fields copy canonical appearance and outfit tags without prose or suggestions',async()=>{
+    const app=harness();readyVisuals(app);await tick();let copied='';Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async(value:string)=>{copied=value;}}});
+    const include=app.root.querySelector('[aria-label="Iona: include suggested details in copied prompts"]')! as InstanceType<typeof app.window.HTMLInputElement>;include.checked=true;include.dispatchEvent(new app.window.Event('change'));
+    app.button('Copy Iona appearance tags').click();await tick();expect(copied).toBe('grey eyes');expect(copied).not.toContain('Iona');expect(copied).not.toContain('brass compass');
+    app.button('Copy Iona outfit tags').click();await tick();expect(copied).toBe('blue coat');expect(copied).not.toContain('A blue coat.');expect(copied).not.toContain('brass compass');expect(app.root.textContent).toContain('Up to 12 tags, separated by commas');
+    app.input('Iona: outfit tags','green coat, brass buttons');app.button('Copy Iona outfit tags').click();await tick();expect(copied).toBe('green coat, brass buttons');
+  });
+  test('whitespace-only story edits keep source, results and resume bound to the validated draft',async()=>{
+    const app=harness();readyVisuals(app);app.state.visuals!.job={id:'failed-visual',status:'failed',completed:1,total:3,label:'Failed'};app.state.visuals!.resumeAvailable=true;await tick();
+    app.input('Title',`  ${fixture().title} `);app.input('Premise',`${fixture().premise} `);expect(app.field('Iona: appearance from the story').value).toBe('Iona has grey eyes.');expect(app.button('Resume saved descriptions').hidden).toBe(false);
+    app.button('Resume saved descriptions').click();await tick();expect(app.requests.filter(item=>item.action==='resume-visuals')).toHaveLength(1);
+  });
+  test('clipboard failure selects editable text and never falsely reports a copy',async()=>{
+    const app=harness();readyVisuals(app);await tick();Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Denied');}}});app.button('Copy Iona appearance').click();await tick();
+    const appearance=app.field('Iona: appearance from the story');expect(app.window.document.activeElement).toBe(appearance as any);expect(appearance.selectionStart).toBe(0);expect(appearance.selectionEnd).toBe(appearance.value.length);expect(app.root.querySelector('[role="status"]')?.textContent).toContain('Clipboard access is unavailable');expect(app.button('Copy Iona appearance').disabled).toBe(false);
+  });
+  test('resume sends only saved-job response settings and requires explicit warned uncertain retry',async()=>{
+    const app=harness();readyVisuals(app);app.state.visuals!.job={id:'failed-visual',status:'failed',completed:2,total:4,label:'Failed',error:'Request outcome unknown',phase:'Reading character appearances'};app.state.visuals!.resumeAvailable=true;app.state.visuals!.retryUncertain=true;app.state.visuals!.maxOutputTokens=32000;app.state.visuals!.reasoningMode='low';await tick();
+    expect(app.field('Description response allowance').value).toBe('32000');expect(app.root.textContent).toContain('Stopped during Reading character appearances');expect(app.root.textContent).toContain('may already have been charged');app.input('Description response allowance','64000');app.input('Description reasoning mode','off');app.changed();await tick();
+    expect(app.field('Description response allowance').value).toBe('64000');expect(app.requests.some(item=>item.action==='resume-visuals')).toBe(false);app.button('Retry unfinished description request').click();await tick();expect(app.requests.find(item=>item.action==='resume-visuals')?.input).toEqual({maxOutputTokens:64000,reasoningMode:'off',retryUncertain:true});
+  });
+  test('wrong-draft resume stays unavailable and action errors preserve text and edits',async()=>{
+    const app=harness();readyVisuals(app);app.state.visuals!.job={id:'failed-visual',status:'failed',completed:1,total:3,label:'Failed'};app.state.visuals!.resumeAvailable=true;app.state.visuals!.requestSignature='another-draft';await tick();expect(app.button('Resume saved descriptions').hidden).toBe(true);expect(app.root.textContent).toContain('Descriptions for another version');
+    app.input('Iona: appearance from the story','Keep this description');app.fail('The provider rejected the description request.');app.button('Create image descriptions').click();await tick();expect(app.field('Iona: appearance from the story').value).toBe('Keep this description');expect(app.button('Create image descriptions').disabled).toBe(false);expect(app.root.querySelector('[role="status"]')?.textContent).toContain('provider rejected');
+  });
+});
+
+
+describe('approved story appearances',()=>{
+  test('existing drafts allow authoritative manual appearance choices without source or model calls',async()=>{
+    const app=harness();app.state.connections=[];await tick();app.button('Review').click();
+    expect(app.field('Iona: approved appearance').value).toBe('');expect(app.field('Iona: approved starting outfit').value).toBe('');expect(app.field('Story text').value).toBe('');
+    app.input('Iona: approved appearance','Short silver hair and green eyes.');app.input('Iona: approved starting outfit','A navy coat with brass buttons.');app.button('Save draft').click();await tick();
+    expect(app.requests.find(item=>item.action==='save-draft')?.input.draft.appearances).toEqual([{characterId:'captain',description:'Short silver hair and green eyes.',startingOutfit:'A navy coat with brass buttons.'}]);
+    expect(app.state.draft?.appearances?.[0].description).toBe('Short silver hair and green eyes.');expect(app.requests.some(item=>['start-import','start-visuals','test-connection'].includes(item.action))).toBe(false);expect(app.root.textContent).toContain('Blank fields stay unspecified');
+  });
+  test('manual appearance edits survive refresh, keep paid descriptions matched, and allow unspecified fields',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.input('Iona: approved appearance','My chosen look');app.input('Iona: approved starting outfit','');app.changed();await tick();
+    expect(app.field('Iona: approved appearance').value).toBe('My chosen look');expect(app.field('Iona: appearance from the story').value).toBe('Iona has grey eyes.');expect((app.root.querySelector('[data-visual-result-notice]') as any).hidden).toBe(true);
+    app.button('Save draft').click();await tick();expect(app.state.draft!.appearances?.[0].startingOutfit).toBe('');expect(app.field('Iona: approved appearance').value).toBe('My chosen look');
+  });
+  test('approving generated appearances copies only source fields, preserves story edits, and leaves suggestions unapproved',async()=>{
+    const app=harness();readyVisuals(app);app.state.visuals!.pack!.profiles[0].description='Not specified in the source.';app.state.visuals!.pack!.profiles[0].appearanceTags=[];await tick();
+    app.input('Instructions','Keep my edited narrator direction.');app.input('Lore','Keep my edited harbor lore.');app.input('Iona: approved appearance','An earlier manual choice');app.button('Use these appearances in story').click();
+    expect(app.field('Iona: approved appearance').value).toBe('');expect(app.field('Iona: approved starting outfit').value).toBe('A blue coat.');expect(app.field('Instructions').value).toBe('Keep my edited narrator direction.');expect(app.field('Lore').value).toBe('Keep my edited harbor lore.');expect(app.root.textContent).toContain('Suggestions were not copied');
+    expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+    app.button('Save draft').click();await tick();expect(JSON.stringify(app.state.draft!.appearances)).not.toContain('compass');expect(app.state.draft!.appearances).toEqual([{characterId:'captain',description:'',startingOutfit:'A blue coat.'}]);expect(app.state.draft!.scenes).toEqual(fixture().scenes);
+  });
+  test('draft export includes approved choices while description-pack export remains separate',async()=>{
+    const app=harness();readyVisuals(app);await tick();app.input('Iona: approved appearance','Chosen green eyes');let download:Blob|undefined;const original=URL.createObjectURL;URL.createObjectURL=(value)=>{download=value as Blob;return 'blob:test';};cleanups.push(()=>{URL.createObjectURL=original;});
+    app.button('Export draft').click();await tick();const exported=JSON.parse(await download!.text());expect(exported.appearances).toEqual([{characterId:'captain',description:'Chosen green eyes',startingOutfit:''}]);expect(exported.visuals).toBeUndefined();
+    app.button('Export descriptions').click();await tick();const pack=JSON.parse(await download!.text());expect(pack.profiles[0].description).toBe('Iona has grey eyes.');expect(pack.appearances).toBeUndefined();
+  });
+});
+
+
+describe('portable JSON backups and appearance review',()=>{
+  test('export always exposes the exact backup before a download API failure',async()=>{
+    const app=harness();await tick();app.input('Premise','My unsaved revised premise');const original=URL.createObjectURL;URL.createObjectURL=()=>{throw new Error('Browser download unavailable');};cleanups.push(()=>{URL.createObjectURL=original;});
+    app.button('Export draft').click();await tick();const panel=app.root.querySelector('[aria-label="JSON backup"]')!;expect((panel as any).hidden).toBe(false);expect(JSON.parse(app.field('JSON backup').value).premise).toBe('My unsaved revised premise');expect(app.field('Backup filename').value).toBe('The-Letter-draft.json');expect(app.field('JSON backup').readOnly).toBe(true);expect(app.root.querySelector('[role="status"]')?.textContent).toContain('Browser download unavailable');expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);
+    app.input('Premise','Edit after exporting');app.button('Save draft').click();await tick();expect(JSON.parse(app.field('JSON backup').value).premise).toBe('My unsaved revised premise');
+  });
+  test('a blocked anchor still leaves exact JSON visible and reports only a requested download',async()=>{
+    const app=harness();await tick();let clicks=0;const original=app.window.HTMLAnchorElement.prototype.click;app.window.HTMLAnchorElement.prototype.click=function(){clicks++;};cleanups.push(()=>{app.window.HTMLAnchorElement.prototype.click=original;});
+    app.button('Export draft').click();await tick();expect(clicks).toBe(1);expect(JSON.parse(app.field('JSON backup').value)).toEqual(fixture());expect(app.root.querySelector('[role="status"]')?.textContent).toContain('Download requested. If no file appears');expect(app.root.querySelector('[role="status"]')?.textContent).not.toContain('saved.');
+    app.button('Download JSON').click();await tick();expect(clicks).toBe(2);expect(JSON.parse(app.field('JSON backup').value)).toEqual(fixture());app.button('Close backup').click();expect((app.root.querySelector('[aria-label="JSON backup"]') as any).hidden).toBe(true);
+  });
+  test('backup clipboard refusal selects all exact JSON for manual copying',async()=>{
+    const app=harness();await tick();Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Denied');}}});app.button('Export draft').click();await tick();app.button('Copy backup').click();await tick();
+    const backup=app.field('JSON backup');expect(backup.selectionStart).toBe(0);expect(backup.selectionEnd).toBe(backup.value.length);expect(JSON.parse(backup.value)).toEqual(fixture());expect(app.root.querySelector('[role="status"]')?.textContent).toContain('Clipboard access is unavailable');
+  });
+  test('normal download keeps its exact blob alive until cleanup and Copy backup uses the same JSON',async()=>{
+    const app=harness();await tick();const originalCreate=URL.createObjectURL,originalRevoke=URL.revokeObjectURL;let blob:Blob|undefined;const revoked:string[]=[];let copied='';URL.createObjectURL=value=>{blob=value as Blob;return 'blob:backup-test';};URL.revokeObjectURL=value=>{revoked.push(value);};cleanups.push(()=>{URL.createObjectURL=originalCreate;URL.revokeObjectURL=originalRevoke;});Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async(value:string)=>{copied=value;}}});
+    app.button('Export draft').click();await tick();expect(await blob!.text()).toBe(app.field('JSON backup').value);expect(revoked).toEqual([]);app.button('Copy backup').click();await tick();expect(copied).toBe(app.field('JSON backup').value);app.dispose();expect(revoked).toEqual(['blob:backup-test']);
+  });
+  test('pasted draft recovery validates before replacing edited Review and accepts approved appearances',async()=>{
+    const app=harness();await tick();app.input('Premise','Keep my edits');app.button('Paste draft backup').click();app.input('Paste draft JSON','not JSON');app.button('Open pasted draft').click();await tick();expect(app.field('Premise').value).toBe('Keep my edits');
+    app.input('Paste draft JSON',JSON.stringify({...fixture(),scenes:[]}));app.button('Open pasted draft').click();await tick();expect(app.field('Premise').value).toBe('Keep my edits');
+    const restored={...fixture(),title:'Restored through paste',appearances:[{characterId:'captain',description:'Approved silver hair',startingOutfit:''}]};app.input('Paste draft JSON',JSON.stringify(restored));app.button('Open pasted draft').click();await tick();expect(app.field('Title').value).toBe('Restored through paste');expect(app.field('Iona: approved appearance').value).toBe('Approved silver hair');expect((app.root.querySelector('[aria-label="Restore draft backup"]') as any).hidden).toBe(true);
+  });
+  test('oversized pasted backup is stopped locally without replacing the draft',async()=>{
+    const app=harness();await tick();app.input('Premise','Keep me');app.button('Paste draft backup').click();app.input('Paste draft JSON',' '.repeat(384_001));app.button('Open pasted draft').click();await tick();expect(app.field('Premise').value).toBe('Keep me');expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);expect(app.root.textContent).toContain('backup is too large');
+  });
+  test('appearance scan locates full plain-text fields on request and refreshes without rewriting them',async()=>{
+    const app=harness();app.state.draft!.scenes[0].greeting='Iona waits with blue eyes and a coat.';await tick();app.input('Iona: approved appearance','Green eyes');app.button('Scan appearance mentions').click();await tick();
+    expect(app.root.textContent).toContain('Scene 1 · The harbor · opening');expect(app.root.textContent).toContain('Iona waits with blue eyes and a coat.');expect(app.field('Iona: approved appearance').value).toBe('Green eyes');expect(app.field('Scene opening').value).toBe('Iona waits with blue eyes and a coat.');expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+    app.input('Scene opening','Iona waits at the dock.');app.button('Refresh appearance mentions').click();expect(app.root.textContent).toContain('No matching appearance words found');expect(app.root.textContent).toContain('not an exhaustive check or a conflict detector');
+  });
+});
+
+
+describe('backup races and approved image captions',()=>{
+  test('edits made during a pending restore remain until an explicit replacement load',async()=>{
+    const app=harness();await tick();let accept!:(draft:StoryDraft)=>void;app.setDraftSave(async()=>new Promise(resolve=>{accept=resolve;}));app.button('Paste draft backup').click();const incoming={...fixture(),title:'Recovered title'};app.input('Paste draft JSON',JSON.stringify(incoming));app.button('Open pasted draft').click();await tick();
+    app.input('Premise','Typed while restore was waiting');accept(incoming);await tick();expect(app.field('Premise').value).toBe('Typed while restore was waiting');expect(app.root.textContent).toContain('Your newer Review edits were kept');
+    app.changed();await tick();expect(app.field('Premise').value).toBe('Typed while restore was waiting');expect(app.button('Load new draft').closest('div')?.hidden).toBe(false);app.button('Load new draft').click();expect(app.field('Title').value).toBe('Recovered title');expect(app.field('Premise').value).toBe(fixture().premise);
+  });
+  test('a valid near-limit draft can restore its larger pretty-printed export',async()=>{
+    const app=harness();await tick();const large=fixture();large.lore=Array.from({length:32},(_,index)=>({id:`entry-${index}`,name:`Entry ${index}`,keys:[`entry${index}`],content:'x'.repeat(5750)}));large.premise+='x'.repeat(191800-JSON.stringify(large).length);validateDraft(large);const text=JSON.stringify(large,null,2);expect(JSON.stringify(large).length).toBeLessThan(192001);expect(text.length).toBeGreaterThan(192000);
+    app.button('Paste draft backup').click();app.input('Paste draft JSON',text);app.button('Open pasted draft').click();await tick();expect(app.state.draft?.lore).toHaveLength(32);expect(app.field('Premise').value).toBe(large.premise);expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
+  });
+  test('approved-caption copy uses only manual choices and warns about conflicting source-analysis prompts',async()=>{
+    const app=harness();readyVisuals(app);await tick();let copied='';Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async(value:string)=>{copied=value;}}});app.input('Iona: approved appearance','Brown hair and green eyes.');app.input('Iona: approved starting outfit','A red jacket.');
+    const notice=Array.from(app.root.querySelectorAll('p')).find(item=>item.textContent?.startsWith('Your approved look differs'))!;expect(notice.hidden).toBe(false);app.button('Copy Iona approved caption').click();await tick();expect(copied).toBe('Brown hair and green eyes. A red jacket.');expect(copied).not.toContain('grey eyes');expect(copied).not.toContain('blue coat');expect(copied).not.toContain('compass');
+    app.input('Iona: approved appearance','Iona has grey eyes.');app.input('Iona: approved starting outfit','A blue coat.');expect(notice.hidden).toBe(true);expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
   });
 });

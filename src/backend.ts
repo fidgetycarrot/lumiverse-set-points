@@ -4,10 +4,19 @@ import { ResponseCheckpoints, CheckpointError } from './checkpoints';
 import { CardPublisher } from './publisher';
 import { SceneRuntime } from './runtime';
 import { extractPage, storyUrl } from './source';
+import { enrichVisuals, validateVisualPack, visualDraftSignature, type VisualPack } from './visuals';
 import { VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
 
 const STATE_PATH = 'workspace.json';
-type Workspace = { draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null; lastImport?: ImportOptions; lastConnectionFingerprint?: unknown };
+type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
+type Workspace = {
+  draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null; lastImport?: ImportOptions; lastConnectionFingerprint?: unknown;
+  // This binding is created only from a completed adaptation (or explicit visual
+  // input), never inferred from lastImport, which may belong to a failed story.
+  draftSource?: { signature: string; text: string };
+  visualJob?: ImportJob; visualPack?: VisualPack; visualResultSignature?: string;
+  visualInput?: VisualInput; visualConnectionFingerprint?: unknown;
+};
 function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function string(value: unknown, name: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required.`); return value; }
 function sameSettings(a: unknown, b: unknown): boolean {
@@ -70,10 +79,14 @@ export class SetPointsController {
   readonly runtime: SceneRuntime;
   private publisher: CardPublisher;
   private checkpoints: ResponseCheckpoints;
+  private visualCheckpoints: ResponseCheckpoints;
   private workspace: Workspace = { draft: null, saved: null, job: null };
   private ready: Promise<void>;
   private abort?: AbortController;
   private jobTask?: Promise<void>;
+  private visualAbort?: AbortController;
+  private visualTask?: Promise<void>;
+  private visualStarting = false;
   private entries: string[] = [];
   private persistence: Promise<void> = Promise.resolve();
   private starting = false;
@@ -84,6 +97,7 @@ export class SetPointsController {
     this.runtime = new SceneRuntime(api, userId);
     this.publisher = new CardPublisher(api, userId);
     this.checkpoints = new ResponseCheckpoints(api, userId);
+    this.visualCheckpoints = new ResponseCheckpoints(api, userId);
     this.ready = this.restore();
   }
   private async restore() {
@@ -110,6 +124,40 @@ export class SetPointsController {
       this.workspace = { draft: null, saved: null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}), job: { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
       this.note('Invalid saved draft backed up for recovery.');
     }
+    // Optional visual data must never make a valid story draft unreadable.
+    let invalidVisuals = false;
+    if (saved.draftSource) {
+      if (typeof saved.draftSource.signature === 'string' && saved.draftSource.signature.length <= 192_000 && typeof saved.draftSource.text === 'string' && saved.draftSource.text.trim().length >= 100 && saved.draftSource.text.length <= 500_000) this.workspace.draftSource = saved.draftSource;
+      else invalidVisuals = true;
+    }
+    try {
+      if (saved.visualPack) {
+        const pack = validateVisualPack(saved.visualPack);
+        if (typeof saved.visualResultSignature !== 'string' || !saved.visualResultSignature || saved.visualResultSignature.length > 192_000) throw new Error('Invalid visual binding');
+        this.workspace.visualPack = pack;
+        this.workspace.visualResultSignature = saved.visualResultSignature;
+      }
+    } catch { invalidVisuals = true; }
+    try {
+      if (saved.visualInput) {
+        this.workspace.visualInput = this.validateVisualInput(saved.visualInput);
+        this.workspace.visualConnectionFingerprint = saved.visualConnectionFingerprint;
+      }
+      if (saved.visualJob) {
+        const job = saved.visualJob;
+        if (!['running', 'complete', 'failed', 'cancelled'].includes(job.status) || typeof job.id !== 'string' || typeof job.label !== 'string' || !Number.isSafeInteger(job.completed) || !Number.isSafeInteger(job.total)) throw new Error('Invalid visual job');
+        this.workspace.visualJob = job;
+      }
+    } catch { invalidVisuals = true; delete this.workspace.visualInput; }
+    if (invalidVisuals) {
+      await this.api.userStorage.setJson(`recovery/visuals-${Date.now()}.json`, { draftSource: saved.draftSource, visualPack: saved.visualPack, visualInput: saved.visualInput, visualJob: saved.visualJob, visualResultSignature: saved.visualResultSignature, visualConnectionFingerprint: saved.visualConnectionFingerprint }, { userId: this.userId });
+      this.workspace.visualJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved image descriptions need attention', error: 'Some saved image-description data could not be opened. A recovery copy was retained. Your story draft and paid responses are preserved.' };
+      this.note('Invalid image-description data backed up for recovery.');
+    }
+    if (this.workspace.visualJob?.status === 'running') {
+      this.workspace.visualJob = { ...this.workspace.visualJob, status: 'failed', label: 'Image descriptions interrupted', error: 'Lumiverse restarted during image descriptions. Resume to reuse completed steps. A request with an unknown outcome needs an explicit retry.' };
+      await this.persist();
+    }
     if (this.workspace.job?.status === 'running') {
       this.workspace.job = { ...this.workspace.job, status: 'failed', label: 'Import interrupted', error: this.workspace.lastImport ? 'Lumiverse restarted during import. Resume saved import to reuse completed steps. Any request with an unknown outcome will need an explicit retry.' : 'Lumiverse restarted during import. Your last completed draft is preserved. Start the import again.' };
       await this.persist();
@@ -128,6 +176,13 @@ export class SetPointsController {
     return write;
   }
   private require(permission: string) { if (!this.api.permissions.has(permission)) throw new Error(`Grant ${permission} in Lumiverse’s Extensions panel to use this action.`); }
+  private validateVisualInput(value: unknown): VisualInput {
+    const data = record(value), draft = validateDraft(data.draft);
+    if (!draft.cast.length) throw new Error('The draft needs at least one character before creating image descriptions.');
+    if (typeof data.sourceText !== 'string' || data.sourceText.trim().length < 100 || data.sourceText.length > 500_000) throw new Error('Provide between 100 and 500,000 characters of the original story for these image descriptions.');
+    const settings = responseSettings(data as VisualInput);
+    return { draft, sourceText: data.sourceText, connectionId: string(data.connectionId, 'Image-description model connection'), ...settings };
+  }
   private note(kind: string) { this.entries.push(`${new Date().toISOString()} ${kind}`); this.entries = this.entries.slice(-100); }
   private async selectedConnection(value: unknown) {
     const id = string(value, 'Adaptation model connection');
@@ -191,7 +246,8 @@ export class SetPointsController {
   private async testConnection(connectionId: unknown): Promise<{ message: string }> {
     this.require('generation');
     if (this.checking) throw new Error('A connection check is already running.');
-    if (this.starting || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before checking a connection.');
+    if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before checking a connection.');
+    if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish before checking a connection.');
     this.checking = true;
     const controller = new AbortController();
     this.checkAbort = controller;
@@ -219,7 +275,13 @@ export class SetPointsController {
     }
     const play = chatId === null ? { chatId: null, characterId: null, title: '', enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice: 'Open a chat with a Set Points narrator to use scene controls.' } : await this.runtime.view(chatId);
     const { draft, saved, job } = structuredClone(this.workspace);
-    return { version: VERSION, permissions, connections, draft, saved, job, resume: { available: Boolean(this.workspace.lastImport && job && ['failed', 'cancelled'].includes(job.status)), retryUncertain: Boolean(job?.retryUncertain), ...responseSettings(this.workspace.lastImport ?? {}) }, play, diagnostics: [...this.entries] };
+    const visualJob = structuredClone(this.workspace.visualJob ?? null);
+    return { version: VERSION, permissions, connections, draft, saved, job, resume: { available: Boolean(this.workspace.lastImport && job && ['failed', 'cancelled'].includes(job.status)), retryUncertain: Boolean(job?.retryUncertain), ...responseSettings(this.workspace.lastImport ?? {}) }, visuals: {
+      job: visualJob, pack: structuredClone(this.workspace.visualPack ?? null), resultSignature: this.workspace.visualResultSignature,
+      sourceSignature: this.workspace.draftSource?.signature, requestSignature: this.workspace.visualInput ? visualDraftSignature(this.workspace.visualInput.draft) : undefined,
+      resumeAvailable: Boolean(this.workspace.visualInput && visualJob && ['failed', 'cancelled'].includes(visualJob.status)), retryUncertain: Boolean(visualJob?.retryUncertain),
+      connectionId: this.workspace.visualInput?.connectionId, ...responseSettings(this.workspace.visualInput ?? {}),
+    }, play, diagnostics: [...this.entries] };
   }
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
@@ -227,7 +289,8 @@ export class SetPointsController {
     this.require('generation');
     if (this.checking) throw new Error('Wait for the connection check to finish before adapting the story.');
     if (this.saving) throw new Error('Wait for the card to finish saving before importing another story.');
-    if (this.starting || this.workspace.job?.status === 'running') throw new Error('An import is already running. Cancel it before starting another.');
+    if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('An import is already running. Cancel it before starting another.');
+    if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish or cancel them before starting an adaptation.');
     this.starting = true;
     try {
       if (typeof options.text !== 'string' || options.text.trim().length < 100 || options.text.length > 500_000) throw new Error('Paste between 100 and 500,000 characters of story text.');
@@ -288,6 +351,7 @@ export class SetPointsController {
           }, controller.signal);
           controller.signal.throwIfAborted();
           this.workspace.draft = validateDraft(draft);
+          this.workspace.draftSource = { signature: visualDraftSignature(this.workspace.draft), text: options.text };
           this.workspace.saved = null;
           this.workspace.job = { ...this.workspace.job!, status: 'complete', label: 'Ready to review', completed: this.workspace.job!.total };
           await this.persist();
@@ -305,10 +369,86 @@ export class SetPointsController {
           this.workspace.job = { ...this.workspace.job!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Import cancelled; saved steps retained' : 'Import needs attention', retryUncertain, error: cancelled ? undefined : `${message} Saved steps are retained. Resume saved import reuses them; remaining model requests use normal charges.` };
           this.note(cancelled ? 'Import cancelled.' : 'Import failed; last completed draft preserved.');
           await this.persist().catch(() => this.note('Could not persist the import status.'));
-        } finally { this.abort = undefined; this.changed(); }
+        } finally { if (this.abort === controller) this.abort = undefined; this.changed(); }
       })();
       return structuredClone(job);
     } finally { this.starting = false; }
+  }
+  private async startVisuals(value: unknown, retryUncertain = false, resume = false): Promise<ImportJob> {
+    await this.ready;
+    this.require('generation');
+    if (this.checking) throw new Error('Wait for the connection check to finish before creating image descriptions.');
+    if (this.saving) throw new Error('Wait for the card to finish saving before creating image descriptions.');
+    if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before creating image descriptions.');
+    if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Image descriptions are already running. Wait or cancel them first.');
+    this.visualStarting = true;
+    try {
+      const data = record(value), draft = validateDraft(data.draft), signature = visualDraftSignature(draft);
+      const boundSource = this.workspace.draftSource;
+      const sourceText = data.sourceText === undefined && boundSource?.signature === signature ? boundSource.text : data.sourceText;
+      if (sourceText === undefined) throw new Error('Provide the original story for this draft. Set Points cannot safely match it to a saved source. Paste it in Image descriptions or explicitly copy the text from Import.');
+      const options = this.validateVisualInput({ ...data, draft, sourceText }), settings = responseSettings(options);
+      const connection = await this.selectedConnection(options.connectionId);
+      if (resume && !sameSettings(connection.fingerprint, this.workspace.visualConnectionFingerprint)) throw new Error('The saved image-description connection settings have changed. Resume paused before making any model request. Restore those settings, or create image descriptions with the new connection and normal model charges.');
+      this.visualCheckpoints.beginRun({ retryUncertain });
+      const controller = new AbortController();
+      this.visualAbort = controller;
+      const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: 'Preparing image descriptions' };
+      this.workspace.visualJob = job;
+      this.workspace.visualInput = structuredClone(options);
+      this.workspace.visualConnectionFingerprint = structuredClone(connection.fingerprint);
+      // An explicit source choice is a new binding. It does not replace the
+      // saved story draft, its import options, or the existing visual result.
+      this.workspace.draftSource = { signature, text: options.sourceText };
+      try { await this.persist(); }
+      catch {
+        this.visualAbort = undefined;
+        this.workspace.visualJob = { ...job, status: 'failed', label: 'Image descriptions could not be saved', error: 'The image-description request could not be saved for recovery. No model request was sent. Check extension storage before retrying.' };
+        this.changed();
+        throw new Error(this.workspace.visualJob.error);
+      }
+      this.note('Image descriptions started.');
+      this.changed();
+      this.visualTask = (async () => {
+        let responseReturned = false;
+        try {
+          const fingerprint = requestFingerprint(connection.fingerprint, settings);
+          const reuseFingerprints = OUTPUT_ALLOWANCES.flatMap(maxOutputTokens => REASONING_MODES.map(reasoningMode => requestFingerprint(connection.fingerprint, { maxOutputTokens, reasoningMode })));
+          const generate: Generate = async (messages, signal) => {
+            responseReturned = false;
+            controller.signal.throwIfAborted();
+            const reusedBefore = this.visualCheckpoints.reused;
+            const result = await this.visualCheckpoints.request(messages, fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal, settings.maxOutputTokens, 600_000, settings.reasoningMode), { reuseFingerprints });
+            responseReturned = true;
+            if (this.visualCheckpoints.reused > reusedBefore) this.note('Reused a saved image-description response.');
+            return this.readModelResponse(result);
+          };
+          const pack = await enrichVisuals(options, generate, (completed, total, label) => {
+            this.workspace.visualJob = { ...job, completed, total, label, phase: label };
+            this.changed();
+          }, controller.signal);
+          controller.signal.throwIfAborted();
+          this.workspace.visualPack = validateVisualPack(pack, options.draft);
+          this.workspace.visualResultSignature = signature;
+          this.workspace.visualJob = { ...this.workspace.visualJob!, status: 'complete', label: 'Image descriptions ready to review', completed: this.workspace.visualJob!.total };
+          await this.persist();
+          this.note('Image descriptions completed.');
+        } catch (error) {
+          const cancelled = controller.signal.aborted;
+          let message = error instanceof ImportError || error instanceof ModelRequestError || error instanceof CheckpointError ? error.message : 'Image descriptions could not be completed. Your story draft and previous descriptions are preserved.';
+          if (!cancelled && responseReturned && (error instanceof ImportError && !['VISUAL_SIZE_LIMIT', 'REQUEST_SIZE_LIMIT'].includes(error.code) || error instanceof ModelRequestError)) {
+            try { await this.visualCheckpoints.invalidateLast(); }
+            catch { message = 'The failed image-description step could not be marked for retry. Saved responses were retained; check extension storage before retrying.'; }
+          }
+          const retryUncertain = error instanceof CheckpointError && error.code === 'UNCERTAIN_REQUEST';
+          if (this.workspace.visualJob?.phase) this.note(`Image descriptions stopped during: ${this.workspace.visualJob.phase}.`);
+          this.workspace.visualJob = { ...this.workspace.visualJob!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Image descriptions cancelled; saved steps retained' : 'Image descriptions need attention', retryUncertain, error: cancelled ? undefined : `${message} Saved steps are retained. Resume image descriptions reuses them; remaining model requests use normal charges.` };
+          this.note(cancelled ? 'Image descriptions cancelled.' : 'Image descriptions failed; story draft preserved.');
+          await this.persist().catch(() => this.note('Could not persist image-description status.'));
+        } finally { if (this.visualAbort === controller) this.visualAbort = undefined; this.changed(); }
+      })();
+      return structuredClone(job);
+    } finally { this.visualStarting = false; }
   }
   async handle(action: string, input: unknown): Promise<unknown> {
     await this.ready;
@@ -338,6 +478,23 @@ export class SetPointsController {
         return this.start(options, data.retryUncertain === true, true);
       }
       case 'cancel-import': this.abort?.abort(); return { cancelled: Boolean(this.abort) };
+      case 'start-visuals': return this.startVisuals(data);
+      case 'resume-visuals': {
+        if (!this.workspace.visualInput) throw new Error('There are no saved image descriptions to resume.');
+        const options = structuredClone(this.workspace.visualInput);
+        if (data.maxOutputTokens !== undefined) options.maxOutputTokens = data.maxOutputTokens as number;
+        if (data.reasoningMode !== undefined) options.reasoningMode = data.reasoningMode as ImportOptions['reasoningMode'];
+        return this.startVisuals(options, data.retryUncertain === true, true);
+      }
+      case 'cancel-visuals': this.visualAbort?.abort(); return { cancelled: Boolean(this.visualAbort) };
+      case 'save-visuals': {
+        if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish or cancel them before saving edits.');
+        const draft = validateDraft(data.draft), signature = visualDraftSignature(draft);
+        if (signature !== this.workspace.visualResultSignature) throw new Error('These image descriptions belong to a different draft revision. Create descriptions for the current draft before saving.');
+        const pack = validateVisualPack(data.pack, draft);
+        this.workspace.visualPack = pack;
+        await this.persist(); this.changed(); return structuredClone(pack);
+      }
       case 'save-draft': {
         if (this.saving) throw new Error('Wait for the card to finish saving before replacing the draft.');
         if (this.workspace.job?.status === 'running') throw new Error('Wait for the import to finish or cancel it before replacing the draft.');
@@ -372,13 +529,14 @@ export class SetPointsController {
       }
       case 'diagnostics': {
         const view = await this.runtime.view();
-        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
+        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
       }
       default: throw new Error('Unknown Set Points action. Reload the extension.');
     }
   }
-  dispose() { this.abort?.abort(); this.checkAbort?.abort(); }
+  dispose() { this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); }
   async waitForImport() { await this.jobTask; }
+  async waitForVisuals() { await this.visualTask; }
 }
 
 export function setupBackend(api: SpindleAPI): () => void {

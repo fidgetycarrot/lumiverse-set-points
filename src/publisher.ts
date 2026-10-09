@@ -1,5 +1,5 @@
 import type { SpindleAPI, WorldBookEntryCreateDTO } from 'lumiverse-spindle-types';
-import { cardPayload, validateDraft } from './importer';
+import { APPEARANCE_RULE, appearanceGuide, cardPayload, validateDraft } from './importer';
 import { EXTENSION_ID, type SavedStory, type StoryDraft } from './types';
 
 type Receipt = { key: string; draftId: string; worldBookId?: string; characterId?: string; complete?: boolean };
@@ -9,7 +9,10 @@ export async function draftKey(draft: StoryDraft): Promise<string> {
 }
 
 export function worldEntries(draft: StoryDraft): WorldBookEntryCreateDTO[] {
+  const approvedAppearances = appearanceGuide(draft);
   return [
+    ...(approvedAppearances ? [{ comment: 'Approved character appearances', key: [], constant: true,
+      probability: 100, use_probability: false, priority: 100, content: `${APPEARANCE_RULE}\n\n${approvedAppearances}` }] : []),
     { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.` },
     ...draft.cast.map(member => ({ comment: member.name, key: [member.name, ...member.aliases], constant: false,
       content: `${member.name}\nPersonality: ${member.personality}\nVoice: ${member.voice}\nRelationships at the start: ${member.relationships}\nKnowledge at the start: ${member.knowledge}\nUse subsequent chat events for changes to these starting facts.` })),

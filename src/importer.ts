@@ -1,4 +1,4 @@
-import { EXTENSION_ID, type CastMember, type ImportOptions, type StoryDraft, type LoreEntry, type StoryScene } from './types';
+import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type StoryDraft, type LoreEntry, type StoryScene } from './types';
 
 export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
 export type GenerationMessage = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -11,6 +11,10 @@ export type Generate = ((messages: GenerationMessage[], signal?: AbortSignal) =>
 export class ImportError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'ImportError'; }
 }
+
+// Optional enrichment modules share the same response, cancellation, and
+// display-text validation without changing any adaptation prompt.
+export { requestJson as requestValidatedJson, safeText as validateDisplayText };
 
 type RecordValue = Record<string, unknown>;
 interface Ledger {
@@ -100,9 +104,17 @@ export function validateDraft(value: unknown): StoryDraft {
     return { id: identifier(scene.id, `${p}.id`), title: safeText(scene.title, `${p}.title`, 200), greeting: safeText(scene.greeting, `${p}.greeting`, 8000), direction: safeText(scene.direction, `${p}.direction`, 6000), assumptions: texts(scene.assumptions, `${p}.assumptions`, 24, 1000), sourceRefs: refs(scene.sourceRefs, `${p}.sourceRefs`, allowed) };
   });
   uniqueIds(cast, 'cast'); uniqueIds(lore, 'lore'); uniqueIds(scenes, 'scenes');
+  const castIds = new Set(cast.map(person => person.id)), appearanceIds = new Set<string>();
+  const appearances = draft.appearances === undefined ? undefined : list(draft.appearances, 'appearances', 64).map((value, i): ApprovedAppearance => {
+    const entry = object(value, `appearances[${i}]`), path = `appearances[${i}]`;
+    const characterId = identifier(entry.characterId, `${path}.characterId`);
+    if (!castIds.has(characterId) || appearanceIds.has(characterId)) fail('INVALID_SCHEMA', 'Approved appearances must refer to unique, existing cast members.');
+    appearanceIds.add(characterId);
+    return { characterId, description: safeText(entry.description, `${path}.description`, 4000, true), startingOutfit: safeText(entry.startingOutfit, `${path}.startingOutfit`, 2000, true) };
+  });
   return {
     version: 1, id: identifier(draft.id, 'id'), title: safeText(draft.title, 'title', 200), premise: safeText(draft.premise, 'premise', 6000), playerRole: safeText(draft.playerRole, 'playerRole', 2000), startingPoint: safeText(draft.startingPoint, 'startingPoint', 2000),
-    narratorInstructions: safeText(draft.narratorInstructions, 'narratorInstructions', 8000), cast, lore, scenes, warnings: texts(draft.warnings, 'warnings', 96, 2000),
+    narratorInstructions: safeText(draft.narratorInstructions, 'narratorInstructions', 8000), cast, ...(appearances !== undefined ? { appearances } : {}), lore, scenes, warnings: texts(draft.warnings, 'warnings', 96, 2000),
     source: { title: safeText(source.title, 'source.title', 200), ...(sourceUrl(source.url) ? { url: sourceUrl(source.url) } : {}), characters: number(source.characters, 'source.characters', 1, IMPORT_LIMITS.sourceCharacters), chunks }, createdAt: number(draft.createdAt, 'createdAt', 0, Number.MAX_SAFE_INTEGER),
   };
 }
@@ -324,7 +336,9 @@ function legacyDraftMessages(preferences: Preferences, ledger: Ledger): Generati
 }
 
 function validateAdaptation(value: unknown, metadata: DraftMetadata, sceneCount: number): StoryDraft {
-  const output = object(value, 'adaptation');
+  // An unsolicited model field is not a user approval, including in old cached
+  // answers. Only the review/imported-draft path may preserve approved looks.
+  const { appearances: _unapprovedAppearances, ...output } = object(value, 'adaptation');
   const draft = validateDraft({ ...output, ...metadata });
   if (draft.scenes.length > sceneCount) fail('INVALID_SCHEMA', `scenes must contain no more than the requested ${sceneCount} scenes.`);
   return draft;
@@ -547,18 +561,29 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   return result;
 }
 
+export const APPEARANCE_RULE = 'The approved appearance guide is authoritative for character appearance. Its approved details take priority over conflicting incidental descriptions in cast profiles, lore, scene guidance, and narration. Preserve approved physical traits unless the human explicitly approves a change. Starting outfits remain as approved until an explicit action in the story changes them; incidental conflicting prose does not change clothing. Unspecified fields remain unknown rather than becoming invented fixed traits. Respect the human\'s control of their character.';
+
+/** Contains only explicitly approved prose; generated design suggestions stay separate. */
+export function appearanceGuide(value: StoryDraft): string {
+  const draft = validateDraft(value);
+  if (!draft.appearances?.length) return '';
+  const names = new Map(draft.cast.map(person => [person.id, person.name]));
+  return `Approved appearance guide\n\n${draft.appearances.map(entry => `### ${names.get(entry.characterId)}\nAppearance: ${entry.description || 'Unspecified.'}\nStarting outfit: ${entry.startingOutfit || 'Unspecified.'}`).join('\n\n')}`;
+}
+
 /** Native character payload. The host adapter attaches world_book_ids after creating the book. */
 export function cardPayload(value: StoryDraft) {
   const draft = validateDraft(value);
   const cast = draft.cast.map(person => `### ${person.name}${person.aliases.length ? ` (${person.aliases.join(', ')})` : ''}\nPersonality: ${person.personality}\nVoice: ${person.voice}\nRelationships at the start: ${person.relationships}\nKnowledge at the start: ${person.knowledge}`).join('\n\n');
+  const approvedAppearances = appearanceGuide(draft);
   return {
     name: draft.title,
-    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}`,
+    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}${approvedAppearances ? `\n\n${approvedAppearances}` : ''}`,
     personality: 'A responsive narrator who keeps supporting characters distinct and leaves the player character under the human’s control.',
     scenario: `${draft.premise}\n\nPlayer role: ${draft.playerRole}\nStarting point: ${draft.startingPoint}`,
     first_mes: draft.scenes[0].greeting,
     alternate_greetings: draft.scenes.slice(1).map(scene => scene.greeting),
-    system_prompt: `${draft.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.`,
+    system_prompt: `${draft.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.${approvedAppearances ? `\n\n${APPEARANCE_RULE}` : ''}`,
     mes_example: '',
     creator_notes: `Adapted with Set Points from ${draft.source.title}${draft.source.url ? ` (${draft.source.url})` : ''}.\n${draft.warnings.join('\n')}`,
     tags: ['Set Points', 'Narrator', 'Story adaptation'],
