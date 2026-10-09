@@ -357,7 +357,36 @@ export function setup(ctx: SpindleFrontendContext) {
     visualSource.input.value=source.input.value;visualSources.set(visualSourceKey,source.input.value);
     notify('Story text copied from Import for your review. Check that it belongs to this draft before creating descriptions.');syncVisualControls();
   });
-  const visualSourceBox=group(visualSource.wrap,copyImportSource);
+  const visualWebsite=details('Read the original story from a website');
+  const visualWebsiteUrl=field('Story website for descriptions','',undefined,{type:'url',placeholder:'https://…'});
+  const visualWebsitePages=field('Other description page links','',undefined,{area:true,rows:2,hint:'Optional: other pages in reading order. Leave blank to follow the website’s next-page links.'});visualWebsitePages.input.maxLength=409600;
+  const visualWebSources=new Map<string,{url:string;pages:string}>(),visualCollections=new Map<string,WebCollection>();
+  for(const input of [visualWebsiteUrl.input,visualWebsitePages.input])input.addEventListener('input',()=>visualWebSources.set(visualSourceKey,{url:visualWebsiteUrl.input.value,pages:visualWebsitePages.input.value}));
+  const visualWebsiteStatus=paragraph('','sp-hint');visualWebsiteStatus.setAttribute('role','status');
+  const visualWebsiteUse=button('Use website text for descriptions',()=>{
+    if(otherWorkBusy()||visualsBusy())throw new Error('Wait for the current operation to finish before choosing story text.');
+    const collection=visualCollections.get(visualSourceKey);if(!collection?.pages.length)throw new Error('Read the story website first.');
+    visualSource.input.value=collection.text;visualSources.set(visualSourceKey,collection.text);visualSourceOverrides.add(visualSourceKey);
+    notify(`${collection.pages.length} pages selected for image descriptions. Review the story text and page count before creating descriptions.`);syncVisualControls();
+  });visualWebsiteUse.hidden=true;
+  const visualWebsiteCancel=button('Cancel website loading',()=>webAbort?.abort());visualWebsiteCancel.hidden=true;
+  const visualWebsiteRead=button('Read linked story pages',async()=>{
+    if(otherWorkBusy()||visualsBusy())throw new Error('Wait for the current operation to finish before reading story pages.');
+    const signature=visualSourceKey,controller=new AbortController();webAbort=controller;loadingPages=true;
+    visualCollections.delete(signature);visualWebsiteUse.hidden=true;visualWebsiteCancel.hidden=false;syncImportControls();
+    const selectedUrl=visualWebsiteUrl.input.value,supplied=visualWebsitePages.input.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
+    try{
+      const result=await collectStoryPages({url:selectedUrl,linked:true,otherUrls:supplied.length?supplied:undefined,signal:controller.signal,onProgress:progress=>{
+        if(!destroyed&&visualSourceKey===signature)visualWebsiteStatus.textContent=`${progress.pages.length} pages collected · ${progress.characters.toLocaleString()} characters${progress.loadingUrl?' · reading next page…':''}`;
+      }},pageUrl=>rpc.request<WebStoryPage>('fetch-url',{url:pageUrl}));
+      if(destroyed||webAbort!==controller)return;
+      visualCollections.set(signature,result);
+      if(visualSourceKey===signature){visualWebsiteStatus.textContent=`${result.pages.length} pages collected · ${result.text.length.toLocaleString()} characters. ${result.message}`;visualWebsiteUse.hidden=!result.pages.length;}
+      notify(result.pages.length?'Website text is ready. Check the page count, then choose Use website text for descriptions.':result.message,result.pages.length||result.reason==='cancelled'?'info':'error');
+    }finally{if(webAbort===controller){webAbort=null;loadingPages=false;if(!destroyed){visualWebsiteCancel.hidden=true;syncImportControls();}}}
+  });
+  visualWebsite.body.append(paragraph('Reads all linked pages using the same website importer as Import. This makes no model request and does not replace your completed draft.','sp-hint'),visualWebsiteUrl.wrap,visualWebsitePages.wrap,visualWebsiteRead,visualWebsiteCancel,visualWebsiteStatus,visualWebsiteUse);
+  const visualSourceBox=group(visualWebsite.root,visualSource.wrap,copyImportSource);
   const replaceVisualSource=button('Use different story text',()=>{if(draft){visualSourceOverrides.add(visualDraftSignature(draft));renderVisuals();visualSource.input.focus();}});
   const visualConnection=selectField('Image description connection',[],'');
   const visualSettings=details('Description response settings');
@@ -411,6 +440,7 @@ export function setup(ctx: SpindleFrontendContext) {
     visualResume.disabled=busy||!snapshot?.visuals?.resumeAvailable||!draft||snapshot.visuals.requestSignature!==visualDraftSignature(draft);
     visualConnection.input.disabled=busy;visualAllowance.input.disabled=busy;visualReasoning.input.disabled=busy;
     visualSource.input.disabled=busy;replaceVisualSource.disabled=busy;copyImportSource.disabled=busy||!source.input.value.trim();
+    visualWebsiteRead.disabled=busy;visualWebsiteUse.disabled=busy;visualWebsiteUrl.input.disabled=busy;visualWebsitePages.input.disabled=busy;
   }
   async function copyVisualText(value:string,field:HTMLInputElement|HTMLTextAreaElement,label:string){
     if(!value.trim())throw new Error(`There is no ${label.toLowerCase()} to copy yet.`);
@@ -475,9 +505,13 @@ export function setup(ctx: SpindleFrontendContext) {
   function renderVisuals(){
     if(!draft)return;
     const signature=visualDraftSignature(draft),visuals=snapshot?.visuals;
-    if(visualSourceKey!==signature){visualSourceKey=signature;visualSource.input.value=visualSources.get(signature)??'';}
+    if(visualSourceKey!==signature){
+      visualSourceKey=signature;visualSource.input.value=visualSources.get(signature)??'';
+      const website=visualWebSources.get(signature);visualWebsiteUrl.input.value=website?.url??draft.source.url??'';visualWebsitePages.input.value=website?.pages??'';
+      const collection=visualCollections.get(signature);visualWebsiteUse.hidden=!collection?.pages.length;visualWebsiteStatus.textContent=collection?`${collection.pages.length} pages collected. ${collection.message}`:'';
+    }
     const sourceBound=visuals?.sourceSignature===signature&&!visualSourceOverrides.has(signature);visualSourceBox.hidden=sourceBound;replaceVisualSource.hidden=!sourceBound;
-    visualSourceNotice.textContent=sourceBound?'The original source is available for this draft.':'The original source is not verified for this version of the draft. Supply its story text below; older or opened drafts may need it once.';
+    visualSourceNotice.textContent=sourceBound?'The original source is saved for this draft; Resume uses it without pasting again.':'Choose the original story below: read its website, paste the text, or copy it from Import. Older drafts may need this once. Your completed adaptation is kept.';
     const connectionsSignature=JSON.stringify(snapshot?.connections??[]);
     if(visualConnection.input.dataset.signature!==connectionsSignature){
       const previous=visualConnection.input.value;visualConnection.input.replaceChildren();visualConnection.input.dataset.signature=connectionsSignature;
@@ -548,16 +582,17 @@ export function setup(ctx: SpindleFrontendContext) {
     const current=draft;const nonce=panelNonce;
     const top=intro('Make it yours','Edit the cast, the world, and the moments you want to reach.');const dirtyTag=node('span','sp-tag',draftDirty?'Unsaved edits':'Draft ready');top.append(group(dirtyTag,row(openDraftButton,pasteDraftButton)));panel.append(top);
     const markDirty=()=> { draftDirty=true;dirtyTag.textContent='Unsaved edits';renderVisuals(); };
-    const edit=(label:string,value:string,change:(value:string)=>void,area=false,hint?:string)=>field(label,value,v=>{change(v);markDirty();},{area,hint}).wrap;
-    const summary=node('div','sp-card sp-stack');summary.append(edit('Title',current.title,v=>current.title=v),edit('Premise',current.premise,v=>current.premise=v,true));
-    const choices=node('div','sp-grid');choices.append(edit('Your role',current.playerRole,v=>current.playerRole=v),edit('Starting point',current.startingPoint,v=>current.startingPoint=v));summary.append(choices);
+    const reviewFields=new Map<string,HTMLElement>();
+    const edit=(label:string,value:string,change:(value:string)=>void,area=false,hint?:string,key?:string)=>{const item=field(label,value,v=>{change(v);markDirty();},{area,hint});if(key)reviewFields.set(key,item.input);return item.wrap;};
+    const summary=node('div','sp-card sp-stack');summary.append(edit('Title',current.title,v=>current.title=v,false,undefined,'title'),edit('Premise',current.premise,v=>current.premise=v,true,undefined,'premise'));
+    const choices=node('div','sp-grid');choices.append(edit('Your role',current.playerRole,v=>current.playerRole=v,false,undefined,'playerRole'),edit('Starting point',current.startingPoint,v=>current.startingPoint=v,false,undefined,'startingPoint'));summary.append(choices);
     const counts=node('div','sp-counts');for(const [number,label] of [[current.cast.length,'characters'],[current.lore.length,'lore entries'],[current.scenes.length,'scenes']] as const){ const item=node('div');item.append(node('strong','',String(number)),node('span','',label));counts.append(item);}summary.append(counts);panel.append(summary);
     if(current.warnings.length) { const warnings=details(`${current.warnings.length} adaptation note${current.warnings.length===1?'':'s'}`);for(const warning of current.warnings)warnings.body.append(paragraph(warning,'sp-notice'));panel.append(warnings.root); }
-    const narration=details('Narrator direction');narration.body.append(edit('Instructions',current.narratorInstructions,v=>current.narratorInstructions=v,true,'Describe the narrator’s scope and how it should leave your choices open.'));panel.append(narration.root);
+    const narration=details('Narrator direction');narration.body.append(edit('Instructions',current.narratorInstructions,v=>current.narratorInstructions=v,true,'Describe the narrator’s scope and how it should leave your choices open.','narratorInstructions'));panel.append(narration.root);
     const cast=node('div','sp-review-group');cast.append(node('div','sp-section-label','The people'));
     const appearanceGuide=group(node('h3','','Appearance guide'),paragraph('Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields stay unspecified. These choices are included in the draft and become lorebook guidance when saved to Lumiverse; editing them uses no model.','sp-small'),paragraph('Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections.','sp-hint'));appearanceGuide.classList.add('sp-card');cast.append(appearanceGuide);
     for(const person of current.cast) {
-      const entry=details(person.name);entry.body.append(edit('Name',person.name,v=>{person.name=v;entry.summary.textContent=v;}),edit('Also known as',person.aliases.join(', '),v=>person.aliases=v.split(',').map(x=>x.trim()).filter(Boolean)),edit('Personality',person.personality,v=>person.personality=v,true),edit('Voice & manner',person.voice,v=>person.voice=v,true),edit('Relationships at the start',person.relationships,v=>person.relationships=v,true),edit('Knowledge at the start',person.knowledge,v=>person.knowledge=v,true));
+      const entry=details(person.name);entry.body.append(edit('Name',person.name,v=>{person.name=v;entry.summary.textContent=v;},false,undefined,`cast:${person.id}:name`),edit('Also known as',person.aliases.join(', '),v=>person.aliases=v.split(',').map(x=>x.trim()).filter(Boolean),false,undefined,`cast:${person.id}:aliases`),edit('Personality',person.personality,v=>person.personality=v,true,undefined,`cast:${person.id}:personality`),edit('Voice & manner',person.voice,v=>person.voice=v,true,undefined,`cast:${person.id}:voice`),edit('Relationships at the start',person.relationships,v=>person.relationships=v,true,undefined,`cast:${person.id}:relationships`),edit('Knowledge at the start',person.knowledge,v=>person.knowledge=v,true,undefined,`cast:${person.id}:knowledge`));
       const approved=()=>current.appearances?.find(item=>item.characterId===person.id);
       const setApproved=(key:'description'|'startingOutfit',value:string)=>{
         let appearance=approved();if(!appearance){appearance={characterId:person.id,description:'',startingOutfit:''};(current.appearances??=[]).push(appearance);}appearance[key]=value;updateApproved();
@@ -575,20 +610,33 @@ export function setup(ctx: SpindleFrontendContext) {
       entry.body.append(edit(`${person.name}: approved appearance`,approved()?.description??'',v=>setApproved('description',v),true,'Your chosen physical details. Leave blank when unspecified. This is independent of generated source facts.'),edit(`${person.name}: approved starting outfit`,approved()?.startingOutfit??'',v=>setApproved('startingOutfit',v),true,'Your chosen outfit at the start. Leave blank when unspecified. Edit conflicting lore or scene openings separately.'),appearanceMismatch,approvedCaption.wrap,approvedCopy);
       if(person.sourceRefs.length)entry.body.append(paragraph(`Source: ${person.sourceRefs.join(' · ')}`,'sp-hint'));cast.append(entry.root);
     }panel.append(cast);
-    const mentions=details('Existing appearance mentions');const mentionResults=group(),mentionStatus=paragraph('','sp-hint');mentionStatus.setAttribute('role','status');
+    const mentions=details('Check for conflicting looks · optional');const mentionResults=group(),mentionStatus=paragraph('','sp-hint');mentionStatus.setAttribute('role','status');
+    let foundMentions:ReturnType<typeof appearanceMentions>=[],shownMentions=0;
+    const showMoreMentions=button('Show more excerpts',()=>showMentions());showMoreMentions.hidden=true;
+    function showMentions(){
+      const next=foundMentions.slice(shownMentions,shownMentions+8);
+      for(const mention of next){
+        const open=button('Open location',()=>{
+          const target=reviewFields.get(mention.fieldKey);if(!target)return;
+          for(let parent:HTMLElement|null=target;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')(parent as HTMLDetailsElement).open=true;
+          target.scrollIntoView?.({block:'center',behavior:'smooth'});target.focus();
+        });
+        mentionResults.append(group(node('span','sp-label',mention.location),paragraph(mention.text,'sp-small'),open));
+      }
+      shownMentions+=next.length;showMoreMentions.hidden=shownMentions>=foundMentions.length;
+      mentionStatus.textContent=foundMentions.length?`Showing ${shownMentions} of ${foundMentions.length} short excerpts. These are possible mentions, not confirmed conflicts.`:'No matching appearance words found. Other descriptions may still exist.';
+    }
     const scanMentions=button('Scan appearance mentions',()=>{
-      const found=appearanceMentions(current);mentionResults.replaceChildren();mentionStatus.textContent=found.length?`${found.length} possible appearance mention${found.length===1?'':'s'} found.`:'No matching appearance words found. This does not prove there are no other descriptions.';
-      for(const mention of found){const item=group(node('h3','',mention.location),paragraph(mention.text,'sp-preview'));mentionResults.append(item);}
-      scanMentions.textContent='Refresh appearance mentions';
+      foundMentions=appearanceMentions(current);shownMentions=0;mentionResults.replaceChildren();showMentions();scanMentions.textContent='Refresh appearance mentions';
     });
-    mentions.body.append(paragraph('Finds possible appearance words in the existing draft for you to compare with approved looks. This is not an exhaustive check or a conflict detector. It makes no model request and does not rewrite anything. Edit the corresponding fields below when needed.','sp-hint'),scanMentions,mentionStatus,mentionResults);panel.append(mentions.root,visualPanel);renderVisuals();
+    mentions.body.append(paragraph('Use this only if you want to check an existing look against your approved description. You do not need to read whole passages: compare the short snippets, then Open location to edit any conflicting detail. Ordinary glances and clothing changes may be fine.','sp-hint'),scanMentions,mentionStatus,mentionResults,showMoreMentions);panel.append(mentions.root,visualPanel);renderVisuals();
     const lore=node('div','sp-review-group');lore.append(node('div','sp-section-label','The world'));
-    for(const item of current.lore) { const entry=details(item.name);entry.body.append(edit('Entry name',item.name,v=>{item.name=v;entry.summary.textContent=v;}),edit('Keywords',item.keys.join(', '),v=>item.keys=v.split(',').map(x=>x.trim()).filter(Boolean)),edit('Lore',item.content,v=>item.content=v,true));lore.append(entry.root); }panel.append(lore);
+    for(const item of current.lore) { const entry=details(item.name);entry.body.append(edit('Entry name',item.name,v=>{item.name=v;entry.summary.textContent=v;}),edit('Keywords',item.keys.join(', '),v=>item.keys=v.split(',').map(x=>x.trim()).filter(Boolean)),edit('Lore',item.content,v=>item.content=v,true,undefined,`lore:${item.id}:content`));lore.append(entry.root); }panel.append(lore);
     const scenes=node('div','sp-review-group');scenes.append(node('div','sp-section-label','The set points'),paragraph('Each scene opens a situation. Your next action stays yours.','sp-hint'));
     current.scenes.forEach((scene,index)=> {
       const entry=details(`${String(index+1).padStart(2,'0')}  ${scene.title}${index===0?' · Opening':''}`);
-      entry.body.append(edit('Scene title',scene.title,v=>{scene.title=v;entry.summary.textContent=`${String(index+1).padStart(2,'0')}  ${v}`;}),edit('Scene opening',scene.greeting,v=>scene.greeting=v,true),edit('Private direction',scene.direction,v=>scene.direction=v,true,'Guides the model toward this scene during play.'));
-      if(scene.assumptions.length) {entry.body.append(node('span','sp-label','Assumptions to review'));for(const assumption of scene.assumptions)entry.body.append(paragraph(assumption,'sp-notice'));}
+      entry.body.append(edit('Scene title',scene.title,v=>{scene.title=v;entry.summary.textContent=`${String(index+1).padStart(2,'0')}  ${v}`;},false,undefined,`scene:${scene.id}:title`),edit('Scene opening',scene.greeting,v=>scene.greeting=v,true,undefined,`scene:${scene.id}:greeting`),edit('Private direction',scene.direction,v=>scene.direction=v,true,'Guides the model toward this scene during play.',`scene:${scene.id}:direction`));
+      if(scene.assumptions.length) {entry.body.append(node('span','sp-label','Assumptions to review'));scene.assumptions.forEach((assumption,i)=>{const note=paragraph(assumption,'sp-notice');note.tabIndex=-1;reviewFields.set(`scene:${scene.id}:assumption:${i}`,note);entry.body.append(note);});}
       if(scene.sourceRefs.length)entry.body.append(paragraph(`Source: ${scene.sourceRefs.join(' · ')}`,'sp-hint'));scenes.append(entry.root);
     });panel.append(scenes);
     const actions=row(button('Save draft',async()=>{

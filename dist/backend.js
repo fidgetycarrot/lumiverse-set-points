@@ -3097,7 +3097,7 @@ var require_canvas = __commonJS(function(exports, module) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.6";
+var VERSION = "0.1.7";
 
 // src/importer.ts
 var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
@@ -13513,7 +13513,7 @@ function validateConstructed(value, characterId, facts, draft, chunks) {
     fail2("INVALID_SCHEMA", "The visual profile must keep the requested character ID.");
   const byId = new Map(facts.map((fact) => [fact.id, fact])), used = new Set;
   const grounded = (value, path, kind, required) => {
-    const ids = texts2(value, path, facts.length, 80);
+    const ids = supportingFactIds(value, path, facts.length);
     if (required && !ids.length)
       fail2("INVALID_REFERENCE", `${path} needs at least one supporting source fact.`);
     if (!required && ids.length)
@@ -13544,6 +13544,37 @@ function validateConstructed(value, characterId, facts, draft, chunks) {
     candidate.unknowns = [...new Set([...candidate.unknowns, "Outfit at the chosen starting point."])];
   const profile = validateVisualPack({ version: 1, draftId: draft.id, profiles: [candidate], warnings: [] }, undefined, chunks).profiles[0];
   return { profile, warnings: texts2(input.warnings, "warnings", 8, 1000) };
+}
+function supportingFactIds(value, path, max) {
+  const ids = new Set;
+  let visited = 0;
+  const read = (input, depth) => {
+    if (++visited > Math.max(32, max * 8) || depth > 4)
+      fail2("INVALID_SCHEMA", `${path} has too many nested supporting references.`);
+    if (typeof input === "string") {
+      ids.add(text(input, path, 80));
+      return;
+    }
+    if (Array.isArray(input)) {
+      if (input.length > Math.max(1, max))
+        fail2("INVALID_SCHEMA", `${path} has too many supporting references.`);
+      input.forEach((item) => read(item, depth + 1));
+      return;
+    }
+    if (input && typeof input === "object") {
+      const entry = input;
+      const keys = ["factIds", "fact_ids", "sourceFactIds", "source_fact_ids", "factId", "fact_id", "id", "ids", "facts", "refs"].filter((key) => (key in entry));
+      if (keys.length === 1) {
+        read(entry[keys[0]], depth + 1);
+        return;
+      }
+    }
+    fail2("INVALID_SCHEMA", "The model did not identify the source facts supporting an image description. Resume to retry only the unfinished step.");
+  };
+  read(value, 0);
+  if (ids.size > max)
+    fail2("INVALID_REFERENCE", `${path} contains more supporting references than the supplied facts.`);
+  return [...ids];
 }
 async function enrichVisuals(options, generate, onProgress, signal) {
   cancelled(signal);

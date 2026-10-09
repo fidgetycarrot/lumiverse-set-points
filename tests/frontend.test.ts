@@ -388,10 +388,59 @@ describe('portable JSON backups and appearance review',()=>{
   test('oversized pasted backup is stopped locally without replacing the draft',async()=>{
     const app=harness();await tick();app.input('Premise','Keep me');app.button('Paste draft backup').click();app.input('Paste draft JSON',' '.repeat(384_001));app.button('Open pasted draft').click();await tick();expect(app.field('Premise').value).toBe('Keep me');expect(app.requests.some(item=>item.action==='save-draft')).toBe(false);expect(app.root.textContent).toContain('backup is too large');
   });
-  test('appearance scan locates full plain-text fields on request and refreshes without rewriting them',async()=>{
+  test('appearance scan locates short excerpts on request and refreshes without rewriting them',async()=>{
     const app=harness();app.state.draft!.scenes[0].greeting='Iona waits with blue eyes and a coat.';await tick();app.input('Iona: approved appearance','Green eyes');app.button('Scan appearance mentions').click();await tick();
     expect(app.root.textContent).toContain('Scene 1 · The harbor · opening');expect(app.root.textContent).toContain('Iona waits with blue eyes and a coat.');expect(app.field('Iona: approved appearance').value).toBe('Green eyes');expect(app.field('Scene opening').value).toBe('Iona waits with blue eyes and a coat.');expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
-    app.input('Scene opening','Iona waits at the dock.');app.button('Refresh appearance mentions').click();expect(app.root.textContent).toContain('No matching appearance words found');expect(app.root.textContent).toContain('not an exhaustive check or a conflict detector');
+    app.input('Scene opening','Iona waits at the dock.');app.button('Refresh appearance mentions').click();expect(app.root.textContent).toContain('No matching appearance words found');expect(app.root.textContent).toContain('You do not need to read whole passages');
+  });
+});
+
+describe('description website loading and concise appearance review',()=>{
+  test('reads all linked pages for an old completed draft without adapting or replacing it',async()=>{
+    const app=harness();app.state.draft!.source.url='https://story.example/chapter?page=1';
+    const original=structuredClone(app.state.draft);app.setPages(async url=>{
+      const index=Number(new URL(url).searchParams.get('page'));
+      return {title:`Story page ${index}`,url,text:`Page ${index} appearance source. `.repeat(8),nextPages:index<8?[{title:'Next',url:`https://story.example/chapter?page=${index+1}`}]:[]};
+    });
+    await tick();expect(app.field('Story website for descriptions').value).toBe('https://story.example/chapter?page=1');
+    app.button('Read linked story pages').click();await tick();await tick();
+    expect(app.requests.filter(item=>item.action==='fetch-url')).toHaveLength(8);
+    expect(app.field('Original story for these descriptions').value).toBe('');
+    expect(app.requests.some(item=>item.action==='start-visuals'||item.action==='start-import'||item.action==='save-draft')).toBe(false);
+    expect(app.state.draft).toEqual(original);
+    app.button('Use website text for descriptions').click();await tick();
+    const selected=app.field('Original story for these descriptions').value;
+    expect(selected).toContain('Page 1 appearance source.');expect(selected).toContain('Page 8 appearance source.');
+    app.button('Create image descriptions').click();await tick();
+    expect(app.requests.find(item=>item.action==='start-visuals')?.input.sourceText).toBe(selected);
+    expect(app.state.draft).toEqual(original);
+  });
+  test('a late website result cannot supply source text to a different draft revision',async()=>{
+    const app=harness();let finish!:(page:WebStoryPage)=>void;
+    app.setPages(async()=>new Promise(resolve=>{finish=resolve;}));await tick();
+    app.input('Story website for descriptions','https://story.example/chapter');app.button('Read linked story pages').click();await tick();
+    app.input('Premise','A changed draft basis.');finish({title:'Old source',url:'https://story.example/chapter',text:'Source from the old draft. '.repeat(10),nextPages:[]});await tick();await tick();
+    expect(app.field('Original story for these descriptions').value).toBe('');expect(app.button('Use website text for descriptions').hidden).toBe(true);
+    expect(app.field('Premise').value).toBe('A changed draft basis.');expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+  });
+  test('website loading can be cancelled without replacing pasted description source',async()=>{
+    const app=harness();let finish!:(page:WebStoryPage)=>void;app.setPages(async()=>new Promise(resolve=>{finish=resolve;}));await tick();
+    app.input('Original story for these descriptions','Keep this explicit source. '.repeat(10));app.input('Story website for descriptions','https://story.example/chapter');app.button('Read linked story pages').click();await tick();
+    expect(app.button('Create image descriptions').disabled).toBe(true);app.button('Cancel website loading').click();await tick();
+    finish({title:'Late page',url:'https://story.example/chapter',text:'Late source. '.repeat(20),nextPages:[]});await tick();
+    expect(app.field('Original story for these descriptions').value).toBe('Keep this explicit source. '.repeat(10));expect(app.button('Create image descriptions').disabled).toBe(false);expect(app.button('Use website text for descriptions').hidden).toBe(true);
+  });
+  test('large appearance results show eight short excerpts at a time and open the editable location',async()=>{
+    const app=harness();app.state.draft!.lore=Array.from({length:12},(_,index)=>({id:`lore-${index}`,name:`Record ${index}`,keys:['record'],content:'Unrelated record context. '.repeat(80)+'Iona has blonde hair. '+'More unrelated context. '.repeat(80)}));
+    await tick();app.button('Scan appearance mentions').click();await tick();
+    const section=Array.from(app.root.querySelectorAll('details')).find(item=>item.querySelector('summary')?.textContent==='Check for conflicting looks · optional')!;
+    expect(section.textContent).not.toContain('Unrelated record context. '.repeat(20));
+    expect(Array.from(section.querySelectorAll('button')).filter(item=>item.textContent==='Open location')).toHaveLength(8);
+    const open=Array.from(section.querySelectorAll('button')).find(item=>item.textContent==='Open location')!;open.click();await tick();
+    expect(app.window.document.activeElement?.id).toBe(app.field('Lore').id);
+    expect(app.field('Lore').closest('details')?.open).toBe(true);
+    app.button('Show more excerpts').click();await tick();expect(Array.from(section.querySelectorAll('button')).filter(item=>item.textContent==='Open location')).toHaveLength(12);
+    expect(app.button('Show more excerpts').hidden).toBe(true);expect(app.state.draft!.lore[0].content).toContain('Iona has blonde hair.');
   });
 });
 

@@ -129,7 +129,7 @@ function validateConstructed(value: unknown, characterId: string, facts: VisualF
   if (raw.characterId !== characterId) fail('INVALID_SCHEMA', 'The visual profile must keep the requested character ID.');
   const byId = new Map(facts.map(fact => [fact.id, fact])), used = new Set<string>();
   const grounded = (value: unknown, path: string, kind: FactKind, required: boolean) => {
-    const ids = texts(value, path, facts.length, 80);
+    const ids = supportingFactIds(value, path, facts.length);
     if (required && !ids.length) fail('INVALID_REFERENCE', `${path} needs at least one supporting source fact.`);
     if (!required && ids.length) fail('INVALID_REFERENCE', `${path} must be empty when the corresponding canonical field is unspecified.`);
     if (ids.some(id => !byId.has(id) || byId.get(id)!.kind !== kind || byId.get(id)!.timing !== 'start')) fail('INVALID_REFERENCE', `${path} uses an unknown, future, or incompatible source fact.`);
@@ -154,6 +154,32 @@ function validateConstructed(value: unknown, characterId: string, facts: VisualF
   if (!facts.some(fact => fact.kind === 'clothing')) candidate.unknowns = [...new Set([...candidate.unknowns, 'Outfit at the chosen starting point.'])];
   const profile = validateVisualPack({ version: 1, draftId: draft.id, profiles: [candidate], warnings: [] }, undefined, chunks).profiles[0];
   return { profile, warnings: texts(input.warnings, 'warnings', 8, 1000) };
+}
+
+/** Models sometimes wrap IDs in per-sentence lists or reference objects.
+ * Normalize only explicit IDs; never infer a fact from a quote or an index.
+ * The caller still verifies every ID's character, kind, and starting timing.
+ */
+function supportingFactIds(value: unknown, path: string, max: number): string[] {
+  const ids = new Set<string>();
+  let visited = 0;
+  const read = (input: unknown, depth: number) => {
+    if (++visited > Math.max(32, max * 8) || depth > 4) fail('INVALID_SCHEMA', `${path} has too many nested supporting references.`);
+    if (typeof input === 'string') { ids.add(text(input, path, 80)); return; }
+    if (Array.isArray(input)) {
+      if (input.length > Math.max(1, max)) fail('INVALID_SCHEMA', `${path} has too many supporting references.`);
+      input.forEach(item => read(item, depth + 1));return;
+    }
+    if (input && typeof input === 'object') {
+      const entry = input as RecordValue;
+      const keys = ['factIds', 'fact_ids', 'sourceFactIds', 'source_fact_ids', 'factId', 'fact_id', 'id', 'ids', 'facts', 'refs'].filter(key => key in entry);
+      if (keys.length === 1) { read(entry[keys[0]], depth + 1);return; }
+    }
+    fail('INVALID_SCHEMA', 'The model did not identify the source facts supporting an image description. Resume to retry only the unfinished step.');
+  };
+  read(value, 0);
+  if (ids.size > max) fail('INVALID_REFERENCE', `${path} contains more supporting references than the supplied facts.`);
+  return [...ids];
 }
 
 /** Separate opt-in work: never changes or regenerates the story adaptation. */

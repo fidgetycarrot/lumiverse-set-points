@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.6";
+var VERSION = "0.1.7";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -23,28 +23,51 @@ var styles = `
 
 // src/appearance-review.ts
 var appearanceWords = /\b(?:hair|haired|blond(?:e)?|brunette|redhead|bald|eyes?|freckles?|complexion|skin|scar(?:s|red)?|tattoo(?:s|ed)?|beard|moustache|mustache|height|physique|clothes|clothing|outfit|dress|coat|jacket|shirt|trousers|pants|skirt|boots|uniform|cloak|robe|glasses|horns?|fur|scales|wings?)\b/i;
+function excerpts(text) {
+  const expression = new RegExp(appearanceWords.source, "gi"), result = [];
+  let coveredUntil = 0, match;
+  while ((match = expression.exec(text)) && result.length < 2) {
+    if (match.index < coveredUntil)
+      continue;
+    let start = Math.max(0, match.index - 70), end = Math.min(text.length, match.index + match[0].length + 110);
+    if (start) {
+      const space = text.indexOf(" ", start);
+      if (space >= start && space < match.index)
+        start = space + 1;
+    }
+    if (end < text.length) {
+      const space = text.lastIndexOf(" ", end);
+      if (space > match.index + match[0].length)
+        end = space;
+    }
+    result.push(`${start ? "…" : ""}${text.slice(start, end).trim().replace(/\s+/g, " ")}${end < text.length ? "…" : ""}`);
+    coveredUntil = end;
+  }
+  return result;
+}
 function appearanceMentions(draft) {
   const fields = [
-    { location: "Story title", text: draft.title },
-    { location: "Premise", text: draft.premise },
-    { location: "Player role", text: draft.playerRole },
-    { location: "Starting point", text: draft.startingPoint },
-    { location: "Narrator direction", text: draft.narratorInstructions }
+    { location: "Story title", text: draft.title, fieldKey: "title" },
+    { location: "Premise", text: draft.premise, fieldKey: "premise" },
+    { location: "Player role", text: draft.playerRole, fieldKey: "playerRole" },
+    { location: "Starting point", text: draft.startingPoint, fieldKey: "startingPoint" },
+    { location: "Narrator direction", text: draft.narratorInstructions, fieldKey: "narratorInstructions" }
   ];
   for (const person of draft.cast) {
-    fields.push({ location: `${person.name} · name and aliases`, text: [person.name, ...person.aliases].join(", ") });
+    fields.push({ location: `${person.name} · name`, text: person.name, fieldKey: `cast:${person.id}:name` });
+    fields.push({ location: `${person.name} · aliases`, text: person.aliases.join(", "), fieldKey: `cast:${person.id}:aliases` });
     for (const [label, field] of [["Personality", "personality"], ["Voice & manner", "voice"], ["Relationships at the start", "relationships"], ["Knowledge at the start", "knowledge"]])
-      fields.push({ location: `${person.name} · ${label}`, text: person[field] });
+      fields.push({ location: `${person.name} · ${label}`, text: person[field], fieldKey: `cast:${person.id}:${field}` });
   }
   for (const entry of draft.lore)
-    fields.push({ location: `Lore · ${entry.name}`, text: entry.content });
+    fields.push({ location: `Lore · ${entry.name}`, text: entry.content, fieldKey: `lore:${entry.id}:content` });
   for (const [index, scene] of draft.scenes.entries()) {
-    fields.push({ location: `Scene ${index + 1} · title`, text: scene.title });
-    fields.push({ location: `Scene ${index + 1} · ${scene.title} · opening`, text: scene.greeting });
-    fields.push({ location: `Scene ${index + 1} · ${scene.title} · private direction`, text: scene.direction });
-    scene.assumptions.forEach((text, i) => fields.push({ location: `Scene ${index + 1} · ${scene.title} · assumption ${i + 1}`, text }));
+    fields.push({ location: `Scene ${index + 1} · title`, text: scene.title, fieldKey: `scene:${scene.id}:title` });
+    fields.push({ location: `Scene ${index + 1} · ${scene.title} · opening`, text: scene.greeting, fieldKey: `scene:${scene.id}:greeting` });
+    fields.push({ location: `Scene ${index + 1} · ${scene.title} · private direction`, text: scene.direction, fieldKey: `scene:${scene.id}:direction` });
+    scene.assumptions.forEach((text, i) => fields.push({ location: `Scene ${index + 1} · ${scene.title} · assumption ${i + 1}`, text, fieldKey: `scene:${scene.id}:assumption:${i}` }));
   }
-  return fields.filter((field) => appearanceWords.test(field.text));
+  return fields.flatMap((field) => excerpts(field.text).map((text) => ({ ...field, text })));
 }
 
 // src/importer.ts
@@ -933,7 +956,67 @@ function setup(ctx) {
     notify("Story text copied from Import for your review. Check that it belongs to this draft before creating descriptions.");
     syncVisualControls();
   });
-  const visualSourceBox = group(visualSource.wrap, copyImportSource);
+  const visualWebsite = details("Read the original story from a website");
+  const visualWebsiteUrl = field("Story website for descriptions", "", undefined, { type: "url", placeholder: "https://…" });
+  const visualWebsitePages = field("Other description page links", "", undefined, { area: true, rows: 2, hint: "Optional: other pages in reading order. Leave blank to follow the website’s next-page links." });
+  visualWebsitePages.input.maxLength = 409600;
+  const visualWebSources = new Map, visualCollections = new Map;
+  for (const input of [visualWebsiteUrl.input, visualWebsitePages.input])
+    input.addEventListener("input", () => visualWebSources.set(visualSourceKey, { url: visualWebsiteUrl.input.value, pages: visualWebsitePages.input.value }));
+  const visualWebsiteStatus = paragraph("", "sp-hint");
+  visualWebsiteStatus.setAttribute("role", "status");
+  const visualWebsiteUse = button("Use website text for descriptions", () => {
+    if (otherWorkBusy() || visualsBusy())
+      throw new Error("Wait for the current operation to finish before choosing story text.");
+    const collection = visualCollections.get(visualSourceKey);
+    if (!collection?.pages.length)
+      throw new Error("Read the story website first.");
+    visualSource.input.value = collection.text;
+    visualSources.set(visualSourceKey, collection.text);
+    visualSourceOverrides.add(visualSourceKey);
+    notify(`${collection.pages.length} pages selected for image descriptions. Review the story text and page count before creating descriptions.`);
+    syncVisualControls();
+  });
+  visualWebsiteUse.hidden = true;
+  const visualWebsiteCancel = button("Cancel website loading", () => webAbort?.abort());
+  visualWebsiteCancel.hidden = true;
+  const visualWebsiteRead = button("Read linked story pages", async () => {
+    if (otherWorkBusy() || visualsBusy())
+      throw new Error("Wait for the current operation to finish before reading story pages.");
+    const signature = visualSourceKey, controller = new AbortController;
+    webAbort = controller;
+    loadingPages = true;
+    visualCollections.delete(signature);
+    visualWebsiteUse.hidden = true;
+    visualWebsiteCancel.hidden = false;
+    syncImportControls();
+    const selectedUrl = visualWebsiteUrl.input.value, supplied = visualWebsitePages.input.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    try {
+      const result = await collectStoryPages({ url: selectedUrl, linked: true, otherUrls: supplied.length ? supplied : undefined, signal: controller.signal, onProgress: (progress) => {
+        if (!destroyed && visualSourceKey === signature)
+          visualWebsiteStatus.textContent = `${progress.pages.length} pages collected · ${progress.characters.toLocaleString()} characters${progress.loadingUrl ? " · reading next page…" : ""}`;
+      } }, (pageUrl) => rpc.request("fetch-url", { url: pageUrl }));
+      if (destroyed || webAbort !== controller)
+        return;
+      visualCollections.set(signature, result);
+      if (visualSourceKey === signature) {
+        visualWebsiteStatus.textContent = `${result.pages.length} pages collected · ${result.text.length.toLocaleString()} characters. ${result.message}`;
+        visualWebsiteUse.hidden = !result.pages.length;
+      }
+      notify(result.pages.length ? "Website text is ready. Check the page count, then choose Use website text for descriptions." : result.message, result.pages.length || result.reason === "cancelled" ? "info" : "error");
+    } finally {
+      if (webAbort === controller) {
+        webAbort = null;
+        loadingPages = false;
+        if (!destroyed) {
+          visualWebsiteCancel.hidden = true;
+          syncImportControls();
+        }
+      }
+    }
+  });
+  visualWebsite.body.append(paragraph("Reads all linked pages using the same website importer as Import. This makes no model request and does not replace your completed draft.", "sp-hint"), visualWebsiteUrl.wrap, visualWebsitePages.wrap, visualWebsiteRead, visualWebsiteCancel, visualWebsiteStatus, visualWebsiteUse);
+  const visualSourceBox = group(visualWebsite.root, visualSource.wrap, copyImportSource);
   const replaceVisualSource = button("Use different story text", () => {
     if (draft) {
       visualSourceOverrides.add(visualDraftSignature(draft));
@@ -1048,6 +1131,10 @@ function setup(ctx) {
     visualSource.input.disabled = busy;
     replaceVisualSource.disabled = busy;
     copyImportSource.disabled = busy || !source.input.value.trim();
+    visualWebsiteRead.disabled = busy;
+    visualWebsiteUse.disabled = busy;
+    visualWebsiteUrl.input.disabled = busy;
+    visualWebsitePages.input.disabled = busy;
   }
   async function copyVisualText(value, field, label) {
     if (!value.trim())
@@ -1171,11 +1258,17 @@ function setup(ctx) {
     if (visualSourceKey !== signature) {
       visualSourceKey = signature;
       visualSource.input.value = visualSources.get(signature) ?? "";
+      const website = visualWebSources.get(signature);
+      visualWebsiteUrl.input.value = website?.url ?? draft.source.url ?? "";
+      visualWebsitePages.input.value = website?.pages ?? "";
+      const collection = visualCollections.get(signature);
+      visualWebsiteUse.hidden = !collection?.pages.length;
+      visualWebsiteStatus.textContent = collection ? `${collection.pages.length} pages collected. ${collection.message}` : "";
     }
     const sourceBound = visuals?.sourceSignature === signature && !visualSourceOverrides.has(signature);
     visualSourceBox.hidden = sourceBound;
     replaceVisualSource.hidden = !sourceBound;
-    visualSourceNotice.textContent = sourceBound ? "The original source is available for this draft." : "The original source is not verified for this version of the draft. Supply its story text below; older or opened drafts may need it once.";
+    visualSourceNotice.textContent = sourceBound ? "The original source is saved for this draft; Resume uses it without pasting again." : "Choose the original story below: read its website, paste the text, or copy it from Import. Older drafts may need this once. Your completed adaptation is kept.";
     const connectionsSignature = JSON.stringify(snapshot?.connections ?? []);
     if (visualConnection.input.dataset.signature !== connectionsSignature) {
       const previous = visualConnection.input.value;
@@ -1337,14 +1430,20 @@ function setup(ctx) {
       dirtyTag.textContent = "Unsaved edits";
       renderVisuals();
     };
-    const edit = (label, value, change, area = false, hint) => field(label, value, (v) => {
-      change(v);
-      markDirty();
-    }, { area, hint }).wrap;
+    const reviewFields = new Map;
+    const edit = (label, value, change, area = false, hint, key) => {
+      const item = field(label, value, (v) => {
+        change(v);
+        markDirty();
+      }, { area, hint });
+      if (key)
+        reviewFields.set(key, item.input);
+      return item.wrap;
+    };
     const summary = node("div", "sp-card sp-stack");
-    summary.append(edit("Title", current.title, (v) => current.title = v), edit("Premise", current.premise, (v) => current.premise = v, true));
+    summary.append(edit("Title", current.title, (v) => current.title = v, false, undefined, "title"), edit("Premise", current.premise, (v) => current.premise = v, true, undefined, "premise"));
     const choices = node("div", "sp-grid");
-    choices.append(edit("Your role", current.playerRole, (v) => current.playerRole = v), edit("Starting point", current.startingPoint, (v) => current.startingPoint = v));
+    choices.append(edit("Your role", current.playerRole, (v) => current.playerRole = v, false, undefined, "playerRole"), edit("Starting point", current.startingPoint, (v) => current.startingPoint = v, false, undefined, "startingPoint"));
     summary.append(choices);
     const counts = node("div", "sp-counts");
     for (const [number, label] of [[current.cast.length, "characters"], [current.lore.length, "lore entries"], [current.scenes.length, "scenes"]]) {
@@ -1361,7 +1460,7 @@ function setup(ctx) {
       panel.append(warnings.root);
     }
     const narration = details("Narrator direction");
-    narration.body.append(edit("Instructions", current.narratorInstructions, (v) => current.narratorInstructions = v, true, "Describe the narrator’s scope and how it should leave your choices open."));
+    narration.body.append(edit("Instructions", current.narratorInstructions, (v) => current.narratorInstructions = v, true, "Describe the narrator’s scope and how it should leave your choices open.", "narratorInstructions"));
     panel.append(narration.root);
     const cast = node("div", "sp-review-group");
     cast.append(node("div", "sp-section-label", "The people"));
@@ -1381,7 +1480,7 @@ function setup(ctx) {
       entry.body.append(edit("Name", person.name, (v) => {
         person.name = v;
         entry.summary.textContent = v;
-      }), edit("Also known as", person.aliases.join(", "), (v) => person.aliases = v.split(",").map((x) => x.trim()).filter(Boolean)), edit("Personality", person.personality, (v) => person.personality = v, true), edit("Voice & manner", person.voice, (v) => person.voice = v, true), edit("Relationships at the start", person.relationships, (v) => person.relationships = v, true), edit("Knowledge at the start", person.knowledge, (v) => person.knowledge = v, true));
+      }, false, undefined, `cast:${person.id}:name`), edit("Also known as", person.aliases.join(", "), (v) => person.aliases = v.split(",").map((x) => x.trim()).filter(Boolean), false, undefined, `cast:${person.id}:aliases`), edit("Personality", person.personality, (v) => person.personality = v, true, undefined, `cast:${person.id}:personality`), edit("Voice & manner", person.voice, (v) => person.voice = v, true, undefined, `cast:${person.id}:voice`), edit("Relationships at the start", person.relationships, (v) => person.relationships = v, true, undefined, `cast:${person.id}:relationships`), edit("Knowledge at the start", person.knowledge, (v) => person.knowledge = v, true, undefined, `cast:${person.id}:knowledge`));
       const approved = () => current.appearances?.find((item) => item.characterId === person.id);
       const setApproved = (key, value) => {
         let appearance = approved();
@@ -1405,20 +1504,39 @@ function setup(ctx) {
       cast.append(entry.root);
     }
     panel.append(cast);
-    const mentions = details("Existing appearance mentions");
+    const mentions = details("Check for conflicting looks · optional");
     const mentionResults = group(), mentionStatus = paragraph("", "sp-hint");
     mentionStatus.setAttribute("role", "status");
-    const scanMentions = button("Scan appearance mentions", () => {
-      const found = appearanceMentions(current);
-      mentionResults.replaceChildren();
-      mentionStatus.textContent = found.length ? `${found.length} possible appearance mention${found.length === 1 ? "" : "s"} found.` : "No matching appearance words found. This does not prove there are no other descriptions.";
-      for (const mention of found) {
-        const item = group(node("h3", "", mention.location), paragraph(mention.text, "sp-preview"));
-        mentionResults.append(item);
+    let foundMentions = [], shownMentions = 0;
+    const showMoreMentions = button("Show more excerpts", () => showMentions());
+    showMoreMentions.hidden = true;
+    function showMentions() {
+      const next = foundMentions.slice(shownMentions, shownMentions + 8);
+      for (const mention of next) {
+        const open = button("Open location", () => {
+          const target = reviewFields.get(mention.fieldKey);
+          if (!target)
+            return;
+          for (let parent = target;parent; parent = parent.parentElement)
+            if (parent.tagName === "DETAILS")
+              parent.open = true;
+          target.scrollIntoView?.({ block: "center", behavior: "smooth" });
+          target.focus();
+        });
+        mentionResults.append(group(node("span", "sp-label", mention.location), paragraph(mention.text, "sp-small"), open));
       }
+      shownMentions += next.length;
+      showMoreMentions.hidden = shownMentions >= foundMentions.length;
+      mentionStatus.textContent = foundMentions.length ? `Showing ${shownMentions} of ${foundMentions.length} short excerpts. These are possible mentions, not confirmed conflicts.` : "No matching appearance words found. Other descriptions may still exist.";
+    }
+    const scanMentions = button("Scan appearance mentions", () => {
+      foundMentions = appearanceMentions(current);
+      shownMentions = 0;
+      mentionResults.replaceChildren();
+      showMentions();
       scanMentions.textContent = "Refresh appearance mentions";
     });
-    mentions.body.append(paragraph("Finds possible appearance words in the existing draft for you to compare with approved looks. This is not an exhaustive check or a conflict detector. It makes no model request and does not rewrite anything. Edit the corresponding fields below when needed.", "sp-hint"), scanMentions, mentionStatus, mentionResults);
+    mentions.body.append(paragraph("Use this only if you want to check an existing look against your approved description. You do not need to read whole passages: compare the short snippets, then Open location to edit any conflicting detail. Ordinary glances and clothing changes may be fine.", "sp-hint"), scanMentions, mentionStatus, mentionResults, showMoreMentions);
     panel.append(mentions.root, visualPanel);
     renderVisuals();
     const lore = node("div", "sp-review-group");
@@ -1428,7 +1546,7 @@ function setup(ctx) {
       entry.body.append(edit("Entry name", item.name, (v) => {
         item.name = v;
         entry.summary.textContent = v;
-      }), edit("Keywords", item.keys.join(", "), (v) => item.keys = v.split(",").map((x) => x.trim()).filter(Boolean)), edit("Lore", item.content, (v) => item.content = v, true));
+      }), edit("Keywords", item.keys.join(", "), (v) => item.keys = v.split(",").map((x) => x.trim()).filter(Boolean)), edit("Lore", item.content, (v) => item.content = v, true, undefined, `lore:${item.id}:content`));
       lore.append(entry.root);
     }
     panel.append(lore);
@@ -1439,11 +1557,15 @@ function setup(ctx) {
       entry.body.append(edit("Scene title", scene.title, (v) => {
         scene.title = v;
         entry.summary.textContent = `${String(index + 1).padStart(2, "0")}  ${v}`;
-      }), edit("Scene opening", scene.greeting, (v) => scene.greeting = v, true), edit("Private direction", scene.direction, (v) => scene.direction = v, true, "Guides the model toward this scene during play."));
+      }, false, undefined, `scene:${scene.id}:title`), edit("Scene opening", scene.greeting, (v) => scene.greeting = v, true, undefined, `scene:${scene.id}:greeting`), edit("Private direction", scene.direction, (v) => scene.direction = v, true, "Guides the model toward this scene during play.", `scene:${scene.id}:direction`));
       if (scene.assumptions.length) {
         entry.body.append(node("span", "sp-label", "Assumptions to review"));
-        for (const assumption of scene.assumptions)
-          entry.body.append(paragraph(assumption, "sp-notice"));
+        scene.assumptions.forEach((assumption, i) => {
+          const note = paragraph(assumption, "sp-notice");
+          note.tabIndex = -1;
+          reviewFields.set(`scene:${scene.id}:assumption:${i}`, note);
+          entry.body.append(note);
+        });
       }
       if (scene.sourceRefs.length)
         entry.body.append(paragraph(`Source: ${scene.sourceRefs.join(" · ")}`, "sp-hint"));

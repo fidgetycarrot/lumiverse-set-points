@@ -156,6 +156,24 @@ describe('source-grounded visual enrichment',()=>{
     let calls=0;const result=await enrichVisuals({draft:draft(),sourceText:source},async()=>{calls++;return reply({characters:[],warnings:[]});},()=>{});
     expect(calls).toBe(1);expect(result.profiles.every(value=>value.description===UNSPECIFIED_APPEARANCE&&value.suggestedDetails==='')).toBe(true);
   });
+  test.each(['nested', 'factIds', 'factId', 'mixed', 'single'] as const)('accepts equivalent explicit grounding references without a paid repair: %s',async format=>{
+    let calls=0;
+    const result=await enrichVisuals({draft:knownOnlyDraft(),sourceText:source},async messages=>{
+      calls++;
+      if(JSON.parse(messages[1].content).task==='set-points-visual-facts-v1')return reply(sourceFacts());
+      const output=profileResponse(messages),id=output.grounding.description[0];
+      const variants={nested:[[id]],factIds:[{factIds:[id]}],factId:[{factId:id}],mixed:[[{id}],id],single:id};
+      (output.grounding as any).description=variants[format];
+      return reply(output);
+    },()=>{});
+    expect(calls).toBe(2);expect(result.profiles[0].appearanceTags).toEqual(['dark hair','green eyes']);
+  });
+  test.each([1, {evidence:'dark hair'}, {id:'absent'}, {factIds:['visual-1-1-3']}])('does not infer or trust unsupported references: %j',async reference=>{
+    await expect(enrichVisuals({draft:knownOnlyDraft(),sourceText:source},async messages=>{
+      if(JSON.parse(messages[1].content).task==='set-points-visual-facts-v1')return reply(sourceFacts());
+      const output=profileResponse(messages);(output.grounding as any).description=[reference];return reply(output);
+    },()=>{})).rejects.toBeInstanceOf(Error);
+  });
   test('preserves all sections and deduplicates matching facts while retaining their references',async()=>{
     const text=`${'neutral harbor. '.repeat(1600)}dark hair${' neutral harbor.'.repeat(1600)}`;
     let read='',sections=0;

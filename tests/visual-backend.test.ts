@@ -75,6 +75,21 @@ async function completeMain(h: ReturnType<typeof harness>, app: SetPointsControl
 function paidResponsePaths(h: ReturnType<typeof harness>) { return [...h.stored.keys()].filter(path => /imports\/responses\/[a-f0-9]{64}\.json$/.test(path)); }
 
 describe('optional visual jobs keep story and appearance recovery separate', () => {
+  test('resumes a published 0.1.6 grounding-format failure using its paid responses without a new request', async () => {
+    const saved = await Bun.file(new URL('./fixtures/visual-references-v016.json', import.meta.url)).json();
+    const h = harness(async () => { throw new Error('Recovery must not call the provider'); });
+    for (const [path, value] of saved.stored) h.stored.set(path, value);
+    const app = new SetPointsController(h.api, 'alice');
+    expect((await app.snapshot(null)).visuals?.job?.error).toContain('grounding.description[0] must be text.');
+    await app.handle('resume-visuals', {}); await app.waitForVisuals();
+    const result = await app.snapshot(null);
+    expect(result.visuals?.job?.status).toBe('complete');
+    expect(result.visuals?.pack?.profiles[0].appearanceTags).toEqual(['brown hair']);
+    expect(result.draft).toEqual(draft());
+    expect(h.calls).toHaveLength(0);
+    expect(h.workspace().visualInput.sourceText).toBe(source);
+  });
+
   test('an existing completed import accepts manual appearances without rereading or regenerating the story', async () => {
     const h = harness(), original = draft();
     const completed = { id: 'completed-v015', status: 'complete' as const, completed: 4, total: 4, label: 'Ready to review' };

@@ -1,6 +1,6 @@
 import type { VisualPack } from './visuals';
 export const EXTENSION_ID = 'lumiverse_set_points';
-export const VERSION = '0.1.6';
+export const VERSION = '0.1.7';
 export interface CastMember { id: string; name: string; aliases: string[]; personality: string; voice: string; relationships: string; knowledge: string; sourceRefs: string[] }
 export interface ApprovedAppearance { characterId: string; description: string; startingOutfit: string }
 export interface LoreEntry { id: string; name: string; keys: string[]; content: string }
