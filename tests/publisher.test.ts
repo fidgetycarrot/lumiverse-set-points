@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
-import { APPEARANCE_RULE, appearanceGuide, validateDraft } from '../src/importer';
+import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, appearanceGuide, cardPayload, validateDraft } from '../src/importer';
 import { CardPublisher, draftKey, worldEntries } from '../src/publisher';
 import { EXTENSION_ID } from '../src/types';
 import { draft } from './fixtures';
@@ -49,11 +49,11 @@ describe('saving cards and lore', () => {
     const h=host(),p=new CardPublisher(h.api,'user-a');await p.publish(draft());h.cards[0].world_book_ids=[];
     await expect(p.publish(draft())).rejects.toThrow('removed or detached');expect(h.cards).toHaveLength(1);
   });
-  test('keeps the original lore entries unchanged when there is no approved guide', () => {
+  test('adds narrator continuity to the premise while preserving cast and lore without an approved guide', () => {
     const story=draft(), entries=worldEntries(story);
     expect(entries).toHaveLength(3);
     expect(entries.map(entry=>entry.comment)).toEqual(['Premise and player role','Iona','Greyhaven']);
-    expect(entries[0].content).toBe(`${story.premise}\n\nPlayer: ${story.playerRole}\nStarting point: ${story.startingPoint}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.`);
+    expect(entries[0].content).toBe(`${story.premise}\n\nPlayer: ${story.playerRole}\nStarting point: ${story.startingPoint}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}`);
     expect(entries[1].content).toBe('Iona\nPersonality: Blunt and dependable.\nVoice: Short, direct sentences.\nRelationships at the start: She knows Elias and is wary of Mara.\nKnowledge at the start: Elias left a letter in the chart room.\nUse subsequent chat events for changes to these starting facts.');
     expect(entries[2].content).toBe(story.lore[0].content);
     expect(worldEntries({...story,appearances:[]})).toEqual(entries);
@@ -66,6 +66,40 @@ describe('saving cards and lore', () => {
     expect(guide).toMatchObject({comment:'Approved character appearances',key:[],constant:true,disabled:false,probability:100,use_probability:false,priority:100,use_regex:false,vectorized:false});
     expect(guide.content).toBe(`${APPEARANCE_RULE}\n\n${appearanceGuide(story)}`);
     expect(unchanged).toEqual(previous);
+  });
+  test.each(['absent','blank','partial'] as const)('permits consistent supporting-character invention with %s approvals', async mode => {
+    const h=host(),story=draft();
+    if(mode==='blank')story.appearances=[{characterId:'iona',description:'',startingOutfit:''}];
+    if(mode==='partial')story.appearances=[{characterId:'iona',description:'Green eyes.',startingOutfit:''}];
+    const before=structuredClone(story);await new CardPublisher(h.api,'user-a').publish(story);
+    expect(h.cards[0].system_prompt).toContain(APPEARANCE_CONTINUITY_RULE);
+    expect(h.cards[0].system_prompt).toContain('Invent missing visual details as characters become relevant');
+    expect(h.cards[0].system_prompt).toContain('keep those physical details consistent');
+    expect(h.cards[0].system_prompt).toContain('Leave unspecified details of the human');
+    expect(h.entries.find(entry=>entry.comment==='Premise and player role')).toMatchObject({constant:true,disabled:false,content:expect.stringContaining(APPEARANCE_CONTINUITY_RULE)});
+    expect(JSON.stringify(h.cards)).not.toContain('Unspecified fields remain unknown');
+    if(mode!=='absent')expect(h.entries.find(entry=>entry.comment==='Approved character appearances').content).toContain('Only explicitly approved traits are locked');
+    if(mode==='partial')expect(h.cards[0].description).toContain('Appearance: Green eyes.');
+    expect(story).toEqual(before);
+    expect(h.cards[0].first_mes).toBe(story.scenes[0].greeting);
+    expect(h.cards[0].alternate_greetings).toEqual(story.scenes.slice(1).map(scene=>scene.greeting));
+  });
+  test('saving an unchanged pre-update draft creates the revised card once without altering the old publication',async()=>{
+    const h=host(),story=draft();story.appearances=[{characterId:'iona',description:'Green eyes.',startingOutfit:''}];
+    const oldKey=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(story)))),byte=>byte.toString(16).padStart(2,'0')).join('');
+    h.cards.push({...cardPayload(story),id:'old-card',system_prompt:'Unspecified fields remain unknown rather than becoming invented fixed traits.',world_book_ids:['old-book'],extensions:{[EXTENSION_ID]:{key:oldKey,draftId:story.id}}});
+    h.books.push({id:'old-book',metadata:{[EXTENSION_ID]:{key:oldKey,draftId:story.id}}});
+    h.entries.push({id:'old-entry',world_book_id:'old-book',content:'Old appearance guidance.'});
+    await h.api.userStorage.setJson(`receipts/${oldKey}.json`,{key:oldKey,draftId:story.id,characterId:'old-card',worldBookId:'old-book',complete:true},{userId:'user-a'});
+    const oldCard=structuredClone(h.cards[0]),oldEntry=structuredClone(h.entries[0]);
+    const publisher=new CardPublisher(h.api,'user-a'),saved=await publisher.publish(story);
+    expect(await draftKey(story)).not.toBe(oldKey);expect(saved.characterId).not.toBe('old-card');
+    expect(h.cards[1].system_prompt).toContain(APPEARANCE_CONTINUITY_RULE);
+    expect(h.cards[1].system_prompt).not.toContain('Unspecified fields remain unknown');
+    expect(await publisher.publish(story)).toEqual(saved);
+    expect(await new CardPublisher(h.api,'user-a').publish(story)).toEqual(saved);
+    expect(h.cards).toHaveLength(2);expect(h.books).toHaveLength(2);
+    expect(h.cards[0]).toEqual(oldCard);expect(h.entries[0]).toEqual(oldEntry);
   });
   test('publishes manually approved prose consistently in the card and world book after JSON roundtrip', async () => {
     const h=host(), story=draft();

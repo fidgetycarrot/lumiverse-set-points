@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { APPEARANCE_RULE, adaptStory, appearanceGuide, cardPayload, validateDraft, type Generate, type GenerationMessage } from '../src/importer';
+import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, adaptStory, appearanceGuide, cardPayload, validateDraft, type Generate, type GenerationMessage } from '../src/importer';
 import type { StoryDraft } from '../src/types';
 import { enrichVisuals, INCOMPLETE_APPEARANCE, UNSPECIFIED_APPEARANCE, validateVisualPack, visualCaption, visualDraftSignature, visualTagPrompt, type VisualPack, type VisualProfile } from '../src/visuals';
 
@@ -43,14 +43,14 @@ describe('approved appearances in the playable draft',()=>{
     expect(()=>validateDraft({...draft(),appearances:null})).toThrow();
     expect(()=>validateDraft({...draft(),appearances:Array.from({length:65},()=>entry)})).toThrow();
   });
-  test('old drafts keep the same serialized shape and card fields',()=>{
+  test('old drafts keep their serialized shape and gain missing-look continuity guidance',()=>{
     const original=draft(),checked=validateDraft(original),card=cardPayload(original);
     expect(JSON.stringify(checked)).toBe(JSON.stringify(original));
     expect('appearances' in checked).toBe(false);
     expect(cardPayload({...original,appearances:[]})).toEqual(card);
     expect(appearanceGuide(original)).toBe('');
     expect(card.description).not.toContain('Approved appearance guide');
-    expect(card.system_prompt).toBe(`${original.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.`);
+    expect(card.system_prompt).toBe(`${original.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}`);
   });
   test('publishes only approved descriptions with the authority rule and no scene rewrites',()=>{
     const original=draft(),generated=profile();
@@ -63,6 +63,10 @@ describe('approved appearances in the playable draft',()=>{
     expect(card.system_prompt).toContain(APPEARANCE_RULE);
     expect(card.system_prompt).toContain('human explicitly approves a change');
     expect(card.system_prompt).toContain('explicit action in the story');
+    expect(card.system_prompt).toContain('Only explicitly approved traits are locked');
+    expect(card.system_prompt).toContain('traits not mentioned in a partial description');
+    expect(card.system_prompt).toContain('invent missing details consistently');
+    expect(card.system_prompt).not.toContain('Unspecified fields remain unknown');
     expect(card.first_mes).toBe(original.scenes[0].greeting);
     expect(card.extensions).toEqual(cardPayload(original).extensions);
     expect(visualDraftSignature(approved)).toBe(visualDraftSignature(original));

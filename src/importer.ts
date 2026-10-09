@@ -561,7 +561,8 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   return result;
 }
 
-export const APPEARANCE_RULE = 'The approved appearance guide is authoritative for character appearance. Its approved details take priority over conflicting incidental descriptions in cast profiles, lore, scene guidance, and narration. Preserve approved physical traits unless the human explicitly approves a change. Starting outfits remain as approved until an explicit action in the story changes them; incidental conflicting prose does not change clothing. Unspecified fields remain unknown rather than becoming invented fixed traits. Respect the human\'s control of their character.';
+export const APPEARANCE_CONTINUITY_RULE = 'For supporting characters, use established story and chat appearance details first, respecting any approved appearance guide. Invent missing visual details as characters become relevant, without contradicting established or approved traits. Once introduced, keep those physical details consistent across later replies; do not casually change hair color, eye color, or other traits. Clothing can change through an explicit action in the story. Leave unspecified details of the human\'s character for the human to choose.';
+export const APPEARANCE_RULE = 'The approved appearance guide is authoritative for character appearance. Its approved details take priority over conflicting incidental descriptions in cast profiles, lore, scene guidance, and narration. Preserve approved physical traits unless the human explicitly approves a change. Starting outfits remain as approved until an explicit action in the story changes them; incidental conflicting prose does not change clothing. Only explicitly approved traits are locked by the guide. Blank fields, omitted characters, and traits not mentioned in a partial description remain open for supporting characters: use established story and chat details first, then invent missing details consistently. Respect the human\'s control of their character.';
 
 /** Contains only explicitly approved prose; generated design suggestions stay separate. */
 export function appearanceGuide(value: StoryDraft): string {
@@ -583,7 +584,7 @@ export function cardPayload(value: StoryDraft) {
     scenario: `${draft.premise}\n\nPlayer role: ${draft.playerRole}\nStarting point: ${draft.startingPoint}`,
     first_mes: draft.scenes[0].greeting,
     alternate_greetings: draft.scenes.slice(1).map(scene => scene.greeting),
-    system_prompt: `${draft.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.${approvedAppearances ? `\n\n${APPEARANCE_RULE}` : ''}`,
+    system_prompt: `${draft.narratorInstructions}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}${approvedAppearances ? `\n\n${APPEARANCE_RULE}` : ''}`,
     mes_example: '',
     creator_notes: `Adapted with Set Points from ${draft.source.title}${draft.source.url ? ` (${draft.source.url})` : ''}.\n${draft.warnings.join('\n')}`,
     tags: ['Set Points', 'Narrator', 'Story adaptation'],

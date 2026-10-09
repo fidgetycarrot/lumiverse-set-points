@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.8";
+var VERSION = "0.1.9";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -1494,7 +1494,7 @@ function setup(ctx) {
     panel.append(narration.root);
     const cast = node("div", "sp-review-group");
     cast.append(node("div", "sp-section-label", "The people"));
-    const appearanceGuide = group(node("h3", "", "Appearance guide"), paragraph("Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields stay unspecified. These choices are included in the draft and become lorebook guidance when saved to Lumiverse; editing them uses no model.", "sp-small"), paragraph("Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections.", "sp-hint"));
+    const appearanceGuide = group(node("h3", "", "Appearance guide"), paragraph("Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields let the narrator fill missing supporting-character details, using existing story facts first and keeping introduced looks consistent. You can start playing without describing everyone. These choices become lorebook guidance when saved to Lumiverse; editing them uses no model.", "sp-small"), paragraph("Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections. Your own character’s unspecified appearance stays yours to choose.", "sp-hint"));
     appearanceGuide.classList.add("sp-card");
     cast.append(appearanceGuide);
     for (const person of current.cast) {
@@ -1528,7 +1528,7 @@ function setup(ctx) {
       appearanceMismatch.hidden = true;
       approvedControls.set(person.id, updateApproved);
       updateApproved();
-      entry.body.append(edit(`${person.name}: approved appearance`, approved()?.description ?? "", (v) => setApproved("description", v), true, "Your chosen physical details. Leave blank when unspecified. This is independent of generated source facts."), edit(`${person.name}: approved starting outfit`, approved()?.startingOutfit ?? "", (v) => setApproved("startingOutfit", v), true, "Your chosen outfit at the start. Leave blank when unspecified. Edit conflicting lore or scene openings separately."), appearanceMismatch, approvedCaption.wrap, approvedCopy);
+      entry.body.append(edit(`${person.name}: approved appearance`, approved()?.description ?? "", (v) => setApproved("description", v), true, "Your chosen physical details stay fixed. For supporting characters, leave missing traits for the narrator to fill. This is independent of generated source facts."), edit(`${person.name}: approved starting outfit`, approved()?.startingOutfit ?? "", (v) => setApproved("startingOutfit", v), true, "Your chosen outfit at the start. For supporting characters, leave blank for the narrator. Edit conflicting lore or scene openings separately."), appearanceMismatch, approvedCaption.wrap, approvedCopy);
       if (person.sourceRefs.length)
         entry.body.append(paragraph(`Source: ${person.sourceRefs.join(" · ")}`, "sp-hint"));
       cast.append(entry.root);

@@ -1,8 +1,16 @@
-# Set Points 0.1.8 — verification
+# Set Points 0.1.9 — verification
 
 Prepared October 9, 2026.
 
-## Change in 0.1.8
+## Change in 0.1.9
+
+Published narrator guidance now permits invention of missing supporting-character looks. Existing story and chat details come first, approved traits override incidental conflicts, and blank fields, omitted characters, or unmentioned traits in a partial description remain open. Narrators are instructed to preserve introduced physical traits and change clothing only through an explicit action. The human keeps control of unspecified details of their own character.
+
+General appearance continuity guidance is included in every card system prompt and the always-active premise world-book entry, including drafts with no approved appearances. Approved guides retain their dedicated authoritative entry. Cast/lore prose and literal scene openings are unchanged. This is prompt guidance, not deterministic appearance tracking; invented looks are not automatically persisted to the draft or world book. Source-grounded Image descriptions still separate facts, unknowns, suggestions, and retained review facts. Model prompts and paid-response checkpoint identities for adaptation and descriptions are unchanged.
+
+Publication receipts use revision 2 so saving an unchanged pre-update draft creates a fresh card and world book with the new guidance, instead of returning a card containing the restrictive old instruction. Repeated saves and restart recovery in this revision reuse the new publication. Existing cards, books, and chats are preserved and not upgraded in place. Saving from a completed draft uses no model request and requires no reimport.
+
+## Changes retained from 0.1.8
 
 A profile no longer fails solely because grounded canonical prose does not cite every supplied starting fact. Uncited facts are retained verbatim from the validated extraction as optional per-profile `reviewFacts`, with their kind and source sections. They remain separate from copied prompts, suggestions, and approved appearances. Coverage creates a count-based review notice and never buys a format repair. Existing prompts and cache keys are unchanged. Unsupported references, invented evidence, wrong character IDs, incompatible fact kinds, and future facts remain rejected.
 
@@ -22,7 +30,7 @@ The description source panel now offers website loading with the existing linked
 
 Manual approved appearance and starting-outfit fields are available in Review for every existing draft, including completed 0.1.5 drafts. Editing and saving them makes no model request and needs neither reimport nor original source text. The optional `StoryDraft.appearances` field is validated, saved, and included in draft JSON. Publishing includes the same guide in the card description and a dedicated always-on **Approved character appearances** world-book entry, with a matching narrator rule.
 
-The approved guide takes priority over incidental conflicting prose. Physical traits require explicit human approval to change; starting clothes can change through an explicit story action. Blank fields stay unspecified. Existing cast/lore entries and literal scene openings remain intact. **Scan appearance mentions** is a local keyword locator for manual review, not an exhaustive search or semantic conflict checker. It does not rewrite scenes, and Force inserts the existing opening literally. Model adherence is not guaranteed.
+The approved guide takes priority over incidental conflicting prose. Physical traits require explicit human approval to change; starting clothes can change through an explicit story action. Blank supporting-character fields use established story and chat details first, then permit consistent invention of missing traits. Existing cast/lore entries and literal scene openings remain intact. **Scan appearance mentions** is a local keyword locator for manual review, not an exhaustive search or semantic conflict checker. It does not rewrite scenes, and Force inserts the existing opening literally. Model adherence is not guaranteed.
 
 Image descriptions remain an optional, separate step. The extension rereads the explicitly selected original source, extracts appearance facts with evidence from source sections, and builds editable profiles for the existing cast. Source appearance and starting outfits are separate from suggestions and unknown traits. Later or uncertain facts are excluded from starting defaults. Generation alone does not change approved story details or publish a card. **Use these appearances in story** explicitly copies only the displayed source appearance and outfit prose into the approved fields, converts unspecified facts to blanks, and excludes suggested details and tags. The user reviews and saves that change.
 
@@ -60,9 +68,9 @@ The 0.1.5 staged adaptation path and legacy checkpoint `FORMAT 1` recovery remai
 
 ## Current release verification
 
-The complete 0.1.8 suite passes: **348 tests, 1,933 assertions, 13 test files**. TypeScript checking passes. Bun 1.4.2 produced backend **564,147 bytes**, frontend **106,898 bytes**, and mocked preview **120,275 bytes**. The official Lumiverse 1.2.0 capability scanner reports no undeclared capabilities with the existing `base64_decode` declaration.
+The complete 0.1.9 suite passes: **352 tests, 1,977 assertions, 13 test files**. TypeScript checking passes. Bun 1.4.2 produced backend **564,982 bytes**, frontend **107,186 bytes**, and mocked preview **120,563 bytes**. The official Lumiverse 1.2.0 capability scanner reports no undeclared capabilities with the existing `base64_decode` declaration.
 
-New 0.1.8 checks cover retained appearance, clothing, identity, and count-only facts; safe bounded review-data roundtrip; exclusion from prompts and approval; incomplete-field preservation; review batches; zero-call recovery of the published 0.1.7 fixture, and completion of all nine profiles after an uncited fact in the first. Earlier regression coverage includes common explicit grounding-reference formats, rejection of unsupported or incompatible references, recovery from the actual published 0.1.6 backend fixture with zero new model calls, eight linked website pages in the description panel, cancellation, late collection results after draft changes, bounded excerpt batches, and focus on the correct editor.
+New 0.1.9 checks cover published guidance with absent, blank, or partial approvals, unchanged cast/lore/scenes, human control, and a legacy-receipt save producing a new publication exactly once without modifying the original. Earlier 0.1.8 checks cover retained appearance, clothing, identity, and count-only facts; safe bounded review-data roundtrip; exclusion from prompts and approval; incomplete-field preservation; review batches; zero-call recovery of the published 0.1.7 fixture, and completion of all nine profiles after an uncited fact in the first. Earlier regression coverage includes common explicit grounding-reference formats, rejection of unsupported or incompatible references, recovery from the actual published 0.1.6 backend fixture with zero new model calls, eight linked website pages in the description panel, cancellation, late collection results after draft changes, bounded excerpt batches, and focus on the correct editor.
 
 Publisher tests cover always-on approved guidance, identical card/world-book prose, JSON roundtrip, unchanged legacy entries, changed-guide receipts, double-click/restart deduplication, and interrupted publication. Backend coverage includes adding and saving approved appearances to a completed 0.1.5 draft with zero model calls and unchanged saved import inputs. Frontend checks cover manual approval, source-only copying, the appearance locator, approved-caption differences, explicit source selection, source/result/request revision binding, separate packs, preservation of edits, cancellation/resume, unknown outcomes, visible JSON backup, paste restoration, and clipboard failure.
 
@@ -70,10 +78,11 @@ No live provider appearance run, successful live story adaptation, or image-gene
 
 ## Previous release verification references
 
-These historical results do not verify 0.1.8:
+These historical results do not verify 0.1.9:
 
 | Version | Tests | Assertions | Test files |
 | --- | ---: | ---: | ---: |
+| 0.1.8 | 348 | 1,933 | 13 |
 | 0.1.7 | 341 | 1,876 | 13 |
 | 0.1.6 | 326 | 1,827 | 13 |
 | 0.1.5 | 243 | 1,416 | 10 |
@@ -86,9 +95,9 @@ Version 0.1.5 passed TypeScript and Bun 1.4.2 builds: backend 526,701 bytes, fro
 
 ## Still to verify in a live installation
 
-1. Update to 0.1.8 in place, preserving private extension storage. Confirm an existing draft and saved import remain available. Edit and save approved appearance fields without a model request or reimport.
+1. Update to 0.1.9 in place, preserving private extension storage. Confirm an existing draft and saved import remain available. Edit and save approved appearance fields without a model request or reimport.
 2. Export a draft; confirm the visible JSON backup remains usable when downloading or clipboard access is blocked. Restore a draft through the file or paste controls.
-3. Publish a reviewed draft and check the approved guide in both its card and always-on world-book entry. Check possible conflicts in existing lore and literal scene openings.
+3. Publish a reviewed draft and use the newly saved card. Confirm a first publication after the guidance update creates a new card while repeat saves reuse it. Check supporting-character missing-look guidance with no guide, blank fields, and partial approvals; check the approved guide in both its card and always-on world-book entry. Check possible conflicts in existing lore and literal scene openings.
 4. If wanted, open optional Image descriptions. Verify the source is matched or explicitly read linked website pages or paste/copy the correct story before starting a normally charged request. Review facts, unknowns, outfits, and suggestions; confirm later changes have not become starting defaults.
 5. Save the separate descriptions. Deliberately approve source prose with **Use these appearances in story**, or keep manual choices. Copy the approved caption or reviewed tags into Lumi Studio manually and choose model and preset settings there.
 6. For a saved grounding or coverage failure, use **Resume saved descriptions** without entering the story again. If generation stops, check its retained phase and error category. Resume completed matching work, or explicitly authorize an uncertain retry after reading its charge warning. Download diagnostics if further troubleshooting is needed.

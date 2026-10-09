@@ -3097,7 +3097,7 @@ var require_canvas = __commonJS(function(exports, module) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.8";
+var VERSION = "0.1.9";
 
 // src/importer.ts
 var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
@@ -3740,7 +3740,8 @@ ${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` }
   progress("Draft ready for review");
   return result;
 }
-var APPEARANCE_RULE = "The approved appearance guide is authoritative for character appearance. Its approved details take priority over conflicting incidental descriptions in cast profiles, lore, scene guidance, and narration. Preserve approved physical traits unless the human explicitly approves a change. Starting outfits remain as approved until an explicit action in the story changes them; incidental conflicting prose does not change clothing. Unspecified fields remain unknown rather than becoming invented fixed traits. Respect the human's control of their character.";
+var APPEARANCE_CONTINUITY_RULE = "For supporting characters, use established story and chat appearance details first, respecting any approved appearance guide. Invent missing visual details as characters become relevant, without contradicting established or approved traits. Once introduced, keep those physical details consistent across later replies; do not casually change hair color, eye color, or other traits. Clothing can change through an explicit action in the story. Leave unspecified details of the human's character for the human to choose.";
+var APPEARANCE_RULE = "The approved appearance guide is authoritative for character appearance. Its approved details take priority over conflicting incidental descriptions in cast profiles, lore, scene guidance, and narration. Preserve approved physical traits unless the human explicitly approves a change. Starting outfits remain as approved until an explicit action in the story changes them; incidental conflicting prose does not change clothing. Only explicitly approved traits are locked by the guide. Blank fields, omitted characters, and traits not mentioned in a partial description remain open for supporting characters: use established story and chat details first, then invent missing details consistently. Respect the human's control of their character.";
 function appearanceGuide(value) {
   const draft = validateDraft(value);
   if (!draft.appearances?.length)
@@ -3784,7 +3785,9 @@ Starting point: ${draft.startingPoint}`,
     alternate_greetings: draft.scenes.slice(1).map((scene) => scene.greeting),
     system_prompt: `${draft.narratorInstructions}
 
-The human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.${approvedAppearances ? `
+The human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.
+
+${APPEARANCE_CONTINUITY_RULE}${approvedAppearances ? `
 
 ${APPEARANCE_RULE}` : ""}`,
     mes_example: "",
@@ -4069,7 +4072,7 @@ class ResponseCheckpoints {
 
 // src/publisher.ts
 async function draftKey(draft) {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(draft)));
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({ publicationRevision: 2, draft })));
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 function worldEntries(draft) {
@@ -4090,7 +4093,9 @@ ${approvedAppearances}`
 
 Player: ${draft.playerRole}
 Starting point: ${draft.startingPoint}
-These are starting facts. Later events in the chat take precedence. Leave the player\u2019s actions, thoughts, and speech to them.` },
+These are starting facts. Later events in the chat take precedence. Leave the player\u2019s actions, thoughts, and speech to them.
+
+${APPEARANCE_CONTINUITY_RULE}` },
     ...draft.cast.map((member) => ({
       comment: member.name,
       key: [member.name, ...member.aliases],

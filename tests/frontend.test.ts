@@ -363,7 +363,7 @@ describe('approved story appearances',()=>{
     expect(app.field('Iona: approved appearance').value).toBe('');expect(app.field('Iona: approved starting outfit').value).toBe('');expect(app.field('Story text').value).toBe('');
     app.input('Iona: approved appearance','Short silver hair and green eyes.');app.input('Iona: approved starting outfit','A navy coat with brass buttons.');app.button('Save draft').click();await tick();
     expect(app.requests.find(item=>item.action==='save-draft')?.input.draft.appearances).toEqual([{characterId:'captain',description:'Short silver hair and green eyes.',startingOutfit:'A navy coat with brass buttons.'}]);
-    expect(app.state.draft?.appearances?.[0].description).toBe('Short silver hair and green eyes.');expect(app.requests.some(item=>['start-import','start-visuals','test-connection'].includes(item.action))).toBe(false);expect(app.root.textContent).toContain('Blank fields stay unspecified');
+    expect(app.state.draft?.appearances?.[0].description).toBe('Short silver hair and green eyes.');expect(app.requests.some(item=>['start-import','start-visuals','test-connection'].includes(item.action))).toBe(false);expect(app.root.textContent).toContain('Blank fields let the narrator fill missing supporting-character details');
   });
   test('manual appearance edits survive refresh, keep paid descriptions matched, and allow unspecified fields',async()=>{
     const app=harness();readyVisuals(app);await tick();app.input('Iona: approved appearance','My chosen look');app.input('Iona: approved starting outfit','');app.changed();await tick();
