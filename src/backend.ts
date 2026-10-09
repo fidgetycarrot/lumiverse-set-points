@@ -10,7 +10,7 @@ import { VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type Sav
 
 const STATE_PATH = 'workspace.json';
 type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
-type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
+type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2 };
 type Workspace = {
   repairInput?: RepairInput; repairJob?: ImportJob; repairResult?: StoryDraft; repairConnectionFingerprint?: unknown;
   draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null; lastImport?: ImportOptions; lastConnectionFingerprint?: unknown;
@@ -322,6 +322,7 @@ export class SetPointsController {
       if (!Number.isInteger(options.chunkSize) || options.chunkSize < 4000 || options.chunkSize > 20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
       string(options.sourceTitle, 'Story title'); string(options.playerRole, 'Player role'); string(options.startingPoint, 'Starting point');
       if (options.sourceTitle.length > 300 || options.playerRole.length > 2000 || options.startingPoint.length > 2000) throw new Error('Keep the title under 300 characters and role/starting point under 2,000 characters.');
+      if(options.openingStyle!==undefined&&!['interactive','story'].includes(options.openingStyle))throw new Error('Choose a valid scene opening style.');
       if (options.narrationMode !== undefined && !['neutral','character'].includes(options.narrationMode)) throw new Error('Choose a valid narration style.');
       if (options.narrationMode === 'character' && (typeof options.narratorCharacter !== 'string' || !options.narratorCharacter.trim())) throw new Error('Name the supporting character who narrates.');
       if (options.narratorCharacter !== undefined && (typeof options.narratorCharacter !== 'string' || options.narratorCharacter.length>200) || options.sourceViewpoint !== undefined && (typeof options.sourceViewpoint !== 'string' || options.sourceViewpoint.length>500)) throw new Error('Keep narrator names under 200 characters and source viewpoint under 500.');
@@ -404,14 +405,16 @@ export class SetPointsController {
   private validateRepairInput(value: unknown): RepairInput {
     const data=record(value), draft=validateDraft(data.draft);
     if (!Array.isArray(data.sceneIds) || !data.sceneIds.length || new Set(data.sceneIds).size!==data.sceneIds.length || data.sceneIds.some(id=>typeof id!=='string'||!draft.scenes.some(scene=>scene.id===id))) throw new Error('Select existing scenes once each for repair.');
-    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data)};
+    if(data.promptVersion!==undefined&&data.promptVersion!==1&&data.promptVersion!==2)throw new Error('Invalid saved scene repair format.');
+    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data),...(data.promptVersion!==undefined?{promptVersion:data.promptVersion as 1|2}:{})};
   }
   private async startRepair(value: unknown, retryUncertain=false, resume=false): Promise<ImportJob> {
     await this.ready; this.require('generation');
     if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running') throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
     this.repairStarting=true;
     try {
-      const options=this.validateRepairInput(value), settings=responseSettings(options),connection=await this.selectedConnection(options.connectionId);
+      const options=this.validateRepairInput(value);if(!resume)options.promptVersion=2;
+      const settings=responseSettings(options),connection=await this.selectedConnection(options.connectionId);
       if (resume&&!sameSettings(connection.fingerprint,this.workspace.repairConnectionFingerprint)) throw new Error('The saved scene repair connection changed. Restore its settings before resuming, or start a new normally charged repair.');
       this.repairCheckpoints.beginRun({retryUncertain});
       const controller=new AbortController(),job:ImportJob={id:crypto.randomUUID(),status:'running',completed:0,total:options.sceneIds.length,label:'Preparing scene repair'};
@@ -428,7 +431,7 @@ export class SetPointsController {
             const response=await this.repairCheckpoints.request(messages,fingerprint,()=>this.requestModel(connection,messages,signal??controller.signal,settings.maxOutputTokens,600_000,settings.reasoningMode),{reuseFingerprints});
             responseReturned=true;return this.readModelResponse(response);
           };
-          this.workspace.repairResult=await repairSceneOpenings(options.draft,options.sceneIds,generate,(completed,total,label)=>{this.workspace.repairJob={...job,completed,total,label,phase:label};this.changed();},controller.signal);
+          this.workspace.repairResult=await repairSceneOpenings(options.draft,options.sceneIds,generate,(completed,total,label)=>{this.workspace.repairJob={...job,completed,total,label,phase:label};this.changed();},controller.signal,options.promptVersion??1);
           controller.signal.throwIfAborted();this.workspace.repairJob={...this.workspace.repairJob!,status:'complete',label:'Repaired scenes ready to review'};
           this.note('Scene repair completed; result awaits explicit review.');await this.persist();
         } catch(error) {

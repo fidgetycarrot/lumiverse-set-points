@@ -18,7 +18,7 @@ function previewRepair(input:any){
   setTimeout(()=>{
     if(state.repairs?.job?.status!=='running')return;
     const candidate=structuredClone(input.draft);candidate.roles??=defaultRoles(candidate);delete candidate.roleReview;
-    for(const scene of candidate.scenes)if(input.sceneIds.includes(scene.id)){scene.greeting='Iona waits beside a moored boat. “A letter for you,” she says.';scene.direction='Offer the clue if the player chooses to approach.';}
+    for(const scene of candidate.scenes)if(input.sceneIds.includes(scene.id)){if(candidate.openingStyle!=='story')scene.greeting='Iona waits beside a moored boat. “A letter for you,” she says.';scene.direction='Offer the clue if the player chooses to approach.';}
     state.repairs.result=candidate;state.repairs.job={...state.repairs.job,status:'complete',completed:input.sceneIds.length,label:'Preview: repaired scenes ready'};changes();
   },1400);
   return structuredClone(state.repairs.job);

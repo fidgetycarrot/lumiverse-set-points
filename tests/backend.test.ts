@@ -36,6 +36,13 @@ function harness(generate: (input:any)=>Promise<unknown> = async()=>({content:'n
 }
 function repairReply(input:any){const body=JSON.parse(input.messages[1].content);return {content:JSON.stringify({id:body.scene.id,greeting:'Iona holds a letter beside the boat.',direction:'Offer the clue while leaving the response open.',assumptions:[],roles:{playerCharacterId:body.roles.playerCharacterId,narration:body.roles.narration,viewpointCharacterId:body.roles.viewpointCharacterId}}),finish_reason:'stop'};}
 describe('completed-draft scene repair',()=>{
+  test('resumes the actual 0.1.10 partial-repair fixture without repurchasing its completed scene',async()=>{
+    const fixture=await Bun.file(new URL('./fixtures/scene-repair-v010.json',import.meta.url)).json() as {stored:Array<[string,unknown]>};
+    const h=harness(async input=>repairReply(input));for(const[key,value]of fixture.stored)h.stored.set(key,value);
+    const app=new SetPointsController(h.api,'alice');await app.handle('resume-scene-repair',{draft:draft()});await app.waitForRepair();
+    expect((await app.snapshot(null)).repairs?.job?.status).toBe('complete');expect(h.calls).toHaveLength(1);expect(JSON.parse(h.calls[0].messages[1].content).scene.id).toBe('letter');expect(JSON.parse(h.calls[0].messages[1].content).task).toBe('set-points-scene-repair-v1');
+    expect((await app.snapshot(null)).draft).toEqual(draft());
+  });
   test('does not repeat an uncertain request until an explicit retry and retains completed results after restart',async()=>{
     let fail=true;const h=harness(async input=>{if(fail)throw new Error('The operation timed out');return repairReply(input);});
     const app=new SetPointsController(h.api,'alice'),story=draft();await app.handle('save-draft',{draft:story});
@@ -84,13 +91,14 @@ describe('completed-draft scene repair',()=>{
     const app=new SetPointsController(h.api,'alice'),view=await app.snapshot(null);expect(view.draft).toEqual(draft());expect(view.repairs?.job?.status).toBe('failed');
     expect([...h.stored.keys()].some(key=>key.startsWith('alice:recovery/scene-repair-'))).toBe(true);expect(h.calls).toHaveLength(0);
   });
-  test('modern import binds a supporting narrator separately from the player in every generated scene',async()=>{
+  test.each(['interactive','story'] as const)('modern %s import binds a supporting narrator separately from the player in every generated scene',async openingStyle=>{
     const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a letter.',cast:['Mara','Iona'].map(name=>({name,aliases:[],personality:'Curious.',voice:'Direct.',relationships:'Harbor acquaintances.',knowledgeAtIntroduction:'A letter is missing.',developments:'No later changes.',sourceRefs:['chunk:1']})),setting:[],events:[{title:'Arrival',summary:'The harbor awaits.',participants:['Mara','Iona'],changes:'A conversation is possible.',sourceRefs:['chunk:1']}],warnings:[]};
     const h=harness(async input=>{if(input.messages[1].content.startsWith('SOURCE CHUNK'))return {content:JSON.stringify(ledger),finish_reason:'stop'};
       const body=JSON.parse(input.messages[1].content),result=stagedReply(input);if(body.task==='set-points-scenes-v1')for(const scene of result.scenes)scene.roles={playerCharacterId:'cast-1',narration:'character',viewpointCharacterId:'cast-2'};return {content:JSON.stringify(result),finish_reason:'stop'};});
-    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options:{...options,narrationMode:'character',narratorCharacter:'Iona',sourceViewpoint:'Iona in the source'}});await app.waitForImport();
+    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options:{...options,narrationMode:'character',narratorCharacter:'Iona',sourceViewpoint:'Iona in the source',openingStyle}});await app.waitForImport();
     const view=await app.snapshot(null);expect(view.job?.status).toBe('complete');expect(view.draft?.roles).toEqual({narration:'character',playerCharacterId:'cast-1',viewpointCharacterId:'cast-2',sourceViewpoint:'Iona in the source'});
     for(const input of h.calls.slice(1))expect(input.messages[0].content).toContain('human plays Mara');expect(h.calls).toHaveLength(4);
+    expect(view.draft?.openingStyle).toBe(openingStyle);if(openingStyle==='story')for(const input of h.calls.slice(1))expect(input.messages[0].content).toContain('Stored scene openings use Story excerpt style');
   });
 });
 describe('import jobs and draft storage',()=>{

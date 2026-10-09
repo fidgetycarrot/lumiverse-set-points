@@ -62,6 +62,11 @@ describe('request handling',()=>{
 });
 
 describe('Set Points workspace',()=>{
+  test('accepts intentional preset actions by switching an existing draft to Story excerpt without paying or rewriting',async()=>{
+    const app=harness();app.state.draft!.scenes[0].greeting='You decide to open the letter.';await tick();app.changed();await tick();app.button('Review').click();expect(app.root.textContent).toContain('1 possible role or viewpoint conflicts');
+    app.input('Opening style','story');expect(app.root.textContent).not.toContain('1 possible role or viewpoint conflicts');expect(app.root.textContent).toContain('Story excerpt accepts preset player actions');
+    app.button('Save draft').click();await tick();const saved=app.requests.find(item=>item.action==='save-draft')!.input.draft;expect(saved.openingStyle).toBe('story');expect(saved.scenes[0].greeting).toBe('You decide to open the letter.');expect(app.requests.some(item=>['start-import','start-scene-repair'].includes(item.action))).toBe(false);
+  });
   test('edits narrator roles on a completed legacy import without regenerating its scenes',async()=>{
     const app=harness();await tick();app.button('Review').click();const opening=app.field('Scene opening').value;
     app.input('Story narration','character');app.input('Source viewpoint · optional','Iona tells the original story.');app.button('Save draft').click();await tick();
@@ -70,7 +75,7 @@ describe('Set Points workspace',()=>{
   });
   test('provides free role review with field focus and retains edits without generating',async()=>{
     const app=harness();app.state.draft!.scenes[0].greeting='You decide to leave. I wait beside the boat.';await tick();app.changed();await tick();app.button('Review').click();
-    expect(app.root.textContent).toContain('2 possible role or viewpoint conflicts');app.button('Open role issue').click();expect(app.window.document.activeElement.id).toBe(app.field('Scene opening').id);
+    expect(app.root.textContent).toContain('2 possible role or viewpoint conflicts');app.button('Open role issue').click();expect(app.window.document.activeElement.id).toBe(app.field('Scene opening').id);expect(app.field('Scene opening').value.slice(app.field('Scene opening').selectionStart!,app.field('Scene opening').selectionEnd!)).toBe('You decide');
     app.button('Save to Lumiverse').click();await tick();expect(app.requests.some(item=>item.action==='create-card')).toBe(false);expect(app.root.textContent).toContain('Correct the flagged fields');
     const ack=app.field('I have reviewed the current possible conflicts');ack.checked=true;ack.dispatchEvent(new app.window.Event('change',{bubbles:true}) as unknown as Event);
     app.button('Save draft').click();await tick();expect(app.requests.find(item=>item.action==='save-draft')?.input.draft.roleReview).toBeDefined();
@@ -83,6 +88,7 @@ describe('Set Points workspace',()=>{
     const candidate=structuredClone(requested.input.draft);candidate.scenes[0].greeting='Iona holds a letter beside the boat.';
     app.state.repairs={...app.state.repairs!,job:{id:'repair',status:'complete',completed:1,total:1,label:'Ready to review'},result:candidate};app.changed();await tick();
     expect(app.field('Scene opening').value).toBe('You decide to leave.');expect(app.field('Repaired opening').value).toBe(candidate.scenes[0].greeting);expect(app.button('Load repaired scenes').hidden).toBe(false);
+    expect(app.root.textContent).toContain('The checks above describe your current draft');expect(app.root.textContent).toContain('Checks on the repaired version: 0 possible conflicts');
     app.input('Premise','My newer premise.');expect(app.button('Load repaired scenes').hidden).toBe(true);expect(app.root.textContent).toContain('different draft version');
     expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
   });

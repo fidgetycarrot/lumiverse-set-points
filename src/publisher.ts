@@ -17,7 +17,7 @@ export function worldEntries(draft: StoryDraft): WorldBookEntryCreateDTO[] {
   return [
     ...(approvedAppearances ? [{ comment: 'Approved character appearances', key: [], constant: true,
       probability: 100, use_probability: false, priority: 100, content: `${APPEARANCE_RULE}\n\n${approvedAppearances}` }] : []),
-    { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\n\n${roleInstruction(draft)}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}` },
+    { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\n\n${roleInstruction(draft)}\nThese are starting facts. Later events in the chat take precedence. ${draft.openingStyle==='story'?'During live chat after the scripted opening, leave':'Leave'} the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}` },
     ...draft.cast.map(member => ({ comment: member.name, key: [member.name, ...member.aliases], constant: false,
       content: `${member.name}\nPersonality: ${member.personality}\nVoice: ${member.voice}\nRelationships at the start: ${member.relationships}\nKnowledge at the start: ${member.knowledge}\nUse subsequent chat events for changes to these starting facts.` })),
     ...draft.lore.map(entry => ({ comment: entry.name, key: entry.keys, constant: entry.keys.length === 0, content: entry.content })),
