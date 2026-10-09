@@ -1,13 +1,23 @@
 {
   "name": "Set Points",
   "identifier": "lumiverse_set_points",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "fidgetycarrot",
   "github": "https://github.com/fidgetycarrot/lumiverse-set-points",
   "homepage": "https://github.com/fidgetycarrot/lumiverse-set-points#readme",
   "description": "Adapt a story into a narrator card, cast, lore, and playable scenes. Follow the story or take your own path.",
-  "permissions": ["characters", "world_books", "generation", "chats", "chat_mutation", "interceptor", "cors_proxy"],
-  "requested_capabilities": ["base64_decode"],
+  "permissions": [
+    "characters",
+    "world_books",
+    "generation",
+    "chats",
+    "chat_mutation",
+    "interceptor",
+    "cors_proxy"
+  ],
+  "requested_capabilities": [
+    "base64_decode"
+  ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",
   "minimum_lumiverse_version": "1.2.0"

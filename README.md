@@ -4,11 +4,11 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.0** is an initial build. It has automated tests and an interactive interface preview; it has not yet been exercised end to end inside a live Lumiverse installation with a real model connection.
+Version **0.1.1** adds multi-page story collection. It has automated tests and an interactive interface preview; it has not yet been exercised end to end inside a live Lumiverse installation with a real model connection.
 
 ## What it does
 
-- Accepts pasted text and `.txt` / `.md` files. Optional link import extracts a single readable page for you to inspect before adaptation.
+- Accepts pasted text and `.txt` / `.md` files. Link import can collect a sequence of readable story pages for you to inspect before adaptation.
 - Lets you choose a model connection, player role, starting point, and desired scene count.
 - Reads long sources in sections, merges character identities and chronology, then creates an editable adaptation.
 - Produces a narrator card, attached world book, initial greeting, and ordered alternate greetings.
@@ -44,7 +44,7 @@ The declared `base64_decode` backend capability is needed by a bundled DOM-parse
 
 ## First story
 
-1. In **Import**, paste a story, open a text file, or choose **Try a sample**. Link import reads one page; it does not crawl a novel or collect linked chapters. Review extracted text for missing material.
+1. In **Import**, paste a story, open a text file, or choose **Try a sample**. For a multi-page story, open **Import from a link**, enter the first page, and choose **Read linked pages**. Review the collected pages, then choose **Use collected text**. **Read page** loads just the selected page.
 2. Enter the story title, who you will play, and where play begins. Choose the adaptation connection. The role may be an existing character or a new one.
 3. Choose **Create adaptation**. Each section, merge, and final adaptation uses that connection and its normal provider charges. You can cancel while keeping your previous completed draft.
 4. In **Review**, edit the premise, cast, starting knowledge, world lore, narrator instructions, and scenes. Check adaptation notes and each scene's continuity assumptions. Export the draft if you want a backup.
@@ -52,6 +52,16 @@ The declared `base64_decode` backend capability is needed by a bundled DOM-parse
 6. Open the new character from Lumiverse's **Characters** browser and start a chat with its initial greeting. Return to Set Points' **Play** tab.
 
 The examples folder includes a short original sample story and a validated sample draft. Use **Open draft** in Review to try saving a card without making an adaptation-model request.
+
+## Multi-page web stories
+
+**Read linked pages** follows one clear next-page link at a time, on the same website, starting at the URL you enter. It checks navigation before extracting story text, including Literotica’s numbered story-page links. It does not automatically collect a separate series or guess chapter URLs. If a story starts on an earlier page, enter that first-page URL.
+
+For sites with unclear links, put additional page URLs in **Other page links**, one per line in reading order. These form an explicit list after the first page; automatic discovery is not used for that list. Every retry starts again from the first URL, so include every subsequent page, including any already collected. All pages must share the same website origin.
+
+Collection is limited to **100 pages** and **500,000 combined characters**, including page separators. It stops on ambiguous links, repeated URLs or text, a failed page, cancellation, or a size limit. The collected-page list and stopping message let you see what was loaded; the absence of a next-page link does not prove the story is complete.
+
+Your current story text and title remain in place while pages load. Review the collected pages and choose **Use collected text** to replace them. If collection stops partway, you can keep the pages collected so far or correct the links and try again. Loading pages does not call your adaptation model. You choose **Create adaptation** separately.
 
 ## Scene controls
 
@@ -83,12 +93,13 @@ The selected Lumiverse connection performs adaptation; your normal chat connecti
 
 Raw pasted source is kept in the current interface and sent to the selected model for adaptation. It is not saved as a separate source file by the extension. Closing/reloading the interface can lose unsaved source text. Completed drafts, job status, and card-save receipts are stored in Lumiverse's per-user extension storage. Scene progress is stored with its chat. A draft includes adapted prose and its source title/URL, so treat exported drafts as story content.
 
-The optional link reader fetches the URL you enter through Lumiverse's proxy without supplying login cookies. It extracts text without executing page scripts or loading page assets. Login walls, anti-bot checks, JavaScript-only pages, and multi-page chapters may require pasted text. Public hostname checks do not replace the host's network policy.
+The optional link reader fetches the pages you select through Lumiverse's proxy without supplying login cookies. It extracts text without executing page scripts or loading page assets. Login walls, anti-bot checks, and JavaScript-only pages may require pasted text. Public hostname checks do not replace the host's network policy.
 
 Only `{{user}}` and `{{char}}` display placeholders are accepted in generated/reopened drafts. Active template expressions, HTML, and reserved scene-control markers are rejected before saving a card.
 
 ## Troubleshooting
 
+- **Only part of a web story loads:** use **Read linked pages** from the first page. Check the collected-page list and stopping message. Supply explicit URLs in **Other page links** if automatic navigation cannot identify the next page.
 - **No adaptation connection:** add a model connection in Lumiverse and grant `generation`, then refresh Set Points.
 - **Refused, incomplete, or malformed output:** inspect the displayed error. Check the connection, shorten the source, reduce scenes, or reduce section size as appropriate. A refusal and a broken response are different outcomes.
 - **Scene will not advance:** check Follow is on, a next scene is selected, and all scene permissions are granted. Automatic handoff depends on the model following its direction. Force remains available.

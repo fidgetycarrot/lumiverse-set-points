@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.0";
+var VERSION = "0.1.1";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -16,10 +16,167 @@ At the lighthouse, the storm arrives. The replacement lens can restore the beaco
 var styles = `
 .sp-app{--sp-bg:var(--lumiverse-bg,#181b20);--sp-card:var(--lumiverse-bg-secondary,#20242a);--sp-ink:var(--lumiverse-text,#eeeae2);--sp-muted:var(--lumiverse-text-muted,#a4a6ab);--sp-line:color-mix(in srgb,var(--sp-ink) 14%,transparent);--sp-accent:#e9b968;--sp-accent-ink:#211a10;--sp-radius:12px;color:var(--sp-ink);background:var(--sp-bg);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100%;padding:26px 24px 36px;box-sizing:border-box;color-scheme:dark;container-type:inline-size;overflow-wrap:anywhere}
 .sp-app *, .sp-app *:before,.sp-app *:after{box-sizing:border-box}.sp-app [hidden]{display:none!important}.sp-app h1,.sp-app h2,.sp-app h3,.sp-app p{margin:0}.sp-app h1{font:normal 38px/1.15 Georgia,"Times New Roman",serif;letter-spacing:-1.5px}.sp-app h2{font:normal 25px/1.25 Georgia,"Times New Roman",serif;letter-spacing:-.4px}.sp-app h3{font-size:15px;font-weight:650}.sp-app button,.sp-app input,.sp-app textarea,.sp-app select{font:inherit}.sp-app button{cursor:pointer}.sp-app button:disabled{cursor:not-allowed;opacity:.46}.sp-app button:focus-visible,.sp-app summary:focus-visible,.sp-app input:focus-visible,.sp-app textarea:focus-visible,.sp-app select:focus-visible{outline:2px solid var(--sp-accent);outline-offset:3px}.sp-app input,.sp-app textarea,.sp-app select{width:100%;border:1px solid var(--sp-line);border-radius:8px;background:color-mix(in srgb,var(--sp-bg) 80%,transparent);color:var(--sp-ink);padding:10px 12px;min-width:0}.sp-app textarea{resize:vertical;min-height:90px}.sp-app input::placeholder,.sp-app textarea::placeholder{color:var(--sp-muted);opacity:.7}.sp-app select option{background:var(--sp-card);color:var(--sp-ink)}
-.sp-header{display:flex;align-items:center;gap:15px;margin-bottom:28px}.sp-mark{flex:none;width:44px;height:54px;position:relative;border-left:1px solid var(--sp-accent);transform:skewY(-18deg);margin:0 1px 0 12px}.sp-mark:before,.sp-mark:after{content:"";width:13px;height:13px;border:2px solid var(--sp-accent);border-radius:50%;position:absolute;background:var(--sp-bg);left:-7px}.sp-mark:before{top:0}.sp-mark:after{bottom:0;background:var(--sp-accent)}.sp-mark span{position:absolute;left:0;top:26px;width:35px;border-top:1px solid var(--sp-accent)}.sp-eyebrow{font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;color:var(--sp-accent);margin-bottom:6px!important}.sp-subtitle{font-size:12px;color:var(--sp-muted);margin-top:6px!important}.sp-tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--sp-line);gap:8px;margin-bottom:24px}.sp-tab{background:none;border:0;color:var(--sp-muted);padding:11px 4px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;text-align:left;font-size:13px!important}.sp-tab[aria-selected=true]{border-color:var(--sp-accent);color:var(--sp-ink)}.sp-tab small{color:var(--sp-accent);margin-right:7px;font-size:10px;letter-spacing:1px}.sp-intro{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:20px}.sp-muted{color:var(--sp-muted)}.sp-small{font-size:12px}.sp-intro p{margin-top:7px}.sp-panel{display:flex;flex-direction:column;gap:18px}.sp-card{border:1px solid var(--sp-line);border-radius:var(--sp-radius);padding:18px;background:var(--sp-card)}.sp-card>h3{margin-bottom:12px}.sp-stack{display:flex;flex-direction:column;gap:14px}.sp-field{display:flex;flex-direction:column;gap:6px}.sp-label{font-size:12px;font-weight:650;letter-spacing:.2px}.sp-hint{font-size:11px;line-height:1.5;color:var(--sp-muted)}.sp-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sp-row.sp-spread{justify-content:space-between}.sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sp-button{border:1px solid var(--sp-line);border-radius:8px;background:transparent;color:var(--sp-ink);padding:9px 13px;font-weight:600;font-size:12px!important;line-height:1.4;display:inline-flex;justify-content:center;align-items:center;gap:8px;white-space:normal}.sp-button:hover:not(:disabled){background:color-mix(in srgb,var(--sp-ink) 7%,transparent)}.sp-button.sp-primary{background:var(--sp-accent);color:var(--sp-accent-ink);border-color:var(--sp-accent)}.sp-button.sp-primary:hover:not(:disabled){filter:brightness(1.07)}.sp-button.sp-text{border:0;color:var(--sp-accent);padding:3px 0;font-weight:500}.sp-button.sp-wide{width:100%;padding:13px}.sp-source{min-height:245px!important;line-height:1.65!important;font:14px/1.7 Georgia,"Times New Roman",serif!important}.sp-separator{height:1px;background:var(--sp-line);margin:2px 0}.sp-details{border:1px solid var(--sp-line);border-radius:10px;background:var(--sp-card);padding:0 15px}.sp-details>summary{cursor:pointer;font-weight:600;font-size:12px;padding:14px 0;list-style-position:inside}.sp-details[open]>summary{border-bottom:1px solid var(--sp-line);margin-bottom:15px}.sp-details>.sp-stack{padding-bottom:16px}.sp-details .sp-hint{font-weight:400}.sp-status{font-size:12px;line-height:1.5;padding:11px 13px;background:color-mix(in srgb,var(--sp-accent) 9%,var(--sp-bg));border:1px solid color-mix(in srgb,var(--sp-accent) 24%,transparent);border-radius:8px;margin-bottom:17px}.sp-status[data-kind=error]{border-color:#c6786c;color:#efa99e;background:color-mix(in srgb,#c6786c 8%,var(--sp-bg))}.sp-status:empty{display:none}.sp-progress{display:flex;flex-direction:column;gap:9px;border:1px solid var(--sp-line);padding:16px;border-radius:10px}.sp-progress progress{width:100%;height:6px;accent-color:var(--sp-accent);border:0}.sp-empty{padding:32px 22px;border:1px dashed var(--sp-line);border-radius:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}.sp-empty p{max-width:320px}.sp-tag{display:inline-block;padding:4px 8px;border-radius:5px;background:color-mix(in srgb,var(--sp-accent) 10%,transparent);color:var(--sp-accent);font-size:10px;font-weight:650;letter-spacing:1px;text-transform:uppercase}.sp-counts{display:flex;gap:20px;border-top:1px solid var(--sp-line);border-bottom:1px solid var(--sp-line);padding:13px 0;margin-top:17px}.sp-counts strong{display:block;font:normal 24px Georgia,serif;color:var(--sp-ink)}.sp-counts span{font-size:11px;color:var(--sp-muted)}.sp-section-label{font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--sp-muted);font-weight:700;padding-top:4px}.sp-review-group{display:flex;flex-direction:column;gap:9px}.sp-scene-num{font-variant-numeric:tabular-nums;color:var(--sp-accent);font-size:11px;margin-right:8px}.sp-notice{border-left:2px solid var(--sp-accent);padding:3px 0 3px 13px;font-size:12px;color:var(--sp-muted)}.sp-footnote{font-size:11px;color:var(--sp-muted);line-height:1.6}.sp-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--sp-line);display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--sp-muted);font-size:10px;letter-spacing:.4px}.sp-footer button{font-size:10px!important}.sp-preview{white-space:pre-wrap;font:15px/1.8 Georgia,"Times New Roman",serif;max-height:280px;overflow:auto;padding-right:4px}.sp-stage-title{font:normal 25px/1.3 Georgia,serif;margin-top:9px!important;margin-bottom:12px!important}.sp-switch{display:flex;align-items:center;justify-content:space-between;gap:20px}.sp-switch input{width:36px;height:20px;accent-color:var(--sp-accent);flex:none}.sp-play-track{display:flex;gap:5px;margin:17px 0 7px}.sp-play-track span{height:3px;flex:1;border-radius:2px;background:var(--sp-line)}.sp-play-track span[data-done=true]{background:var(--sp-accent)}.sp-saved{border:1px solid color-mix(in srgb,var(--sp-accent) 40%,transparent);border-radius:10px;padding:15px;background:color-mix(in srgb,var(--sp-accent) 5%,transparent)}.sp-saved code{font-size:10px;word-break:break-all}.sp-inline-code{font:11px/1.6 ui-monospace,monospace;white-space:pre-wrap}.sp-app .sp-no-margin{margin:0}
+.sp-header{display:flex;align-items:center;gap:15px;margin-bottom:28px}.sp-mark{flex:none;width:44px;height:54px;position:relative;border-left:1px solid var(--sp-accent);transform:skewY(-18deg);margin:0 1px 0 12px}.sp-mark:before,.sp-mark:after{content:"";width:13px;height:13px;border:2px solid var(--sp-accent);border-radius:50%;position:absolute;background:var(--sp-bg);left:-7px}.sp-mark:before{top:0}.sp-mark:after{bottom:0;background:var(--sp-accent)}.sp-mark span{position:absolute;left:0;top:26px;width:35px;border-top:1px solid var(--sp-accent)}.sp-eyebrow{font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;color:var(--sp-accent);margin-bottom:6px!important}.sp-subtitle{font-size:12px;color:var(--sp-muted);margin-top:6px!important}.sp-tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--sp-line);gap:8px;margin-bottom:24px}.sp-tab{background:none;border:0;color:var(--sp-muted);padding:11px 4px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;text-align:left;font-size:13px!important}.sp-tab[aria-selected=true]{border-color:var(--sp-accent);color:var(--sp-ink)}.sp-tab small{color:var(--sp-accent);margin-right:7px;font-size:10px;letter-spacing:1px}.sp-intro{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:20px}.sp-muted{color:var(--sp-muted)}.sp-small{font-size:12px}.sp-intro p{margin-top:7px}.sp-panel{display:flex;flex-direction:column;gap:18px}.sp-card{border:1px solid var(--sp-line);border-radius:var(--sp-radius);padding:18px;background:var(--sp-card)}.sp-collection{border-top:1px solid var(--sp-line);padding-top:15px}.sp-page-list{margin:0;padding-left:20px;max-height:210px;overflow:auto}.sp-page-list li{padding:3px 0 10px}.sp-page-list li>span,.sp-page-list li>a{display:block}.sp-page-list a{color:var(--sp-muted);text-decoration:underline;text-underline-offset:2px;word-break:break-all}.sp-card>h3{margin-bottom:12px}.sp-stack{display:flex;flex-direction:column;gap:14px}.sp-field{display:flex;flex-direction:column;gap:6px}.sp-label{font-size:12px;font-weight:650;letter-spacing:.2px}.sp-hint{font-size:11px;line-height:1.5;color:var(--sp-muted)}.sp-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sp-row.sp-spread{justify-content:space-between}.sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sp-button{border:1px solid var(--sp-line);border-radius:8px;background:transparent;color:var(--sp-ink);padding:9px 13px;font-weight:600;font-size:12px!important;line-height:1.4;display:inline-flex;justify-content:center;align-items:center;gap:8px;white-space:normal}.sp-button:hover:not(:disabled){background:color-mix(in srgb,var(--sp-ink) 7%,transparent)}.sp-button.sp-primary{background:var(--sp-accent);color:var(--sp-accent-ink);border-color:var(--sp-accent)}.sp-button.sp-primary:hover:not(:disabled){filter:brightness(1.07)}.sp-button.sp-text{border:0;color:var(--sp-accent);padding:3px 0;font-weight:500}.sp-button.sp-wide{width:100%;padding:13px}.sp-source{min-height:245px!important;line-height:1.65!important;font:14px/1.7 Georgia,"Times New Roman",serif!important}.sp-separator{height:1px;background:var(--sp-line);margin:2px 0}.sp-details{border:1px solid var(--sp-line);border-radius:10px;background:var(--sp-card);padding:0 15px}.sp-details>summary{cursor:pointer;font-weight:600;font-size:12px;padding:14px 0;list-style-position:inside}.sp-details[open]>summary{border-bottom:1px solid var(--sp-line);margin-bottom:15px}.sp-details>.sp-stack{padding-bottom:16px}.sp-details .sp-hint{font-weight:400}.sp-status{font-size:12px;line-height:1.5;padding:11px 13px;background:color-mix(in srgb,var(--sp-accent) 9%,var(--sp-bg));border:1px solid color-mix(in srgb,var(--sp-accent) 24%,transparent);border-radius:8px;margin-bottom:17px}.sp-status[data-kind=error]{border-color:#c6786c;color:#efa99e;background:color-mix(in srgb,#c6786c 8%,var(--sp-bg))}.sp-status:empty{display:none}.sp-progress{display:flex;flex-direction:column;gap:9px;border:1px solid var(--sp-line);padding:16px;border-radius:10px}.sp-progress progress{width:100%;height:6px;accent-color:var(--sp-accent);border:0}.sp-empty{padding:32px 22px;border:1px dashed var(--sp-line);border-radius:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}.sp-empty p{max-width:320px}.sp-tag{display:inline-block;padding:4px 8px;border-radius:5px;background:color-mix(in srgb,var(--sp-accent) 10%,transparent);color:var(--sp-accent);font-size:10px;font-weight:650;letter-spacing:1px;text-transform:uppercase}.sp-counts{display:flex;gap:20px;border-top:1px solid var(--sp-line);border-bottom:1px solid var(--sp-line);padding:13px 0;margin-top:17px}.sp-counts strong{display:block;font:normal 24px Georgia,serif;color:var(--sp-ink)}.sp-counts span{font-size:11px;color:var(--sp-muted)}.sp-section-label{font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--sp-muted);font-weight:700;padding-top:4px}.sp-review-group{display:flex;flex-direction:column;gap:9px}.sp-scene-num{font-variant-numeric:tabular-nums;color:var(--sp-accent);font-size:11px;margin-right:8px}.sp-notice{border-left:2px solid var(--sp-accent);padding:3px 0 3px 13px;font-size:12px;color:var(--sp-muted)}.sp-footnote{font-size:11px;color:var(--sp-muted);line-height:1.6}.sp-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--sp-line);display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--sp-muted);font-size:10px;letter-spacing:.4px}.sp-footer button{font-size:10px!important}.sp-preview{white-space:pre-wrap;font:15px/1.8 Georgia,"Times New Roman",serif;max-height:280px;overflow:auto;padding-right:4px}.sp-stage-title{font:normal 25px/1.3 Georgia,serif;margin-top:9px!important;margin-bottom:12px!important}.sp-switch{display:flex;align-items:center;justify-content:space-between;gap:20px}.sp-switch input{width:36px;height:20px;accent-color:var(--sp-accent);flex:none}.sp-play-track{display:flex;gap:5px;margin:17px 0 7px}.sp-play-track span{height:3px;flex:1;border-radius:2px;background:var(--sp-line)}.sp-play-track span[data-done=true]{background:var(--sp-accent)}.sp-saved{border:1px solid color-mix(in srgb,var(--sp-accent) 40%,transparent);border-radius:10px;padding:15px;background:color-mix(in srgb,var(--sp-accent) 5%,transparent)}.sp-saved code{font-size:10px;word-break:break-all}.sp-inline-code{font:11px/1.6 ui-monospace,monospace;white-space:pre-wrap}.sp-app .sp-no-margin{margin:0}
 @media(prefers-color-scheme:light){.sp-app{--sp-bg:var(--lumiverse-bg,#faf8f3);--sp-card:var(--lumiverse-bg-secondary,#fffdf8);--sp-ink:var(--lumiverse-text,#28251f);--sp-muted:var(--lumiverse-text-muted,#746e62);--sp-accent:#996219;--sp-accent-ink:#fff9ed;color-scheme:light}.sp-status[data-kind=error]{color:#a43f33}}
 @container(max-width:380px){.sp-grid{grid-template-columns:1fr}.sp-intro{flex-wrap:wrap}.sp-counts{gap:14px}.sp-header{gap:10px}.sp-app h1{font-size:33px}.sp-tab small{margin-right:4px}.sp-button{padding:9px 10px}}
 `;
+
+// src/web-import.ts
+var WEB_IMPORT_LIMITS = { pages: 100, characters: 500000 };
+function publicPageUrl(value, origin) {
+  if (typeof value !== "string" || value.length > 4096)
+    throw new Error("Enter a complete public HTTP or HTTPS story link.");
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error("Enter a complete public HTTP or HTTPS story link.");
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
+    throw new Error("Use public HTTP or HTTPS links without embedded credentials.");
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host.includes(".") || /\.(local|localhost|internal|lan|home)$/.test(host) || host.startsWith("[") || /^\d+\.\d+\.\d+\.\d+$/.test(host))
+    throw new Error("Page collection accepts public website names. Paste text for local or private sources.");
+  if (["literotica.com", "www.literotica.com"].includes(host) && !url.port && url.pathname.startsWith("/s/")) {
+    url.protocol = "https:";
+    url.hostname = "www.literotica.com";
+  }
+  if (origin && url.origin !== origin)
+    throw new Error("All collected pages must use the same website, protocol, and port as the first link.");
+  url.hash = "";
+  return url.href;
+}
+function cancelled() {
+  const error = new Error("Page loading cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+async function withAbort(signal, operation) {
+  if (signal.aborted)
+    throw cancelled();
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(cancelled());
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve().then(() => {
+      if (signal.aborted)
+        throw cancelled();
+      return operation();
+    }).then((value) => {
+      if (!signal.aborted)
+        resolve(value);
+    }, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+function bounded(value, ceiling) {
+  return value === undefined || !Number.isFinite(value) ? ceiling : Math.min(ceiling, Math.max(1, Math.floor(value)));
+}
+function copyPage(page) {
+  return { title: page.title, text: page.text, url: page.url, nextPages: page.nextPages.map((link) => ({ title: link.title, url: link.url })) };
+}
+async function collectStoryPages(options, fetchPage) {
+  const pages = [];
+  let text = "";
+  const signal = options.signal ?? new AbortController().signal;
+  const seenUrls = new Set;
+  const seenText = new Set;
+  const maxPages = bounded(options.maxPages, WEB_IMPORT_LIMITS.pages);
+  const maxCharacters = bounded(options.maxCharacters, WEB_IMPORT_LIMITS.characters);
+  const explicit = options.linked && Boolean(options.otherUrls?.length);
+  const supplied = explicit ? [...options.otherUrls] : [];
+  let origin;
+  let nextUrl;
+  const finish = (reason, message, stoppedAt) => ({ pages: pages.map(copyPage), text, reason, message, ...stoppedAt ? { stoppedAt } : {} });
+  const progress = (loadingUrl) => {
+    if (!signal.aborted)
+      options.onProgress?.({ pages: pages.map(copyPage), characters: text.length, loadingUrl });
+  };
+  if (signal.aborted)
+    return finish("cancelled", "Loading cancelled. No pages were added.");
+  try {
+    nextUrl = publicPageUrl(options.url);
+    origin = new URL(nextUrl).origin;
+  } catch (error) {
+    return finish("invalid-url", error instanceof Error ? error.message : "The first link could not be read.");
+  }
+  while (true) {
+    if (signal.aborted)
+      return finish("cancelled", pages.length ? "Loading cancelled. Collected pages are available below." : "Loading cancelled. No pages were added.");
+    try {
+      nextUrl = publicPageUrl(nextUrl, origin);
+    } catch (error) {
+      return finish("invalid-url", error instanceof Error ? error.message : "The next link could not be read.");
+    }
+    if (seenUrls.has(nextUrl))
+      return finish("loop", "A page link repeats an earlier page. Stopped before reading it again.", nextUrl);
+    if (pages.length >= maxPages)
+      return finish("page-limit", `Reached the ${maxPages}-page limit. The remaining pages were not loaded.`, nextUrl);
+    progress(nextUrl);
+    let page;
+    try {
+      const fetched = await withAbort(signal, () => fetchPage(nextUrl, signal));
+      if (signal.aborted)
+        return finish("cancelled", pages.length ? "Loading cancelled. Collected pages are available below." : "Loading cancelled. No pages were added.");
+      if (!fetched || typeof fetched.title !== "string" || typeof fetched.text !== "string" || !fetched.text.trim() || !Array.isArray(fetched.nextPages))
+        throw new Error("The page returned no readable story text.");
+      let resolved;
+      try {
+        resolved = publicPageUrl(fetched.url, origin);
+      } catch {
+        return finish("invalid-url", "The returned page is outside the original website or is not a public link. The page was not added.", nextUrl);
+      }
+      if (seenUrls.has(resolved))
+        return finish("loop", "The page resolved to an earlier page. Stopped without adding it again.", resolved);
+      page = { title: fetched.title.trim() || `Page ${pages.length + 1}`, text: fetched.text.trim(), url: resolved, nextPages: fetched.nextPages.filter((link) => link && typeof link.url === "string").map((link) => ({ title: typeof link.title === "string" ? link.title : "", url: link.url })) };
+    } catch (error) {
+      if (signal.aborted)
+        return finish("cancelled", pages.length ? "Loading cancelled. Collected pages are available below." : "Loading cancelled. No pages were added.");
+      const detail = error instanceof Error ? error.message : "The website did not return a readable page.";
+      return finish("fetch-error", `Could not read ${pages.length ? "the next" : "the first"} page. ${detail}`, nextUrl);
+    }
+    const fingerprint = page.text.replace(/\s+/g, " ").toLowerCase();
+    if (seenText.has(fingerprint))
+      return finish("duplicate-text", "This page repeats story text already collected. Stopped without adding the duplicate.", page.url);
+    const separator = `${pages.length ? `
+
+` : ""}--- Page ${pages.length + 1}: ${page.title.replace(/\s+/g, " ").slice(0, 300)} ---
+${page.url}
+
+`;
+    if (text.length + separator.length + page.text.length > maxCharacters)
+      return finish("character-limit", `The next page would exceed the ${maxCharacters.toLocaleString("en-US")}-character limit. That page was not added.`, page.url);
+    seenUrls.add(nextUrl);
+    seenUrls.add(page.url);
+    seenText.add(fingerprint);
+    pages.push(page);
+    text += separator + page.text;
+    progress(null);
+    if (signal.aborted)
+      return finish("cancelled", pages.length ? "Loading cancelled. Collected pages are available below." : "Loading cancelled. No pages were added.");
+    if (!options.linked)
+      return finish("single-page", "One page loaded. Check whether the story continues on another page.");
+    if (explicit) {
+      const suppliedUrl = supplied.shift();
+      if (!suppliedUrl)
+        return finish("provided-pages", "Reached the end of your supplied page links. Check story completeness.");
+      nextUrl = suppliedUrl;
+      continue;
+    }
+    const candidates = new Map;
+    for (const link of page.nextPages) {
+      try {
+        const normalized = publicPageUrl(link.url, origin);
+        candidates.set(normalized, normalized);
+      } catch {
+        return finish("invalid-url", "A next-page link is outside the original website or is not a public link. Check the page links before continuing.");
+      }
+    }
+    if (candidates.size === 0)
+      return finish("no-next", "No next-page link found; check completeness.");
+    if (candidates.size > 1)
+      return finish("ambiguous", "More than one next-page link was found. Supply every page after the first in reading order, including pages already collected, then read again.");
+    nextUrl = candidates.values().next().value;
+  }
+}
 
 // src/frontend.ts
 var MAX_SOURCE = 500000;
@@ -128,6 +285,11 @@ function setup(ctx) {
   let draftVersion = "";
   let draftRevision = 0;
   let openingDraft = false;
+  let loadingPages = false;
+  let adaptationStarting = false;
+  let webAbort = null;
+  let stagedPages = null;
+  let appliedSourceUrl;
   let refreshInFlight = null;
   let refreshAgain = false;
   let polling;
@@ -214,8 +376,10 @@ function setup(ctx) {
     } catch (error) {
       notify(errorText(error), "error");
     } finally {
-      if (control && !destroyed)
-        control.disabled = control === importButton && snapshot?.job?.status === "running";
+      if (control && !destroyed) {
+        control.disabled = false;
+        syncImportControls();
+      }
     }
   }
   function selectTab(key) {
@@ -311,6 +475,7 @@ function setup(ctx) {
     const text = await file.text();
     if (text.length > MAX_SOURCE)
       throw new Error("This story is over 500,000 characters. Try a smaller section.");
+    appliedSourceUrl = undefined;
     source.input.value = text;
     title.input.value = file.name.replace(/\.(txt|md)$/i, "");
     url.input.value = "";
@@ -319,6 +484,7 @@ function setup(ctx) {
     notify("Text loaded. Review it below before adapting.");
   }));
   const sourceTools = row(button("Open text file", () => fileInput.click()), button("Try a sample", () => {
+    appliedSourceUrl = undefined;
     source.input.value = DEMO_STORY;
     title.input.value = "The Lighthouse Letter";
     role.input.value = "Mara, the cartographer";
@@ -334,20 +500,102 @@ function setup(ctx) {
   const title = field("Story title", "", undefined, { placeholder: "Give your adaptation a title" });
   const url = field("Story link", "", undefined, { type: "url", placeholder: "https://…" });
   const linkSection = details("Import from a link");
-  const fetchButton = button("Read page", async () => {
-    const parsed = new URL(url.input.value);
-    if (!["http:", "https:"].includes(parsed.protocol))
-      throw new Error("Use an http or https story link.");
-    const result = await rpc.request("fetch-url", { url: parsed.href });
-    if (result.text.length > MAX_SOURCE)
-      throw new Error("This page is too long. Paste a smaller section instead.");
-    source.input.value = result.text;
-    title.input.value = result.title;
-    url.input.value = result.url;
-    updateSourceCount();
-    notify("Page loaded. Check that the story text is complete before adapting.");
+  const otherUrls = field("Other page links", "", undefined, { area: true, rows: 3, placeholder: "One page link per line, in reading order", hint: "Optional. Replaces automatic next-page discovery. Reading again starts at the first link: include every page after it in order, even pages already collected. All links must stay on the same website." });
+  otherUrls.input.maxLength = 409600;
+  const collectionBox = node("div", "sp-collection sp-stack");
+  collectionBox.hidden = true;
+  const collectionCount = paragraph("", "sp-label");
+  collectionCount.setAttribute("role", "status");
+  collectionCount.setAttribute("aria-live", "polite");
+  const collectionMessage = paragraph("", "sp-hint");
+  const collectedList = node("ol", "sp-page-list");
+  const collectedPreview = details("Preview collected text");
+  const collectedText = paragraph("", "sp-preview");
+  collectedPreview.body.append(collectedText);
+  const cancelLoading = button("Cancel loading", () => {
+    webAbort?.abort();
   });
-  linkSection.body.append(paragraph("Some sites block page access. Pasting text always works.", "sp-hint"), url.wrap, fetchButton);
+  cancelLoading.hidden = true;
+  const useCollected = button("Use collected text", () => {
+    if (loadingPages || adaptationStarting || snapshot?.job?.status === "running")
+      throw new Error("Wait for the current operation to finish before replacing the story text.");
+    if (!stagedPages?.pages.length)
+      throw new Error("No pages have been collected yet.");
+    appliedSourceUrl = stagedPages.pages[0].url;
+    source.input.value = stagedPages.text;
+    title.input.value = stagedPages.pages[0].title;
+    url.input.value = stagedPages.pages[0].url;
+    updateSourceCount();
+    notify("Collected pages copied into story text. Check the text and completeness before creating an adaptation.");
+  }, true);
+  useCollected.hidden = true;
+  const applyHint = paragraph("Using the collection replaces the story text and title above. Check that all intended pages are present before adapting.", "sp-hint");
+  applyHint.hidden = true;
+  collectionBox.append(collectionCount, collectionMessage, collectedList, cancelLoading, collectedPreview.root, useCollected, applyHint);
+  const fetchButton = button("Read page", () => readPages(false));
+  const fetchLinkedButton = button("Read linked pages", () => readPages(true));
+  function showCollection(progress, result) {
+    collectionBox.hidden = false;
+    collectionCount.textContent = `${progress.pages.length} page${progress.pages.length === 1 ? "" : "s"} collected · ${progress.characters.toLocaleString()} characters`;
+    collectionMessage.textContent = (result ? `${result.message}${result.stoppedAt ? ` Stopped at: ${result.stoppedAt}` : ""}` : "") || (progress.loadingUrl ? `Reading page ${progress.pages.length + 1}: ${progress.loadingUrl}` : "Preparing the next page…");
+    collectedList.replaceChildren();
+    for (const page of progress.pages) {
+      const item = node("li");
+      const label = node("span", "sp-small", page.title);
+      const link = node("a", "sp-hint", page.url);
+      link.href = page.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      item.append(label, link);
+      collectedList.append(item);
+    }
+    cancelLoading.hidden = !loadingPages;
+    collectedPreview.root.hidden = !result?.pages.length;
+    useCollected.hidden = !result?.pages.length;
+    applyHint.hidden = !result?.pages.length;
+    if (result)
+      collectedText.textContent = result.text;
+    syncImportControls();
+  }
+  async function readPages(linked) {
+    if (loadingPages || adaptationStarting || snapshot?.job?.status === "running")
+      throw new Error("Wait for the current loading or adaptation to finish.");
+    const controller = new AbortController;
+    webAbort = controller;
+    loadingPages = true;
+    stagedPages = null;
+    showCollection({ pages: [], characters: 0, loadingUrl: url.input.value.trim() });
+    try {
+      const supplied = otherUrls.input.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      const result = await collectStoryPages({ url: url.input.value, linked, otherUrls: linked && supplied.length ? supplied : undefined, signal: controller.signal, onProgress: (progress) => {
+        if (!destroyed && webAbort === controller)
+          showCollection(progress);
+      } }, (pageUrl) => rpc.request("fetch-url", { url: pageUrl }));
+      if (destroyed || webAbort !== controller)
+        return;
+      stagedPages = result;
+      loadingPages = false;
+      showCollection({ pages: result.pages, characters: result.text.length, loadingUrl: null }, result);
+      notify(result.pages.length ? `${result.pages.length} page${result.pages.length === 1 ? "" : "s"} ready for review. Use collected text when you are ready to replace the source.` : result.message, result.pages.length || result.reason === "cancelled" ? "info" : "error");
+    } finally {
+      if (webAbort === controller) {
+        webAbort = null;
+        loadingPages = false;
+        if (!destroyed) {
+          cancelLoading.hidden = true;
+          syncImportControls();
+        }
+      }
+    }
+  }
+  function syncImportControls() {
+    const busy = loadingPages || adaptationStarting || snapshot?.job?.status === "running";
+    importButton.disabled = !!busy;
+    fetchButton.disabled = !!busy;
+    fetchLinkedButton.disabled = !!busy;
+    useCollected.disabled = !!busy || !stagedPages?.pages.length;
+  }
+  linkSection.body.append(paragraph("Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.", "sp-hint"), url.wrap, otherUrls.wrap, row(fetchButton, fetchLinkedButton), paragraph("Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.", "sp-hint"), collectionBox);
   sourceCard.append(sourceTools, fileInput, title.wrap, source.wrap, sourceBottom, linkSection.root);
   panels.import.append(sourceCard);
   const options = node("div", "sp-card sp-stack");
@@ -385,6 +633,8 @@ function setup(ctx) {
   progressBox.append(progressText, progress, cancel);
   panels.import.append(progressBox);
   const importButton = button("Create adaptation  →", async () => {
+    if (loadingPages || adaptationStarting || snapshot?.job?.status === "running")
+      throw new Error("Wait for page loading or the current adaptation to finish.");
     if (!source.input.value.trim())
       throw new Error("Add story text before creating an adaptation.");
     if (!connection.value)
@@ -394,13 +644,21 @@ function setup(ctx) {
       throw new Error("Choose between 2 and 24 scenes.");
     if (!Number.isInteger(chunkNumber) || chunkNumber < 4000 || chunkNumber > 20000)
       throw new Error("Section size must be between 4,000 and 20,000 characters.");
-    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: url.input.value.trim() || undefined, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber };
-    const job = await rpc.request("start-import", { options });
-    if (snapshot)
-      snapshot.job = job;
-    renderJob(job);
-    notify("Your story is being adapted. You can leave this panel open or return later.");
-    await refresh();
+    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber };
+    adaptationStarting = true;
+    syncImportControls();
+    try {
+      const job = await rpc.request("start-import", { options });
+      if (snapshot)
+        snapshot.job = job;
+      renderJob(job);
+      notify("Your story is being adapted. You can leave this panel open or return later.");
+      await refresh();
+    } finally {
+      adaptationStarting = false;
+      if (!destroyed)
+        syncImportControls();
+    }
   }, true);
   importButton.classList.add("sp-wide");
   panels.import.append(importButton, paragraph("Creates a draft for you to review. Each section and the final adaptation use your connected model and its normal charges.", "sp-footnote"));
@@ -410,8 +668,8 @@ function setup(ctx) {
   function renderJob(job) {
     const running = job?.status === "running";
     progressBox.hidden = !job;
-    importButton.disabled = !!running;
     cancel.hidden = !running;
+    syncImportControls();
     if (job) {
       progressText.textContent = job.error || job.label;
       progress.max = Math.max(1, job.total);
@@ -770,6 +1028,7 @@ function setup(ctx) {
     if (destroyed)
       return;
     destroyed = true;
+    webAbort?.abort();
     if (polling)
       clearInterval(polling);
     rpc.destroy();
@@ -796,7 +1055,7 @@ Below the window, a boat knocks gently against the seawall.`, direction: "Guide 
 The dark harbor waits below.`, direction: "Set up the lighthouse repair after the lens returns. Leave the method and outcome open.", assumptions: ["The replacement lens has reached the lighthouse."], sourceRefs: ["chunk:1"] }], warnings: ["Future scenes assume the original route through the story. Review those assumptions if your choices change it."], source: { title: "The Lighthouse Letter", characters: DEMO_STORY.length, chunks: 1 }, createdAt: Date.now() };
 
 // dev/preview.ts
-var state = { version: "0.1.0", permissions: [], connections: [{ id: "preview-model", name: "My writing model", provider: "OpenAI compatible", model: "configured model" }], job: null, draft: null, saved: null, play: { chatId: "preview-chat", characterId: "preview-card", title: "The Lighthouse Letter", enabled: true, current: 0, next: 1, scenes: [], canUndo: false, busy: false, notice: "" }, diagnostics: [] };
+var state = { version: VERSION, permissions: [], connections: [{ id: "preview-model", name: "My writing model", provider: "OpenAI compatible", model: "configured model" }], job: null, draft: null, saved: null, play: { chatId: "preview-chat", characterId: "preview-card", title: "The Lighthouse Letter", enabled: true, current: 0, next: 1, scenes: [], canUndo: false, busy: false, notice: "" }, diagnostics: [] };
 var receiver = () => {};
 var activate = () => {};
 var undoIndex = 0;
@@ -807,6 +1066,14 @@ function load() {
   changes();
 }
 var root = document.getElementById("root");
+var previewPageUrl = (index) => `https://preview.example/lighthouse?page=${index}`;
+function fetchPreviewPage(raw) {
+  const url = new URL(raw);
+  const index = Number(url.searchParams.get("page"));
+  if (url.origin !== "https://preview.example" || url.pathname !== "/lighthouse" || !Number.isInteger(index) || index < 1 || index > 3)
+    throw new Error("This local preview only loads its three mock pages. Choose Try linked-page preview to fill their address.");
+  return { title: `The Lighthouse Letter · page ${index}`, url: previewPageUrl(index), text: demoDraft.scenes[index - 1].greeting, nextPages: index < 3 ? [{ title: "Next page", url: previewPageUrl(index + 1) }] : [] };
+}
 var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: () => {}, activate: () => activate(), setTitle: () => {}, setShortName: () => {}, destroy: () => {}, onActivate: (callback) => {
   activate = callback;
   return () => {};
@@ -827,7 +1094,8 @@ var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: 
           result = structuredClone(state);
           break;
         case "fetch-url":
-          throw new Error("Link extraction is unavailable in this local preview. Use the sample or paste a story.");
+          result = fetchPreviewPage(request.input.url);
+          break;
         case "start-import":
           state.job = { id: "preview-job", status: "running", completed: 0, total: 2, label: "Reading characters and setting…" };
           result = structuredClone(state.job);
@@ -878,7 +1146,7 @@ var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: 
           result = state.play;
           break;
         case "diagnostics":
-          result = { version: "0.1.0", preview: true, storyTextIncluded: false };
+          result = { version: VERSION, preview: true, storyTextIncluded: false };
           break;
         default:
           throw new Error("Unknown preview action");
@@ -887,7 +1155,7 @@ var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: 
     } catch (error) {
       receiver({ type: "set-points:response", id: request.id, error: String(error) });
     }
-  }, 100);
+  }, request.action === "fetch-url" ? 650 : 100);
 } };
 setup(ctx);
 document.getElementById("demo").onclick = () => {
@@ -895,3 +1163,17 @@ document.getElementById("demo").onclick = () => {
   setTimeout(() => root.querySelector('[role="tab"][aria-controls$="-review"]')?.click(), 150);
 };
 document.getElementById("theme").onclick = () => document.body.classList.toggle("light");
+var linkedPreview = document.createElement("button");
+linkedPreview.textContent = "Try linked-page preview";
+document.getElementById("demo").after(linkedPreview);
+linkedPreview.onclick = () => {
+  root.querySelector('[role="tab"][aria-controls$="-import"]')?.click();
+  const label = Array.from(root.querySelectorAll("label")).find((item) => item.textContent === "Story link");
+  const input = label ? root.querySelector(`#${label.htmlFor}`) : null;
+  if (input) {
+    input.value = previewPageUrl(1);
+    input.closest("details").open = true;
+    input.focus();
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+};

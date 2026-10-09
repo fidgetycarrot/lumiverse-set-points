@@ -3,7 +3,7 @@ import { Window } from 'happy-dom';
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { createRpc, setup } from '../src/frontend';
 import { validateDraft } from '../src/importer';
-import type { AppSnapshot, StoryDraft } from '../src/types';
+import type { AppSnapshot, StoryDraft, WebStoryPage } from '../src/types';
 
 const cleanups:Array<()=>void>=[];
 afterEach(()=>{for(const fn of cleanups.splice(0))fn();});
@@ -14,9 +14,10 @@ function harness(hasDraft=true) {
   Object.assign(globalThis,{document:window.document,HTMLInputElement:window.HTMLInputElement,HTMLTextAreaElement:window.HTMLTextAreaElement});
   const root=window.document.createElement('div');window.document.body.append(root);
   const state:AppSnapshot={version:'0.1.0',permissions:[],connections:[{id:'model',name:'Writing model',provider:'test',model:'test'}],job:null,draft:hasDraft?fixture():null,saved:null,play:{chatId:'chat',characterId:'card',title:'The Letter',enabled:true,current:0,next:1,scenes:fixture().scenes,canUndo:false,busy:false,notice:''},diagnostics:[]};
-  let receive:(message:unknown)=>void=()=>{};let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
+  let receive:(message:unknown)=>void=()=>{};let webFetch:((url:string)=>Promise<WebStoryPage>)|null=null;let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
   const ctx={ui:{registerDrawerTab:()=>({root,tabId:'set-points',setBadge:()=>{},onActivate:()=>()=>{},activate:()=>{active=true;},destroy:()=>{}}),registerInputBarAction:()=>({onClick:()=>()=>{},destroy:()=>{}})},dom:{addStyle:(css:string)=>{const style=window.document.createElement('style');style.textContent=css;window.document.head.append(style);return()=>style.remove();}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'chat',characterId:'card'}),ready:()=>{},onBackendMessage:(callback:(message:unknown)=>void)=>{receive=callback;return()=>{receive=()=>{};};},sendToBackend:(message:any)=>{requests.push(message);queueMicrotask(()=>{
     if(failure&&message.action!=='snapshot'){receive({type:'set-points:response',id:message.id,error:failure});return;}
+    if(message.action==='fetch-url'){Promise.resolve().then(()=>{if(!webFetch)throw new Error('No readable page');return webFetch(message.input.url);}).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     let result:unknown;
     if(message.action==='snapshot')result=structuredClone(state);
     else if(message.action==='save-draft'){try{state.draft=validateDraft(message.input.draft);result=state.draft;}catch(error){receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)});return;}}
@@ -30,7 +31,7 @@ function harness(hasDraft=true) {
   const field=(label:string)=>{const caption=Array.from(root.querySelectorAll('label')).find(item=>item.textContent===label)!;return root.querySelector(`#${caption.htmlFor}`) as unknown as HTMLInputElement;};
   const input=(label:string,value:string)=>{const el=field(label);el.value=value;el.dispatchEvent(new window.Event('input',{bubbles:true}) as unknown as Event);return el;};
   const openDraft=(text:string)=>{const input=root.querySelector('input[accept=".json,application/json"]')!;Object.defineProperty(input,'files',{configurable:true,value:[new window.File([text],'saved-draft.json',{type:'application/json'})]});input.dispatchEvent(new window.Event('change',{bubbles:true}));};
-  return {root,state,requests,button,field,input,openDraft,fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
+  return {root,state,requests,button,field,input,openDraft,setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
 }
 
 describe('request handling',()=>{
@@ -99,5 +100,58 @@ describe('Set Points workspace',()=>{
     const app=harness();await tick();app.button('Play').click();await tick();app.button('Force next scene').click();await tick();
     expect(app.requests.find(item=>item.action==='play-force')?.input).toEqual({chatId:'chat'});
     expect(app.button('Force next scene').disabled).toBe(true);expect(app.button('Undo last scene').disabled).toBe(false);
+  });
+});
+
+
+const webUrl=(index:number)=>`https://stories.example/neutral/${index}`;
+const webPage=(index:number,next:number|null=null):WebStoryPage=>({title:`Neutral story · part ${index}`,text:`The unique story passage for part ${index}. A traveler reaches another unfamiliar shore.`,url:webUrl(index),nextPages:next===null?[]:[{title:'Next page',url:webUrl(next)}]});
+
+describe('web collection workspace',()=>{
+  test('stages linked pages and preserves source edits until explicit Use collected text',async()=>{
+    const app=harness();await tick();app.input('Story text','My original source');app.input('Story title','My original title');app.input('Story link',webUrl(1));
+    app.setPages(async url=>{const index=Number(url.split('/').at(-1));return webPage(index,index<3?index+1:null);});
+    app.button('Read linked pages').click();app.input('Story text','An edit made during loading');app.input('Story title','A title edited during loading');await tick();
+    expect(app.field('Story text').value).toBe('An edit made during loading');expect(app.field('Story title').value).toBe('A title edited during loading');
+    expect(app.root.textContent).toContain('3 pages collected');expect(app.root.textContent).toContain('No next-page link found; check completeness.');
+    expect(app.requests.filter(item=>item.action==='fetch-url').map(item=>item.input.url)).toEqual([webUrl(1),webUrl(2),webUrl(3)]);
+    expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
+    app.button('Use collected text').click();expect(app.field('Story title').value).toBe('Neutral story · part 1');expect(app.field('Story text').value).toContain('--- Page 3:');
+  });
+  test('single-page import is staged too and ignores discovered continuation links',async()=>{
+    const app=harness();await tick();app.input('Story text','Keep this source');app.input('Story link',webUrl(1));app.setPages(async()=>webPage(1,2));
+    app.button('Read page').click();await tick();expect(app.field('Story text').value).toBe('Keep this source');expect(app.requests.filter(item=>item.action==='fetch-url')).toHaveLength(1);expect(app.root.textContent).toContain('One page loaded.');
+    app.button('Use collected text').click();expect(app.field('Story text').value).toContain('story passage for part 1');
+  });
+  test('unapplied page links cannot change the source attribution of existing text',async()=>{
+    const app=harness();await tick();app.button('Try a sample').click();app.input('Story link',webUrl(1));app.setPages(async()=>webPage(1));
+    app.button('Read page').click();await tick();app.button('Create adaptation').click();await tick();
+    expect(app.requests.find(item=>item.action==='start-import')?.input.options.sourceUrl).toBeUndefined();
+    app.button('Cancel import').click();await tick();app.button('Use collected text').click();app.input('Story link',webUrl(2));
+    app.button('Create adaptation').click();await tick();expect(app.requests.filter(item=>item.action==='start-import').at(-1)?.input.options.sourceUrl).toBe(webUrl(1));
+  });
+  test('cancel retains a staged prefix, prevents overlap, and ignores a late page response',async()=>{
+    const app=harness();await tick();app.input('Story text','Keep my source');app.input('Story link',webUrl(1));
+    let late!:(page:WebStoryPage)=>void;app.setPages(async url=>url===webUrl(1)?webPage(1,2):new Promise(resolve=>{late=resolve;}));
+    app.button('Read linked pages').click();await tick();expect(app.button('Read page').disabled).toBe(true);expect(app.button('Read linked pages').disabled).toBe(true);expect(app.button('Create adaptation').disabled).toBe(true);
+    app.button('Create adaptation').click();app.button('Read page').click();expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
+    app.button('Cancel loading').click();await tick();expect(app.button('Read page').disabled).toBe(false);expect(app.button('Create adaptation').disabled).toBe(false);expect(app.field('Story text').value).toBe('Keep my source');expect(app.root.textContent).toContain('1 page collected');
+    late(webPage(2));await tick();expect(app.root.textContent).not.toContain('2 pages collected');app.button('Use collected text').click();expect(app.field('Story text').value).not.toContain('part 2');
+  });
+  test('initial failure preserves text and has no apply action; later failure keeps partial pages',async()=>{
+    const app=harness();await tick();app.input('Story text','Keep me');app.input('Story title','Keep title');app.input('Story link',webUrl(1));app.setPages(async()=>{throw new Error('Site refused the page');});
+    app.button('Read linked pages').click();await tick();expect(app.button('Use collected text').hidden).toBe(true);expect(app.field('Story text').value).toBe('Keep me');expect(app.field('Story title').value).toBe('Keep title');expect(app.root.textContent).toContain('Site refused the page');
+    app.setPages(async url=>{if(url===webUrl(1))return webPage(1,2);throw new Error('Next page unavailable');});app.button('Read linked pages').click();await tick();
+    expect(app.root.textContent).toContain('1 page collected');expect(app.root.textContent).toContain('Next page unavailable');expect(app.button('Use collected text').hidden).toBe(false);expect(app.field('Story text').value).toBe('Keep me');
+  });
+  test('manual page links are sent in order and adaptation disables page loading',async()=>{
+    const app=harness();await tick();app.input('Story link',webUrl(1));app.input('Other page links',`${webUrl(3)}\n${webUrl(2)}`);app.setPages(async url=>webPage(Number(url.split('/').at(-1)),9));
+    app.button('Read linked pages').click();await tick();expect(app.requests.filter(item=>item.action==='fetch-url').map(item=>item.input.url)).toEqual([webUrl(1),webUrl(3),webUrl(2)]);
+    app.button('Use collected text').click();app.button('Create adaptation').click();expect(app.button('Read page').disabled).toBe(true);await tick();expect(app.button('Read linked pages').disabled).toBe(true);
+    app.button('Cancel import').click();await tick();expect(app.button('Read linked pages').disabled).toBe(false);
+  });
+  test('teardown cancels pending collection and late replies cannot overwrite source',async()=>{
+    const app=harness();await tick();app.input('Story text','Survives closing');app.input('Story link',webUrl(1));let late!:(page:WebStoryPage)=>void;app.setPages(async()=>new Promise(resolve=>{late=resolve;}));
+    app.button('Read linked pages').click();await tick();const source=app.field('Story text');app.dispose();late(webPage(1));await tick();expect(source.value).toBe('Survives closing');expect(app.root.querySelector('.sp-app')).toBeNull();
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { SetPointsController, setupBackend } from '../src/backend';
 import { draft } from './fixtures';
-import { DEMO_STORY, type ImportOptions, type ImportJob } from '../src/types';
+import { DEMO_STORY, type ImportOptions, type ImportJob, type WebStoryPage } from '../src/types';
 
 const options:ImportOptions={text:DEMO_STORY,sourceTitle:'The Lighthouse Letter',playerRole:'Mara',startingPoint:'The harbor',sceneCount:4,chunkSize:12000,connectionId:'model'};
 function harness(generate: (input:any)=>Promise<unknown> = async()=>({content:'not json',finish_reason:'stop'})) {
@@ -56,5 +56,25 @@ describe('import jobs and draft storage',()=>{
     const dispose=setupBackend(h.api);expect(events.has('GENERATION_ENDED')).toBe(false);
     grants.add('generation');changed({permission:'generation',granted:true});expect(events.has('GENERATION_ENDED')).toBe(true);
     grants.delete('generation');changed({permission:'generation',granted:false});expect(events.has('GENERATION_ENDED')).toBe(false);dispose();expect(events.size).toBe(0);
+  });
+  test('page loading returns navigation without fetching another page or logging story data',async()=>{
+    const h=harness(), urls:string[]=[];
+    Object.assign(h.api.permissions,{has:()=>true});
+    Object.assign(h.api,{cors:async(url:string)=>{urls.push(url);return {status:200,headers:{'content-type':'text/html'},body:`<html><head><title>A private source title</title><link rel="next" href="?page=2"></head><body><article>${Array.from({length:5},()=>`<p>${DEMO_STORY}</p>`).join('')}</article></body></html>`};}});
+    const app=new SetPointsController(h.api,'alice');
+    const page=await app.handle('fetch-url',{url:'https://example.com/story?page=1'}) as WebStoryPage;
+    expect(urls).toEqual(['https://example.com/story?page=1']);
+    expect(page.nextPages.map(link=>link.url)).toEqual(['https://example.com/story?page=2']);
+    expect(page.text).toContain('Mara');
+    const messages=JSON.stringify((await app.snapshot(null)).diagnostics);
+    expect(messages).not.toContain('Mara');expect(messages).not.toContain('private source');expect(messages).not.toContain('example.com');
+  });
+  test('page loading requires permission and rejects non-public sources before fetching',async()=>{
+    const h=harness();let calls=0;Object.assign(h.api,{cors:async()=>{calls++;return {};}});
+    const app=new SetPointsController(h.api,'alice');
+    await expect(app.handle('fetch-url',{url:'https://example.com/story'})).rejects.toThrow('cors_proxy');
+    Object.assign(h.api.permissions,{has:()=>true});
+    await expect(app.handle('fetch-url',{url:'http://127.0.0.1/story'})).rejects.toThrow('public');
+    expect(calls).toBe(0);
   });
 });

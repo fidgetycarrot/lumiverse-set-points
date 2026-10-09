@@ -1,6 +1,7 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
-import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft } from './types';
+import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
 import { styles } from './styles';
+import { collectStoryPages, type WebCollection, type WebCollectionProgress } from './web-import';
 
 const MAX_SOURCE = 500_000;
 const MAX_DRAFT = 192_000;
@@ -69,6 +70,11 @@ export function setup(ctx: SpindleFrontendContext) {
   let draftVersion = '';
   let draftRevision = 0;
   let openingDraft = false;
+  let loadingPages = false;
+  let adaptationStarting = false;
+  let webAbort: AbortController|null = null;
+  let stagedPages: WebCollection|null = null;
+  let appliedSourceUrl: string|undefined;
   let refreshInFlight: Promise<void>|null = null;
   let refreshAgain = false;
   let polling: ReturnType<typeof setInterval>|undefined;
@@ -111,7 +117,7 @@ export function setup(ctx: SpindleFrontendContext) {
     if(control) control.disabled=true;
     try { await action(); }
     catch(error) { notify(errorText(error),'error'); }
-    finally { if(control && !destroyed) control.disabled=control===importButton&&snapshot?.job?.status==='running'; }
+    finally { if(control && !destroyed) { control.disabled=false; syncImportControls(); } }
   }
   function selectTab(key:typeof selected) {
     selected=key;
@@ -152,24 +158,65 @@ export function setup(ctx: SpindleFrontendContext) {
     if(file.size>MAX_SOURCE*4) throw new Error('This file is too large. Import up to 500,000 characters at a time.');
     const text=await file.text();
     if(text.length>MAX_SOURCE) throw new Error('This story is over 500,000 characters. Try a smaller section.');
-    source.input.value=text;title.input.value=file.name.replace(/\.(txt|md)$/i,'');url.input.value='';updateSourceCount();fileInput.value='';
+    appliedSourceUrl=undefined;source.input.value=text;title.input.value=file.name.replace(/\.(txt|md)$/i,'');url.input.value='';updateSourceCount();fileInput.value='';
     notify('Text loaded. Review it below before adapting.');
   }));
   const sourceTools=row(button('Open text file',()=>fileInput.click()),button('Try a sample',()=>{
-    source.input.value=DEMO_STORY;title.input.value='The Lighthouse Letter';role.input.value='Mara, the cartographer';start.input.value='Mara arrives at Greyhaven harbor';url.input.value='';sceneCount.input.value='4';updateSourceCount();notify('Sample loaded. Choose an adaptation connection to try it.');
+    appliedSourceUrl=undefined;source.input.value=DEMO_STORY;title.input.value='The Lighthouse Letter';role.input.value='Mara, the cartographer';start.input.value='Mara arrives at Greyhaven harbor';url.input.value='';sceneCount.input.value='4';updateSourceCount();notify('Sample loaded. Choose an adaptation connection to try it.');
   })); sourceTools.classList.add('sp-spread');
   const sourceBottom=row(count,paragraph('Up to 500,000 characters','sp-hint'));sourceBottom.classList.add('sp-spread');
   const title=field('Story title','',undefined,{placeholder:'Give your adaptation a title'});
   // Assigning directly below keeps the title independent from asynchronous refreshes.
   const url=field('Story link','',undefined,{type:'url',placeholder:'https://…'});
   const linkSection=details('Import from a link');
-  const fetchButton=button('Read page',async()=>{
-    const parsed=new URL(url.input.value);if(!['http:','https:'].includes(parsed.protocol)) throw new Error('Use an http or https story link.');
-    const result=await rpc.request<{title:string;text:string;url:string}>('fetch-url',{url:parsed.href});
-    if(result.text.length>MAX_SOURCE) throw new Error('This page is too long. Paste a smaller section instead.');
-    source.input.value=result.text;title.input.value=result.title;url.input.value=result.url;updateSourceCount();notify('Page loaded. Check that the story text is complete before adapting.');
-  });
-  linkSection.body.append(paragraph('Some sites block page access. Pasting text always works.','sp-hint'),url.wrap,fetchButton);
+  const otherUrls=field('Other page links','',undefined,{area:true,rows:3,placeholder:'One page link per line, in reading order',hint:'Optional. Replaces automatic next-page discovery. Reading again starts at the first link: include every page after it in order, even pages already collected. All links must stay on the same website.'});
+  otherUrls.input.maxLength=409600;
+  const collectionBox=node('div','sp-collection sp-stack');collectionBox.hidden=true;
+  const collectionCount=paragraph('','sp-label');collectionCount.setAttribute('role','status');collectionCount.setAttribute('aria-live','polite');
+  const collectionMessage=paragraph('','sp-hint');const collectedList=node('ol','sp-page-list');
+  const collectedPreview=details('Preview collected text');const collectedText=paragraph('','sp-preview');collectedPreview.body.append(collectedText);
+  const cancelLoading=button('Cancel loading',()=>{webAbort?.abort();});cancelLoading.hidden=true;
+  const useCollected=button('Use collected text',()=>{
+    if(loadingPages||adaptationStarting||snapshot?.job?.status==='running')throw new Error('Wait for the current operation to finish before replacing the story text.');
+    if(!stagedPages?.pages.length)throw new Error('No pages have been collected yet.');
+    appliedSourceUrl=stagedPages.pages[0].url;source.input.value=stagedPages.text;title.input.value=stagedPages.pages[0].title;url.input.value=stagedPages.pages[0].url;updateSourceCount();
+    notify('Collected pages copied into story text. Check the text and completeness before creating an adaptation.');
+  },true);useCollected.hidden=true;
+  const applyHint=paragraph('Using the collection replaces the story text and title above. Check that all intended pages are present before adapting.','sp-hint');applyHint.hidden=true;
+  collectionBox.append(collectionCount,collectionMessage,collectedList,cancelLoading,collectedPreview.root,useCollected,applyHint);
+  const fetchButton=button('Read page',()=>readPages(false));
+  const fetchLinkedButton=button('Read linked pages',()=>readPages(true));
+  function showCollection(progress:WebCollectionProgress,result?:WebCollection){
+    collectionBox.hidden=false;
+    collectionCount.textContent=`${progress.pages.length} page${progress.pages.length===1?'':'s'} collected · ${progress.characters.toLocaleString()} characters`;
+    collectionMessage.textContent=(result?`${result.message}${result.stoppedAt?` Stopped at: ${result.stoppedAt}`:''}`:'')||(progress.loadingUrl?`Reading page ${progress.pages.length+1}: ${progress.loadingUrl}`:'Preparing the next page…');
+    collectedList.replaceChildren();
+    for(const page of progress.pages){
+      const item=node('li');const label=node('span','sp-small',page.title);const link=node('a','sp-hint',page.url);link.href=page.url;link.target='_blank';link.rel='noopener noreferrer';item.append(label,link);collectedList.append(item);
+    }
+    cancelLoading.hidden=!loadingPages;collectedPreview.root.hidden=!result?.pages.length;useCollected.hidden=!result?.pages.length;applyHint.hidden=!result?.pages.length;
+    if(result)collectedText.textContent=result.text;
+    syncImportControls();
+  }
+  async function readPages(linked:boolean){
+    if(loadingPages||adaptationStarting||snapshot?.job?.status==='running')throw new Error('Wait for the current loading or adaptation to finish.');
+    const controller=new AbortController();webAbort=controller;loadingPages=true;stagedPages=null;
+    showCollection({pages:[],characters:0,loadingUrl:url.input.value.trim()});
+    try{
+      const supplied=otherUrls.input.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
+      const result=await collectStoryPages({url:url.input.value,linked,otherUrls:linked&&supplied.length?supplied:undefined,signal:controller.signal,onProgress:progress=>{if(!destroyed&&webAbort===controller)showCollection(progress);}},(pageUrl)=>rpc.request<WebStoryPage>('fetch-url',{url:pageUrl}));
+      if(destroyed||webAbort!==controller)return;
+      stagedPages=result;loadingPages=false;showCollection({pages:result.pages,characters:result.text.length,loadingUrl:null},result);
+      notify(result.pages.length?`${result.pages.length} page${result.pages.length===1?'':'s'} ready for review. Use collected text when you are ready to replace the source.`:result.message,result.pages.length||result.reason==='cancelled'?'info':'error');
+    }finally{
+      if(webAbort===controller){webAbort=null;loadingPages=false;if(!destroyed){cancelLoading.hidden=true;syncImportControls();}}
+    }
+  }
+  function syncImportControls(){
+    const busy=loadingPages||adaptationStarting||snapshot?.job?.status==='running';
+    importButton.disabled=!!busy;fetchButton.disabled=!!busy;fetchLinkedButton.disabled=!!busy;useCollected.disabled=!!busy||!stagedPages?.pages.length;
+  }
+  linkSection.body.append(paragraph('Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.','sp-hint'),url.wrap,otherUrls.wrap,row(fetchButton,fetchLinkedButton),paragraph('Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.','sp-hint'),collectionBox);
   sourceCard.append(sourceTools,fileInput,title.wrap,source.wrap,sourceBottom,linkSection.root);panels.import.append(sourceCard);
   const options=node('div','sp-card sp-stack'); options.append(node('h3','','Make a place for yourself'));
   const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'The narrator leaves this character’s dialogue and choices to you.'});
@@ -182,18 +229,21 @@ export function setup(ctx: SpindleFrontendContext) {
   const progressBox=node('div','sp-progress');progressBox.hidden=true;const progressText=paragraph('','sp-small');const progress=node('progress');progress.max=1;progress.value=0;progress.setAttribute('aria-label','Story import progress');
   const cancel=button('Cancel import',async()=>{ await rpc.request('cancel-import');notify('Import cancelled. Your previous draft is still available.');await refresh(); });progressBox.append(progressText,progress,cancel);panels.import.append(progressBox);
   const importButton=button('Create adaptation  →',async()=> {
+    if(loadingPages||adaptationStarting||snapshot?.job?.status==='running')throw new Error('Wait for page loading or the current adaptation to finish.');
     if(!source.input.value.trim()) throw new Error('Add story text before creating an adaptation.');
     if(!connection.value) throw new Error('Choose an adaptation connection. Add one in Lumiverse settings if the list is empty.');
     const sceneNumber=Number(sceneCount.input.value),chunkNumber=Number(chunk.input.value);
     if(!Number.isInteger(sceneNumber)||sceneNumber<2||sceneNumber>24) throw new Error('Choose between 2 and 24 scenes.');
     if(!Number.isInteger(chunkNumber)||chunkNumber<4000||chunkNumber>20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
-    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:url.input.value.trim()||undefined,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber};
-    const job=await rpc.request<ImportJob>('start-import',{options});if(snapshot)snapshot.job=job;renderJob(job);notify('Your story is being adapted. You can leave this panel open or return later.');await refresh();
+    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber};
+    adaptationStarting=true;syncImportControls();
+    try{const job=await rpc.request<ImportJob>('start-import',{options});if(snapshot)snapshot.job=job;renderJob(job);notify('Your story is being adapted. You can leave this panel open or return later.');await refresh();}
+    finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
   },true);importButton.classList.add('sp-wide');
   panels.import.append(importButton,paragraph('Creates a draft for you to review. Each section and the final adaptation use your connected model and its normal charges.','sp-footnote'));
   function updateSourceCount(){ count.textContent=`${source.input.value.length.toLocaleString()} characters`; }
   function renderJob(job:ImportJob|null) {
-    const running=job?.status==='running';progressBox.hidden=!job;importButton.disabled=!!running;cancel.hidden=!running;
+    const running=job?.status==='running';progressBox.hidden=!job;cancel.hidden=!running;syncImportControls();
     if(job) { progressText.textContent=job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
     if(running&&!polling) polling=setInterval(()=>{void refresh();},2500);
     if(!running&&polling) {clearInterval(polling);polling=undefined;}
@@ -327,5 +377,5 @@ export function setup(ctx: SpindleFrontendContext) {
     const play=await rpc.request<SceneView>('play-force',{chatId:active.chatId});if(snapshot)snapshot.play=play;renderPlay(play);
   })),()=>forceAction.destroy());
   renderReview();renderPlay(null);selectTab('import');ctx.ready();void refresh();
-  return ()=>{if(destroyed)return;destroyed=true;if(polling)clearInterval(polling);rpc.destroy();for(const cleanup of teardown.reverse())cleanup();app.remove();tab.destroy();};
+  return ()=>{if(destroyed)return;destroyed=true;webAbort?.abort();if(polling)clearInterval(polling);rpc.destroy();for(const cleanup of teardown.reverse())cleanup();app.remove();tab.destroy();};
 }
