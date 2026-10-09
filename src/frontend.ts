@@ -72,6 +72,7 @@ export function setup(ctx: SpindleFrontendContext) {
   let openingDraft = false;
   let loadingPages = false;
   let adaptationStarting = false;
+  let connectionChecking = false;
   let webAbort: AbortController|null = null;
   let stagedPages: WebCollection|null = null;
   let appliedSourceUrl: string|undefined;
@@ -177,7 +178,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const collectedPreview=details('Preview collected text');const collectedText=paragraph('','sp-preview');collectedPreview.body.append(collectedText);
   const cancelLoading=button('Cancel loading',()=>{webAbort?.abort();});cancelLoading.hidden=true;
   const useCollected=button('Use collected text',()=>{
-    if(loadingPages||adaptationStarting||snapshot?.job?.status==='running')throw new Error('Wait for the current operation to finish before replacing the story text.');
+    if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for the current operation to finish before replacing the story text.');
     if(!stagedPages?.pages.length)throw new Error('No pages have been collected yet.');
     appliedSourceUrl=stagedPages.pages[0].url;source.input.value=stagedPages.text;title.input.value=stagedPages.pages[0].title;url.input.value=stagedPages.pages[0].url;updateSourceCount();
     notify('Collected pages copied into story text. Check the text and completeness before creating an adaptation.');
@@ -199,7 +200,7 @@ export function setup(ctx: SpindleFrontendContext) {
     syncImportControls();
   }
   async function readPages(linked:boolean){
-    if(loadingPages||adaptationStarting||snapshot?.job?.status==='running')throw new Error('Wait for the current loading or adaptation to finish.');
+    if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for the current page loading, connection check, or adaptation to finish.');
     const controller=new AbortController();webAbort=controller;loadingPages=true;stagedPages=null;
     showCollection({pages:[],characters:0,loadingUrl:url.input.value.trim()});
     try{
@@ -213,7 +214,9 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
   function syncImportControls(){
-    const busy=loadingPages||adaptationStarting||snapshot?.job?.status==='running';
+    const busy=loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running';
+    checkConnectionButton.disabled=!!busy||!connection.value;connection.disabled=connectionChecking;
+    resumeButton.disabled=!!busy||!snapshot?.resume?.available;
     importButton.disabled=!!busy;fetchButton.disabled=!!busy;fetchLinkedButton.disabled=!!busy;useCollected.disabled=!!busy||!stagedPages?.pages.length;
   }
   linkSection.body.append(paragraph('Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.','sp-hint'),url.wrap,otherUrls.wrap,row(fetchButton,fetchLinkedButton),paragraph('Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.','sp-hint'),collectionBox);
@@ -224,12 +227,40 @@ export function setup(ctx: SpindleFrontendContext) {
   const sceneCount=field('Planned scenes','6',undefined,{type:'number',min:2,max:24,hint:'2–24 major moments, including the opening.'});
   const connectionWrap=node('div','sp-field');const connectionLabel=node('label','sp-label','Adaptation connection');const connection=node('select');connection.id=`sp-${suffix}-connection`;connectionLabel.htmlFor=connection.id;
   connection.append(option('Loading connections…',''));connectionWrap.append(connectionLabel,connection,paragraph('Uses a model connection already configured in Lumiverse.','sp-hint'));
+  const connectionStatus=node('div','sp-status');connectionStatus.setAttribute('role','status');connectionStatus.setAttribute('aria-live','polite');
+  const checkConnectionButton=button('Check connection',async()=>{
+    if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for the current page loading, connection check, or adaptation to finish.');
+    const connectionId=connection.value;
+    if(!connectionId)throw new Error('Choose an adaptation connection before checking it.');
+    connectionChecking=true;connectionStatus.dataset.kind='info';connectionStatus.textContent='Checking the selected connection…';syncImportControls();
+    try{
+      const result=await rpc.request<{message:string}>('test-connection',{connectionId});
+      if(destroyed)return;
+      connectionStatus.textContent=`${result.message} A successful check does not guarantee that a full story adaptation will be accepted.`;
+    }catch(error){
+      if(!destroyed){connectionStatus.dataset.kind='error';connectionStatus.textContent=errorText(error);}
+    }finally{connectionChecking=false;if(!destroyed)syncImportControls();}
+  });checkConnectionButton.disabled=true;
+  connection.addEventListener('change',()=>{connectionStatus.textContent='';syncImportControls();});
+  connectionWrap.append(checkConnectionButton,paragraph('Sends a small test request without your story. Normal model charges apply.','sp-hint'),connectionStatus);
   const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,start.wrap,optionGrid);panels.import.append(options);
   const advanced=details('Long-story settings');const chunk=field('Characters per section','12000',undefined,{type:'number',min:4000,max:20000,hint:'Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context.'});advanced.body.append(chunk.wrap);panels.import.append(advanced.root);
   const progressBox=node('div','sp-progress');progressBox.hidden=true;const progressText=paragraph('','sp-small');const progress=node('progress');progress.max=1;progress.value=0;progress.setAttribute('aria-label','Story import progress');
-  const cancel=button('Cancel import',async()=>{ await rpc.request('cancel-import');notify('Import cancelled. Your previous draft is still available.');await refresh(); });progressBox.append(progressText,progress,cancel);panels.import.append(progressBox);
+  const cancel=button('Cancel import',async()=>{ await rpc.request('cancel-import');notify('Import cancelled. Your previous draft is still available.');await refresh(); });
+  const resumeHint=paragraph('','sp-hint');resumeHint.hidden=true;
+  const resumeButton=button('Resume saved import',async()=>{
+    if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for page loading, the connection check, or the current adaptation to finish.');
+    if(!snapshot?.resume?.available)throw new Error('There is no saved import available to resume.');
+    const retryUncertain=snapshot.resume.retryUncertain;
+    adaptationStarting=true;syncImportControls();
+    try{
+      const job=await rpc.request<ImportJob>('resume-import',retryUncertain?{retryUncertain:true}:{});
+      if(snapshot)snapshot.job=job;renderJob(job);notify('Resuming the story and settings saved for your last attempt. Completed matching steps are reused.');await refresh();
+    }finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
+  },true);resumeButton.hidden=true;
+  progressBox.append(progressText,progress,cancel,resumeHint,resumeButton);panels.import.append(progressBox);
   const importButton=button('Create adaptation  →',async()=> {
-    if(loadingPages||adaptationStarting||snapshot?.job?.status==='running')throw new Error('Wait for page loading or the current adaptation to finish.');
+    if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for page loading, the connection check, or the current adaptation to finish.');
     if(!source.input.value.trim()) throw new Error('Add story text before creating an adaptation.');
     if(!connection.value) throw new Error('Choose an adaptation connection. Add one in Lumiverse settings if the list is empty.');
     const sceneNumber=Number(sceneCount.input.value),chunkNumber=Number(chunk.input.value);
@@ -243,7 +274,10 @@ export function setup(ctx: SpindleFrontendContext) {
   panels.import.append(importButton,paragraph('Creates a draft for you to review. Each section and the final adaptation use your connected model and its normal charges.','sp-footnote'));
   function updateSourceCount(){ count.textContent=`${source.input.value.length.toLocaleString()} characters`; }
   function renderJob(job:ImportJob|null) {
-    const running=job?.status==='running';progressBox.hidden=!job;cancel.hidden=!running;syncImportControls();
+    const running=job?.status==='running';const canResume=!!snapshot?.resume?.available&&!running;progressBox.hidden=!job&&!canResume;cancel.hidden=!running;resumeButton.hidden=!canResume;resumeHint.hidden=!canResume;
+    resumeButton.textContent=snapshot?.resume?.retryUncertain?'Retry unfinished request':'Resume saved import';
+    resumeHint.textContent='Uses the story and settings saved for your last attempt. Completed steps are reused; remaining requests use normal model charges.'+(snapshot?.resume?.retryUncertain?' Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.':'');
+    syncImportControls();
     if(job) { progressText.textContent=job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
     if(running&&!polling) polling=setInterval(()=>{void refresh();},2500);
     if(!running&&polling) {clearInterval(polling);polling=undefined;}

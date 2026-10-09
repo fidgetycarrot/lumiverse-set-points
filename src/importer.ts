@@ -103,24 +103,27 @@ export function validateDraft(value: unknown): StoryDraft {
   };
 }
 
-function validateLedger(value: unknown, expectedChunks: string[]): Ledger {
-  checkSize(value, IMPORT_LIMITS.ledgerCharacters, 'The story ledger');
+function validateLedger(value: unknown, expectedChunks: string[], expanded = false): Ledger {
+  checkSize(value, expanded ? IMPORT_LIMITS.draftCharacters : IMPORT_LIMITS.ledgerCharacters, 'The story ledger');
+  // Expanded validation is only for a bounded shortening request. Identities,
+  // relationships, references and warnings keep their ordinary validation.
+  const descriptionLimit = (usual: number) => expanded ? IMPORT_LIMITS.draftCharacters : usual;
   const ledger = object(value, 'ledger'), allowed = new Set(expectedChunks);
   const coveredChunks = refs(ledger.coveredChunks, 'coveredChunks', allowed);
   if (coveredChunks.length !== allowed.size) fail('INCOMPLETE_SOURCE', 'The model did not account for every source chunk. Retry with a shorter source or another connection.');
   return {
-    coveredChunks, premise: safeText(ledger.premise, 'ledger.premise', 4000),
+    coveredChunks, premise: safeText(ledger.premise, 'ledger.premise', descriptionLimit(4000)),
     cast: list(ledger.cast, 'ledger.cast', 64).map((value, i) => {
       const p = `ledger.cast[${i}]`, person = object(value, p);
-      return { name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 3000), voice: safeText(person.voice, `${p}.voice`, 1500), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledgeAtIntroduction: safeText(person.knowledgeAtIntroduction, `${p}.knowledgeAtIntroduction`, 3000), developments: safeText(person.developments, `${p}.developments`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
+      return { name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, descriptionLimit(3000)), voice: safeText(person.voice, `${p}.voice`, descriptionLimit(1500)), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledgeAtIntroduction: safeText(person.knowledgeAtIntroduction, `${p}.knowledgeAtIntroduction`, descriptionLimit(3000)), developments: safeText(person.developments, `${p}.developments`, descriptionLimit(4000)), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
     }),
     setting: list(ledger.setting, 'ledger.setting', 64).map((value, i) => {
       const p = `ledger.setting[${i}]`, entry = object(value, p);
-      return { name: safeText(entry.name, `${p}.name`, 200), details: safeText(entry.details, `${p}.details`, 4000), sourceRefs: refs(entry.sourceRefs, `${p}.sourceRefs`, allowed) };
+      return { name: safeText(entry.name, `${p}.name`, 200), details: safeText(entry.details, `${p}.details`, descriptionLimit(4000)), sourceRefs: refs(entry.sourceRefs, `${p}.sourceRefs`, allowed) };
     }),
     events: list(ledger.events, 'ledger.events', 128, 1).map((value, i) => {
       const p = `ledger.events[${i}]`, event = object(value, p);
-      return { title: safeText(event.title, `${p}.title`, 200), summary: safeText(event.summary, `${p}.summary`, 3000), participants: texts(event.participants, `${p}.participants`, 64, 200), changes: safeText(event.changes, `${p}.changes`, 3000), sourceRefs: refs(event.sourceRefs, `${p}.sourceRefs`, allowed) };
+      return { title: safeText(event.title, `${p}.title`, 200), summary: safeText(event.summary, `${p}.summary`, descriptionLimit(3000)), participants: texts(event.participants, `${p}.participants`, 64, 200), changes: safeText(event.changes, `${p}.changes`, descriptionLimit(3000)), sourceRefs: refs(event.sourceRefs, `${p}.sourceRefs`, allowed) };
     }), warnings: texts(ledger.warnings, 'ledger.warnings', 64, 1500),
   };
 }
@@ -160,20 +163,85 @@ function parseModelJson(content: string, finishReason?: string): unknown {
   return result;
 }
 
-async function requestJson<T>(messages: GenerationMessage[], generate: Generate, validate: (value: unknown) => T, signal?: AbortSignal): Promise<T> {
+async function requestJson<T>(messages: GenerationMessage[], generate: Generate, validate: (value: unknown) => T, signal?: AbortSignal, recoverSize?: (value: unknown) => Promise<T>): Promise<T> {
   let attemptMessages = messages;
   for (let attempt = 0; attempt < 2; attempt++) {
     checkCancelled(signal);
     const response = await generateWithCancellation(generate, attemptMessages, signal);
     checkCancelled(signal);
-    try { return validate(parseModelJson(response.content, response.finish_reason)); }
+    let parsed: unknown;
+    try { parsed = parseModelJson(response.content, response.finish_reason); return validate(parsed); }
     catch (error) {
+      // The recovery callback runs once, outside this schema-repair loop. It
+      // cannot cause a fresh extraction or a second shortening attempt.
+      if (parsed !== undefined && recoverSize && error instanceof ImportError && error.code === 'OUTPUT_LIMIT') return recoverSize(parsed);
       if (attempt > 0 || !(error instanceof ImportError) || !['MALFORMED_JSON', 'INVALID_SCHEMA', 'INVALID_REFERENCE', 'INCOMPLETE_SOURCE'].includes(error.code)) throw error;
       // A single bounded repair asks for the same task again, never a content-policy bypass.
       attemptMessages = [...messages, { role: 'assistant', content: response.content }, { role: 'user', content: `Your output did not match the required JSON schema: ${error.message} Return the complete corrected JSON object. Do not omit source material to fix formatting.` }];
     }
   }
   throw new Error('Unreachable import state.');
+}
+
+function sameValues(a: string[], b: string[]): boolean {
+  return JSON.stringify([...new Set(a)].sort()) === JSON.stringify([...new Set(b)].sort());
+}
+
+/** Shortening can rewrite descriptions, but cannot remove the ledger's records. */
+function preserveCompactionRecords(before: Ledger, after: Ledger) {
+  const recordsMatch = <T>(a: T[], b: T[], matches: (left: T, right: T) => boolean) => {
+    if (a.length !== b.length) return false;
+    const remaining = [...b];
+    return a.every(item => {
+      const index = remaining.findIndex(candidate => matches(item, candidate));
+      if (index < 0) return false;
+      remaining.splice(index, 1); return true;
+    });
+  };
+  const castKept = recordsMatch(before.cast, after.cast, (a,b) => a.name === b.name && sameValues(a.aliases,b.aliases) && a.relationships === b.relationships && sameValues(a.sourceRefs,b.sourceRefs));
+  const settingsKept = recordsMatch(before.setting, after.setting, (a,b) => a.name === b.name && sameValues(a.sourceRefs,b.sourceRefs));
+  // A ledger's event order carries chronology, so shortening must preserve it.
+  const eventsKept = before.events.length === after.events.length && before.events.every((a, index) => {
+    const b = after.events[index];
+    return a.title === b.title && sameValues(a.participants,b.participants) && sameValues(a.sourceRefs,b.sourceRefs);
+  });
+  if (!castKept || !settingsKept || !eventsKept) fail('COMPACTION_FAILED', 'The shortened story summary changed protected characters, relationships, events, or references. No shortened version was accepted. Retry to resume earlier completed work.');
+}
+
+async function requestLedger(messages: GenerationMessage[], generate: Generate, expected: string[], signal: AbortSignal | undefined, onCompaction: (done: boolean) => void, previous: Ledger[] = []): Promise<Ledger> {
+  const prepare = (value: unknown, expanded = false) => {
+    const result = validateLedger(value, expected, expanded);
+    // Restore uncertainty even if the merge/shortening model forgets it.
+    result.warnings = [...new Set([...previous.flatMap(item => item.warnings), ...result.warnings, ...missingCastWarnings(previous.flatMap(item => item.cast), result.cast)])];
+    if (result.warnings.length > 64) fail('COMPACTION_IMPOSSIBLE', 'The story summary has too many warnings to preserve safely in this version. No warnings were discarded. Use a shorter story section; your completed draft was not replaced.');
+    return result;
+  };
+  return requestJson(messages, generate, value => validateLedger(prepare(value, true), expected), signal, async value => {
+    const original = prepare(value, true);
+    checkSize(original, IMPORT_LIMITS.draftCharacters, 'The summary prepared for shortening');
+    // Relationships and warnings are immutable during shortening. Avoid a paid
+    // call when those fields alone already exceed the entire ledger allowance.
+    if (JSON.stringify({ warnings: original.warnings, relationships: original.cast.map(person => person.relationships) }).length >= IMPORT_LIMITS.ledgerCharacters) {
+      fail('COMPACTION_IMPOSSIBLE', 'The protected relationships and warnings alone exceed the story summary limit. They were not discarded. Use a shorter story section.');
+    }
+    checkCancelled(signal); onCompaction(false);
+    const compact = await generateWithCancellation(generate, [
+      { role: 'system', content: `${sourcePolicy}\nShorten an existing story ledger using this exact shape: ${ledgerSchema}\nThis is a single recovery step; work only from the supplied ledger, without rereading or replacing the source. Aim for at most 18,000 JSON characters and never exceed ${IMPORT_LIMITS.ledgerCharacters}. Preserve every cast, setting, and event record; do not delete, combine, rename, or add records. Preserve coveredChunks and every record's sourceRefs exactly. Keep character names, aliases, relationships, event titles, participants, and setting names unchanged. Keep all input warnings verbatim. Condense repetition in other descriptions while preserving facts, personality, motivations, knowledge changes, chronology, and causal links. If any detail cannot be retained, explain it in an additional warning; never silently discard it. Each cast personality and knowledgeAtIntroduction must stay under 3,000 characters, voice under 1,500, and developments under 4,000. Keep premise and setting details under 4,000, event summary and changes under 3,000, and each warning under 1,500 characters. All fields remain required.` },
+      { role: 'user', content: JSON.stringify({ task: 'compact-existing-ledger', ledger: original }) },
+    ], signal);
+    checkCancelled(signal);
+    try {
+      const shortened = validateLedger(parseModelJson(compact.content, compact.finish_reason), expected);
+      preserveCompactionRecords(original, shortened);
+      shortened.warnings = [...new Set([...original.warnings, ...shortened.warnings])];
+      const result = validateLedger(shortened, expected);
+      onCompaction(true); return result;
+    } catch (error) {
+      if (!(error instanceof ImportError)) throw error;
+      if (['MODEL_REFUSAL', 'TRUNCATED_RESPONSE', 'EMPTY_RESPONSE', 'COMPACTION_FAILED'].includes(error.code)) throw error;
+      fail('COMPACTION_FAILED', 'The story summary still does not fit its safe limits after one shortening attempt. No detail was silently cut. Retry to resume earlier completed work and regenerate only the failed step.');
+    }
+  });
 }
 
 /** Split without deleting, overlapping, or truncating any source characters. */
@@ -218,17 +286,21 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   const startingPoint = safeText(options.startingPoint || 'Beginning of the story', 'startingPoint', 2000);
   const url = sourceUrl(options.sourceUrl);
   const chunks = splitSource(options.text, options.chunkSize ?? IMPORT_LIMITS.defaultChunkSize);
-  const total = operationCount(chunks.length);
+  let total = operationCount(chunks.length);
   let completed = 0;
   const progress = (label: string) => onProgress(completed, total, label);
+  const compactionProgress = (done: boolean) => {
+    if (done) completed++; else total++;
+    progress(done ? 'Shortened the existing story summary' : 'Shortening the existing story summary without rereading the source');
+  };
   let ledgers: Ledger[] = [];
   for (let i = 0; i < chunks.length; i++) {
     checkCancelled(signal); progress(`Reading source section ${i + 1} of ${chunks.length}`);
     const ref = `chunk:${i + 1}`;
-    ledgers.push(await requestJson([
+    ledgers.push(await requestLedger([
       { role: 'system', content: `${sourcePolicy}\nExtract a compact, factual story ledger using this exact shape: ${ledgerSchema}\nAll arrays are required, even if empty. Use "Not established in this section" for unknown character facts. events must have at least one event. Every sourceRefs and coveredChunks must use only ${ref}. Track chronology explicitly, including later changes and flashbacks. Use canonical names and aliases without conflating different people. Keep the entire JSON below ${IMPORT_LIMITS.ledgerCharacters} characters. Record significant facts that cannot fit as warnings, never silently discard them.` },
       { role: 'user', content: `SOURCE CHUNK ${i + 1} OF ${chunks.length}\n${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` },
-    ], generate, value => validateLedger(value, [ref]), signal));
+    ], generate, [ref], signal, compactionProgress));
     completed++; progress(`Read source section ${i + 1} of ${chunks.length}`);
   }
   let round = 1;
@@ -237,13 +309,10 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
     for (let i = 0; i < ledgers.length; i += 3) {
       checkCancelled(signal); progress(`Reconciling characters and events, pass ${round}`);
       const group = ledgers.slice(i, i + 3), expected = group.flatMap(item => item.coveredChunks);
-      const merged = await requestJson([
+      const merged = await requestLedger([
         { role: 'system', content: `${sourcePolicy}\nMerge these story ledgers into one canonical ledger with this exact shape: ${ledgerSchema}\nReconcile names and aliases across sections, preserve relationships and their evolution, and order events chronologically. Do not invent resolutions for contradictory facts. coveredChunks must contain all input chunk references; all sourceRefs must point to provided chunks. Preserve major events and causal links; condense repetition. Preserve all input warnings and explain any lost detail or condensed subplots in warnings. Keep the complete result below ${IMPORT_LIMITS.ledgerCharacters} characters. All required fields must be present.` },
         { role: 'user', content: JSON.stringify({ ledgers: group }) },
-      ], generate, value => validateLedger(value, expected), signal);
-      // Preserve reported uncertainty even if the merge model forgets to carry it forward.
-      merged.warnings = [...new Set([...group.flatMap(item => item.warnings), ...merged.warnings, ...missingCastWarnings(group.flatMap(item => item.cast), merged.cast)])];
-      validateLedger(merged, expected);
+      ], generate, expected, signal, compactionProgress, group);
       next.push(merged); completed++; progress(`Reconciled story ledger, pass ${round}`);
     }
     ledgers = next; round++;

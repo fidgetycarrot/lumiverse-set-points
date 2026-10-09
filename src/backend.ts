@@ -1,18 +1,28 @@
 import type { SpindleAPI, GenerationRequestDTO, GenerationResponseDTO, InterceptorDisposer } from 'lumiverse-spindle-types';
-import { adaptStory, validateDraft } from './importer';
+import { adaptStory, ImportError, validateDraft, type GenerationMessage } from './importer';
+import { ResponseCheckpoints, CheckpointError } from './checkpoints';
 import { CardPublisher } from './publisher';
 import { SceneRuntime } from './runtime';
 import { extractPage, storyUrl } from './source';
 import { VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
 
 const STATE_PATH = 'workspace.json';
-type Workspace = { draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null };
+type Workspace = { draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null; lastImport?: ImportOptions; lastConnectionFingerprint?: unknown };
 function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function string(value: unknown, name: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required.`); return value; }
+function sameSettings(a: unknown, b: unknown): boolean {
+  const ordered = (_key: string, value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value;
+  return JSON.stringify(a, ordered) === JSON.stringify(b, ordered);
+}
 // Lumiverse 1.2's raw worker API requires these fields even with connection_id.
 // spindle-types 0.6.40 omits them from GenerationRequestDTO.
 type RawModelRequest = GenerationRequestDTO & { provider: string; model: string };
-type ModelFailureCode = 'TIMEOUT' | 'CANCELLED' | 'AUTHENTICATION' | 'RATE_LIMIT' | 'CONTEXT_LIMIT' | 'DECLINED' | 'MODEL_UNAVAILABLE' | 'INVALID_REQUEST' | 'PROVIDER_UNAVAILABLE' | 'CONNECTION_FAILED' | 'REQUEST_FAILED';
+type ModelFailureCode = 'TIMEOUT' | 'CANCELLED' | 'AUTHENTICATION' | 'REQUEST_DENIED' | 'RATE_LIMIT' | 'CONTEXT_LIMIT' | 'DECLINED' | 'MODEL_UNAVAILABLE' | 'INVALID_REQUEST' | 'PROVIDER_UNAVAILABLE' | 'CONNECTION_FAILED' | 'REQUEST_FAILED' | 'EMPTY_RESPONSE' | 'REASONING_ONLY' | 'OUTPUT_LIMIT' | 'RESPONSE_FAILED';
+const FILTER_STOPS = new Set(['refusal', 'content_filter', 'safety', 'blocklist', 'prohibited_content', 'spii', 'image_safety', 'image_prohibited_content', 'escalation', 'recitation', 'image_recitation']);
+const LIMIT_STOPS = new Set(['length', 'max_tokens', 'max_output_tokens']);
+const FAILED_STOPS = new Set(['error', 'failed', 'incomplete', 'cancelled', 'other', 'image_other', 'no_image', 'malformed_response', 'finish_reason_unspecified', 'language', 'malformed_function_call', 'unexpected_tool_call', 'too_many_tool_calls', 'missing_thought_signature']);
+const KNOWN_STOPS = new Set([...FILTER_STOPS, ...LIMIT_STOPS, ...FAILED_STOPS, 'stop', 'completed', 'end_turn', 'stop_sequence', 'tool_calls', 'function_call']);
+function stopCode(value: unknown): string { return typeof value === 'string' && KNOWN_STOPS.has(value.toLowerCase()) ? value.toLowerCase() : value == null ? 'unspecified' : 'unrecognized'; }
 class ModelRequestError extends Error {
   constructor(readonly code: ModelFailureCode, message: string, readonly status?: number) {
     super(`${message} (${code}${status ? `; HTTP ${status}` : ''})`);
@@ -31,8 +41,9 @@ function providerError(error: unknown): ModelRequestError {
   if (/timeout|timed?\s*out/i.test(message) || value.name === 'TimeoutError') return failure('TIMEOUT', 'The model request took too long. Retry with a smaller section size or a faster connection.');
   if (/abort|cancel/i.test(message) || value.name === 'AbortError') return failure('CANCELLED', 'The model request was cancelled. Your previous draft is still available.');
   if (/fetch failed|network|ECONN|ENOTFOUND|connection refused/i.test(message)) return failure('CONNECTION_FAILED', 'Lumiverse could not reach the model provider. Check the connection and try again.');
-  if (/refus|content.filter|safety|moderation/i.test(message)) return failure('DECLINED', 'The model provider declined this request. No replacement content was saved.');
-  if (status === 401 || status === 403 || /\b401\b|unauthori|api.?key|authentication/i.test(message)) return failure('AUTHENTICATION', 'The model connection could not authenticate or access this model. Check that connection in Lumiverse.');
+  if (/\brefus(?:al|ed)\b|content[ _-]?(?:filter|policy)|\bsafety\b|\bmoderation\b|(?:input|prompt|request).{0,60}\bflagged\b|PROHIBITED_CONTENT/i.test(message)) return failure('DECLINED', 'The provider reported a content restriction or refusal. No replacement content was saved.');
+  if (status === 403) return failure('REQUEST_DENIED', 'The provider denied this request. This can mean an access restriction or content filtering; it does not by itself mean your credentials are invalid.');
+  if (status === 401 || /unauthori|authentication|(?:invalid|incorrect|missing|expired|revoked|disabled).{0,30}(?:api.?key|credentials|token)/i.test(message)) return failure('AUTHENTICATION', 'The model connection could not authenticate. Check that connection in Lumiverse.');
   if (status === 429 || status === 402 || /\b429\b|rate.limit|quota|credits|balance/i.test(message)) return failure('RATE_LIMIT', 'The model provider reported a rate or credit limit. Check your connection and try again later.');
   if (/context|too.long|maximum.*token/i.test(message)) return failure('CONTEXT_LIMIT', 'The model could not fit this request. Choose a larger-context connection or a smaller section size.');
   if (/model.{0,80}(?:not found|not available|does not exist|invalid|unknown|required|missing|empty|unsupported)|(?:unknown|invalid|missing|unsupported)\s+model/i.test(message)) return failure('MODEL_UNAVAILABLE', 'The provider could not use the selected model. Re-select the model in your Lumiverse connection and retry.');
@@ -44,6 +55,7 @@ function providerError(error: unknown): ModelRequestError {
 export class SetPointsController {
   readonly runtime: SceneRuntime;
   private publisher: CardPublisher;
+  private checkpoints: ResponseCheckpoints;
   private workspace: Workspace = { draft: null, saved: null, job: null };
   private ready: Promise<void>;
   private abort?: AbortController;
@@ -52,43 +64,134 @@ export class SetPointsController {
   private persistence: Promise<void> = Promise.resolve();
   private starting = false;
   private saving = false;
+  private checking = false;
+  private checkAbort?: AbortController;
   constructor(private api: SpindleAPI, private userId?: string, private changed: () => void = () => {}) {
     this.runtime = new SceneRuntime(api, userId);
     this.publisher = new CardPublisher(api, userId);
+    this.checkpoints = new ResponseCheckpoints(api, userId);
     this.ready = this.restore();
   }
   private async restore() {
     let saved: Workspace;
-    try { saved = await this.api.userStorage.getJson<Workspace>(STATE_PATH, { fallback: this.workspace, userId: this.userId }); }
+    try {
+      const temp = `${STATE_PATH}.tmp`;
+      if (await this.api.userStorage.exists(temp, this.userId)) {
+        const pending = await this.api.userStorage.read(temp, this.userId);
+        const parsed = JSON.parse(pending);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !('draft' in parsed) || !('job' in parsed)) throw new Error('Invalid workspace');
+        await this.api.userStorage.move(temp, STATE_PATH, this.userId);
+        if (await this.api.userStorage.read(STATE_PATH, this.userId) !== pending) throw new Error('Workspace recovery failed');
+      }
+      saved = await this.api.userStorage.exists(STATE_PATH, this.userId) ? JSON.parse(await this.api.userStorage.read(STATE_PATH, this.userId)) : this.workspace;
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved) || !('draft' in saved) || !('job' in saved)) throw new Error('Invalid workspace');
+    }
     catch {
-      const backup = `recovery/workspace-${Date.now()}.txt`;
-      try {
-        const raw = await this.api.userStorage.read(STATE_PATH, this.userId);
-        await this.api.userStorage.write(backup, raw, this.userId);
-      } catch { throw new Error('Saved Set Points data could not be read or backed up. Check extension storage, then reload Set Points.'); }
-      saved = { draft: null, saved: null, job: null };
-      this.note('Unreadable workspace backed up for recovery.');
+      throw new Error('Saved Set Points data could not be read safely. No model request was sent. Keep extension storage intact so the source and paid responses can be recovered.');
     }
     try {
-      this.workspace = { draft: saved.draft ? validateDraft(saved.draft) : null, saved: saved.saved ?? null, job: saved.job ?? null };
+      this.workspace = { draft: saved.draft ? validateDraft(saved.draft) : null, saved: saved.saved ?? null, job: saved.job ?? null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}) };
     } catch {
       await this.api.userStorage.setJson(`recovery/workspace-${Date.now()}.json`, saved, { userId: this.userId });
-      this.workspace = { draft: null, saved: null, job: { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
+      this.workspace = { draft: null, saved: null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}), job: { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
       this.note('Invalid saved draft backed up for recovery.');
     }
     if (this.workspace.job?.status === 'running') {
-      this.workspace.job = { ...this.workspace.job, status: 'failed', label: 'Import interrupted', error: 'Lumiverse restarted during import. Your last completed draft is preserved. Start the import again.' };
+      this.workspace.job = { ...this.workspace.job, status: 'failed', label: 'Import interrupted', error: this.workspace.lastImport ? 'Lumiverse restarted during import. Resume saved import to reuse completed steps. Any request with an unknown outcome will need an explicit retry.' : 'Lumiverse restarted during import. Your last completed draft is preserved. Start the import again.' };
       await this.persist();
     }
   }
   private persist(): Promise<void> {
-    const value = structuredClone(this.workspace);
-    const write = this.persistence.catch(() => {}).then(() => this.api.userStorage.setJson(STATE_PATH, value, { userId: this.userId }));
+    const value = JSON.stringify(this.workspace);
+    const write = this.persistence.catch(() => {}).then(async () => {
+      const temp = `${STATE_PATH}.tmp`;
+      await this.api.userStorage.write(temp, value, this.userId);
+      if (await this.api.userStorage.read(temp, this.userId) !== value) throw new Error('Saved import verification failed. Keep extension storage intact.');
+      await this.api.userStorage.move(temp, STATE_PATH, this.userId);
+      if (await this.api.userStorage.read(STATE_PATH, this.userId) !== value) throw new Error('Saved import verification failed. Keep extension storage intact.');
+    });
     this.persistence = write;
     return write;
   }
   private require(permission: string) { if (!this.api.permissions.has(permission)) throw new Error(`Grant ${permission} in Lumiverse’s Extensions panel to use this action.`); }
   private note(kind: string) { this.entries.push(`${new Date().toISOString()} ${kind}`); this.entries = this.entries.slice(-100); }
+  private async selectedConnection(value: unknown) {
+    const id = string(value, 'Adaptation model connection');
+    const connection = await this.api.connections.get(id, this.userId);
+    if (!connection) throw new Error('The selected model connection is no longer available.');
+    if (!connection.model?.trim()) throw new Error('The selected connection has no model. Choose a model for that connection in Lumiverse, then retry.');
+    if (!connection.provider?.trim()) throw new Error('The selected connection has no provider. Edit that connection in Lumiverse, then retry.');
+    return { id, model: connection.model, provider: connection.provider, fingerprint: { id, model: connection.model, provider: connection.provider, api_url: connection.api_url, preset_id: connection.preset_id, metadata: connection.metadata, reasoning_bindings: connection.reasoning_bindings, parameters: { temperature: 0.3, max_tokens: 16000 } } };
+  }
+  private async requestModel(connection: { id: string; model: string; provider: string }, messages: GenerationMessage[], signal: AbortSignal, maxTokens = 16000, timeoutMs = 180_000): Promise<unknown> {
+    this.require('generation');
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const requestSignal = AbortSignal.any([signal, deadline]);
+    let onAbort: (() => void) | undefined;
+    try {
+      requestSignal.throwIfAborted();
+      const request: RawModelRequest = { type: 'raw', connection_id: connection.id, provider: connection.provider, model: connection.model, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: maxTokens }, signal: requestSignal };
+      // Settle locally as well as asking the host to cancel. A lost host reply
+      // must not leave the connection check or import running indefinitely.
+      return await Promise.race([this.api.generate.raw(request), new Promise<never>((_, reject) => {
+        onAbort = () => reject(requestSignal.reason);
+        requestSignal.addEventListener('abort', onAbort, { once: true });
+        if (requestSignal.aborted) onAbort();
+      })]);
+    } catch (error) {
+      const failure = providerError(deadline.aborted && !signal.aborted ? new DOMException('The model request timed out.', 'TimeoutError') : error);
+      this.note(`Model request failed: ${failure.code}${failure.status ? `; HTTP ${failure.status}` : ''}.`);
+      throw failure;
+    } finally { if (onAbort) requestSignal.removeEventListener('abort', onAbort); }
+  }
+  private readModelResponse(result: unknown, connectionCheck = false): GenerationResponseDTO {
+    const value = record(result), details = record(value.stop_details);
+    const finish = stopCode(value.finish_reason), native = stopCode(details.category);
+    const textLength = typeof value.content === 'string' ? value.content.length : 0;
+    const reasoningLength = typeof value.reasoning === 'string' ? value.reasoning.length : 0;
+    const tokens = record(value.usage).completion_tokens;
+    const outputTokens = typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : 'unknown';
+    const reasoningTokens = record(record(record(value.usage).provider_raw).completion_tokens_details).reasoning_tokens;
+    const safeReasoningTokens = typeof reasoningTokens === 'number' && Number.isSafeInteger(reasoningTokens) && reasoningTokens >= 0 ? reasoningTokens : 'unknown';
+    const reasoningPresent = reasoningLength > 0 || Array.isArray(value.reasoning_details) && value.reasoning_details.length > 0 || typeof safeReasoningTokens === 'number' && safeReasoningTokens > 0;
+    // Whitelisted stop codes and numeric sizes only. Explanations, reasoning,
+    // opaque provider details and response text can all contain source material.
+    this.note(`Model response: finish=${finish}; native=${native}; textCharacters=${textLength}; reasoningCharacters=${reasoningLength}; reasoningPresent=${reasoningPresent}; outputTokens=${outputTokens}; reasoningTokens=${safeReasoningTokens}.`);
+    const fail = (code: ModelFailureCode, message: string): never => {
+      this.note(`Model response rejected: ${code}.`);
+      throw new ModelRequestError(code, message);
+    };
+    if (value.refusal || details.type === 'refusal' || details.type === 'blocked_prompt' || FILTER_STOPS.has(finish) || FILTER_STOPS.has(native)) fail('DECLINED', 'The provider reported a content restriction or refusal. No replacement content was saved.');
+    if (LIMIT_STOPS.has(finish) || LIMIT_STOPS.has(native)) fail('OUTPUT_LIMIT', connectionCheck ? 'The provider responded, but the small test reached its output allowance before returning a complete answer. Reasoning can consume this allowance.' : 'The model reached the output allowance before finishing. Reasoning can consume that allowance. Review the connection’s reasoning settings or request fewer scenes.');
+    if (value.error || ['failed', 'incomplete'].includes(String(details.type)) || FAILED_STOPS.has(finish) || FAILED_STOPS.has(native)) fail('RESPONSE_FAILED', 'The provider returned an unsuccessful response. Download diagnostics for its stop category; no response text is included.');
+    if (typeof value.content !== 'string') fail('RESPONSE_FAILED', 'The model returned an unexpected response format. Download diagnostics to help troubleshoot.');
+    if (!(value.content as string).trim()) {
+      if (reasoningPresent) fail('REASONING_ONLY', 'The model returned reasoning without an answer. Review the connection’s reasoning and output settings. No draft was replaced.');
+      fail('EMPTY_RESPONSE', 'The model returned no answer and Lumiverse supplied no precise cause. Use Check connection, then download diagnostics if needed.');
+    }
+    return value as unknown as GenerationResponseDTO;
+  }
+  private async testConnection(connectionId: unknown): Promise<{ message: string }> {
+    this.require('generation');
+    if (this.checking) throw new Error('A connection check is already running.');
+    if (this.starting || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before checking a connection.');
+    this.checking = true;
+    const controller = new AbortController();
+    this.checkAbort = controller;
+    try {
+      const connection = await this.selectedConnection(connectionId);
+      this.note('Neutral connection check started.');
+      this.readModelResponse(await this.requestModel(connection, [
+        { role: 'system', content: 'This is a connection check. Reply briefly.' },
+        { role: 'user', content: 'Reply with the word OK.' },
+      ], controller.signal, 256, 30_000), true);
+      this.note('Neutral connection check accepted.');
+      return { message: 'The provider accepted the small test request. Your story was not sent or changed. A full adaptation can still be rejected because its content, size, and settings differ.' };
+    } catch (error) {
+      this.note('Neutral connection check failed.');
+      throw error;
+    } finally { this.checking = false; this.checkAbort = undefined; }
+  }
   async snapshot(chatId?: string|null): Promise<AppSnapshot> {
     await this.ready;
     const permissions = await this.api.permissions.getGranted();
@@ -98,11 +201,13 @@ export class SetPointsController {
       catch { this.note('Connection list unavailable.'); }
     }
     const play = chatId === null ? { chatId: null, characterId: null, title: '', enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice: 'Open a chat with a Set Points narrator to use scene controls.' } : await this.runtime.view(chatId);
-    return { version: VERSION, permissions, connections, ...structuredClone(this.workspace), play, diagnostics: [...this.entries] };
+    const { draft, saved, job } = structuredClone(this.workspace);
+    return { version: VERSION, permissions, connections, draft, saved, job, resume: { available: Boolean(this.workspace.lastImport && job && ['failed', 'cancelled'].includes(job.status)), retryUncertain: Boolean(job?.retryUncertain) }, play, diagnostics: [...this.entries] };
   }
-  private async start(options: ImportOptions): Promise<ImportJob> {
+  private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
     this.require('generation');
+    if (this.checking) throw new Error('Wait for the connection check to finish before adapting the story.');
     if (this.saving) throw new Error('Wait for the card to finish saving before importing another story.');
     if (this.starting || this.workspace.job?.status === 'running') throw new Error('An import is already running. Cancel it before starting another.');
     this.starting = true;
@@ -113,37 +218,35 @@ export class SetPointsController {
       string(options.sourceTitle, 'Story title'); string(options.playerRole, 'Player role'); string(options.startingPoint, 'Starting point');
       if (options.sourceTitle.length > 300 || options.playerRole.length > 2000 || options.startingPoint.length > 2000) throw new Error('Keep the title under 300 characters and role/starting point under 2,000 characters.');
       if (options.sourceUrl) options.sourceUrl = storyUrl(options.sourceUrl);
-      const connectionId = string(options.connectionId, 'Adaptation model connection');
-      const connection = await this.api.connections.get(connectionId, this.userId);
-      if (!connection) throw new Error('The selected model connection is no longer available.');
-      if (!connection.model?.trim()) throw new Error('The selected connection has no model. Choose a model for that connection in Lumiverse, then retry.');
-      if (!connection.provider?.trim()) throw new Error('The selected connection has no provider. Edit that connection in Lumiverse, then retry.');
-      const { model, provider } = connection;
+      const connection = await this.selectedConnection(options.connectionId);
+      if (resume && !sameSettings(connection.fingerprint, this.workspace.lastConnectionFingerprint)) throw new Error('The saved connection settings have changed. Resume paused before making any model request. Restore those settings, or use Create adaptation to start with the new settings and normal model charges.');
+      this.checkpoints.beginRun({ retryUncertain });
       this.abort = new AbortController();
       const controller = this.abort;
       const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: 'Preparing the story' };
       this.workspace.job = job;
-      await this.persist();
+      this.workspace.lastImport = structuredClone(options);
+      this.workspace.lastConnectionFingerprint = structuredClone(connection.fingerprint);
+      try { await this.persist(); }
+      catch {
+        this.abort = undefined;
+        this.workspace.job = { ...job, status: 'failed', label: 'Import could not be saved', error: 'The import could not be saved for recovery. No model request was sent. Check extension storage before retrying.' };
+        this.changed();
+        throw new Error(this.workspace.job.error);
+      }
       this.note('Import started.');
       this.changed();
       this.jobTask = (async () => {
+        let responseReturned = false;
         try {
           const draft = await adaptStory(options, async (messages, signal) => {
-            this.require('generation');
-            const deadline = AbortSignal.timeout(180_000);
-            let result: unknown;
-            try {
-              const request: RawModelRequest = { type: 'raw', connection_id: connectionId, provider, model, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: 16000 }, signal: AbortSignal.any([signal ?? controller.signal, deadline]) };
-              result = await this.api.generate.raw(request);
-            } catch (error) {
-              const failure = providerError(deadline.aborted && !controller.signal.aborted ? new DOMException('The model request timed out.', 'TimeoutError') : error);
-              this.note(`Model request failed: ${failure.code}${failure.status ? `; HTTP ${failure.status}` : ''}.`);
-              throw failure;
-            }
-            const value = record(result);
-            if (value.refusal || /content_filter|safety|refusal/i.test(String(value.finish_reason))) throw new Error('The model provider declined this request. No replacement content was saved.');
-            if (typeof value.content !== 'string') throw new Error('The model returned no readable content. Check your selected connection.');
-            return value as unknown as GenerationResponseDTO;
+            responseReturned = false;
+            controller.signal.throwIfAborted();
+            const reusedBefore = this.checkpoints.reused;
+            const result = await this.checkpoints.request(messages, connection.fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal));
+            responseReturned = true;
+            if (this.checkpoints.reused > reusedBefore) this.note('Reused a saved model response.');
+            return this.readModelResponse(result);
           }, (completed, total, label) => {
             if (this.workspace.job?.id !== job.id) return;
             this.workspace.job = { ...job, completed, total, label };
@@ -157,7 +260,13 @@ export class SetPointsController {
           this.note('Import completed. Draft ready to review.');
         } catch (error) {
           const cancelled = controller.signal.aborted;
-          this.workspace.job = { ...this.workspace.job!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Import cancelled' : 'Import needs attention', error: cancelled ? undefined : error instanceof Error ? error.message : 'Import failed. Your last completed draft is preserved.' };
+          let message = error instanceof Error ? error.message : 'Import failed. Your last completed draft is preserved.';
+          if (!cancelled && responseReturned && (error instanceof ImportError && error.code !== 'COMPACTION_IMPOSSIBLE' || error instanceof ModelRequestError)) {
+            try { await this.checkpoints.invalidateLast(); }
+            catch { message = 'The failed step could not be marked for retry. Saved responses were retained; check extension storage before retrying.'; }
+          }
+          const retryUncertain = error instanceof CheckpointError && error.code === 'UNCERTAIN_REQUEST';
+          this.workspace.job = { ...this.workspace.job!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Import cancelled; saved steps retained' : 'Import needs attention', retryUncertain, error: cancelled ? undefined : `${message} Saved steps are retained. Resume saved import reuses them; remaining model requests use normal charges.` };
           this.note(cancelled ? 'Import cancelled.' : 'Import failed; last completed draft preserved.');
           await this.persist().catch(() => this.note('Could not persist the import status.'));
         } finally { this.abort = undefined; this.changed(); }
@@ -170,6 +279,7 @@ export class SetPointsController {
     const data = record(input);
     switch (action) {
       case 'snapshot': return this.snapshot(data.chatId === null ? null : typeof data.chatId === 'string' ? data.chatId : undefined);
+      case 'test-connection': return this.testConnection(data.connectionId);
       case 'fetch-url': {
         this.require('cors_proxy');
         const url = storyUrl(data.url);
@@ -184,6 +294,10 @@ export class SetPointsController {
         } finally { if (timer) clearTimeout(timer); }
       }
       case 'start-import': return this.start(record(data.options) as unknown as ImportOptions);
+      case 'resume-import': {
+        if (!this.workspace.lastImport) throw new Error('There is no saved import to resume. Earlier versions did not save intermediate work.');
+        return this.start(structuredClone(this.workspace.lastImport), data.retryUncertain === true, true);
+      }
       case 'cancel-import': this.abort?.abort(); return { cancelled: Boolean(this.abort) };
       case 'save-draft': {
         if (this.saving) throw new Error('Wait for the card to finish saving before replacing the draft.');
@@ -219,12 +333,12 @@ export class SetPointsController {
       }
       case 'diagnostics': {
         const view = await this.runtime.view();
-        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
+        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
       }
       default: throw new Error('Unknown Set Points action. Reload the extension.');
     }
   }
-  dispose() { this.abort?.abort(); }
+  dispose() { this.abort?.abort(); this.checkAbort?.abort(); }
   async waitForImport() { await this.jobTask; }
 }
 

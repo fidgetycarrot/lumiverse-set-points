@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.2";
+var VERSION = "0.1.3";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -287,6 +287,7 @@ function setup(ctx) {
   let openingDraft = false;
   let loadingPages = false;
   let adaptationStarting = false;
+  let connectionChecking = false;
   let webAbort = null;
   let stagedPages = null;
   let appliedSourceUrl;
@@ -517,7 +518,7 @@ function setup(ctx) {
   });
   cancelLoading.hidden = true;
   const useCollected = button("Use collected text", () => {
-    if (loadingPages || adaptationStarting || snapshot?.job?.status === "running")
+    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
       throw new Error("Wait for the current operation to finish before replacing the story text.");
     if (!stagedPages?.pages.length)
       throw new Error("No pages have been collected yet.");
@@ -558,8 +559,8 @@ function setup(ctx) {
     syncImportControls();
   }
   async function readPages(linked) {
-    if (loadingPages || adaptationStarting || snapshot?.job?.status === "running")
-      throw new Error("Wait for the current loading or adaptation to finish.");
+    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+      throw new Error("Wait for the current page loading, connection check, or adaptation to finish.");
     const controller = new AbortController;
     webAbort = controller;
     loadingPages = true;
@@ -589,7 +590,10 @@ function setup(ctx) {
     }
   }
   function syncImportControls() {
-    const busy = loadingPages || adaptationStarting || snapshot?.job?.status === "running";
+    const busy = loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running";
+    checkConnectionButton.disabled = !!busy || !connection.value;
+    connection.disabled = connectionChecking;
+    resumeButton.disabled = !!busy || !snapshot?.resume?.available;
     importButton.disabled = !!busy;
     fetchButton.disabled = !!busy;
     fetchLinkedButton.disabled = !!busy;
@@ -610,6 +614,41 @@ function setup(ctx) {
   connectionLabel.htmlFor = connection.id;
   connection.append(option("Loading connections…", ""));
   connectionWrap.append(connectionLabel, connection, paragraph("Uses a model connection already configured in Lumiverse.", "sp-hint"));
+  const connectionStatus = node("div", "sp-status");
+  connectionStatus.setAttribute("role", "status");
+  connectionStatus.setAttribute("aria-live", "polite");
+  const checkConnectionButton = button("Check connection", async () => {
+    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+      throw new Error("Wait for the current page loading, connection check, or adaptation to finish.");
+    const connectionId = connection.value;
+    if (!connectionId)
+      throw new Error("Choose an adaptation connection before checking it.");
+    connectionChecking = true;
+    connectionStatus.dataset.kind = "info";
+    connectionStatus.textContent = "Checking the selected connection…";
+    syncImportControls();
+    try {
+      const result = await rpc.request("test-connection", { connectionId });
+      if (destroyed)
+        return;
+      connectionStatus.textContent = `${result.message} A successful check does not guarantee that a full story adaptation will be accepted.`;
+    } catch (error) {
+      if (!destroyed) {
+        connectionStatus.dataset.kind = "error";
+        connectionStatus.textContent = errorText(error);
+      }
+    } finally {
+      connectionChecking = false;
+      if (!destroyed)
+        syncImportControls();
+    }
+  });
+  checkConnectionButton.disabled = true;
+  connection.addEventListener("change", () => {
+    connectionStatus.textContent = "";
+    syncImportControls();
+  });
+  connectionWrap.append(checkConnectionButton, paragraph("Sends a small test request without your story. Normal model charges apply.", "sp-hint"), connectionStatus);
   const optionGrid = node("div", "sp-grid");
   optionGrid.append(sceneCount.wrap, connectionWrap);
   options.append(role.wrap, start.wrap, optionGrid);
@@ -630,11 +669,35 @@ function setup(ctx) {
     notify("Import cancelled. Your previous draft is still available.");
     await refresh();
   });
-  progressBox.append(progressText, progress, cancel);
+  const resumeHint = paragraph("", "sp-hint");
+  resumeHint.hidden = true;
+  const resumeButton = button("Resume saved import", async () => {
+    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+      throw new Error("Wait for page loading, the connection check, or the current adaptation to finish.");
+    if (!snapshot?.resume?.available)
+      throw new Error("There is no saved import available to resume.");
+    const retryUncertain = snapshot.resume.retryUncertain;
+    adaptationStarting = true;
+    syncImportControls();
+    try {
+      const job = await rpc.request("resume-import", retryUncertain ? { retryUncertain: true } : {});
+      if (snapshot)
+        snapshot.job = job;
+      renderJob(job);
+      notify("Resuming the story and settings saved for your last attempt. Completed matching steps are reused.");
+      await refresh();
+    } finally {
+      adaptationStarting = false;
+      if (!destroyed)
+        syncImportControls();
+    }
+  }, true);
+  resumeButton.hidden = true;
+  progressBox.append(progressText, progress, cancel, resumeHint, resumeButton);
   panels.import.append(progressBox);
   const importButton = button("Create adaptation  →", async () => {
-    if (loadingPages || adaptationStarting || snapshot?.job?.status === "running")
-      throw new Error("Wait for page loading or the current adaptation to finish.");
+    if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
+      throw new Error("Wait for page loading, the connection check, or the current adaptation to finish.");
     if (!source.input.value.trim())
       throw new Error("Add story text before creating an adaptation.");
     if (!connection.value)
@@ -667,8 +730,13 @@ function setup(ctx) {
   }
   function renderJob(job) {
     const running = job?.status === "running";
-    progressBox.hidden = !job;
+    const canResume = !!snapshot?.resume?.available && !running;
+    progressBox.hidden = !job && !canResume;
     cancel.hidden = !running;
+    resumeButton.hidden = !canResume;
+    resumeHint.hidden = !canResume;
+    resumeButton.textContent = snapshot?.resume?.retryUncertain ? "Retry unfinished request" : "Resume saved import";
+    resumeHint.textContent = "Uses the story and settings saved for your last attempt. Completed steps are reused; remaining requests use normal model charges." + (snapshot?.resume?.retryUncertain ? " Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again." : "");
     syncImportControls();
     if (job) {
       progressText.textContent = job.error || job.label;
@@ -1096,7 +1164,12 @@ var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: 
         case "fetch-url":
           result = fetchPreviewPage(request.input.url);
           break;
+        case "test-connection":
+          result = { message: "Preview: the provider accepted the neutral test request." };
+          break;
+        case "resume-import":
         case "start-import":
+          state.resume = { available: false, retryUncertain: false };
           state.job = { id: "preview-job", status: "running", completed: 0, total: 2, label: "Reading characters and setting…" };
           result = structuredClone(state.job);
           setTimeout(() => {
@@ -1108,8 +1181,10 @@ var ctx = { ui: { registerDrawerTab: () => ({ root, tabId: "preview", setBadge: 
           }, 1800);
           break;
         case "cancel-import":
-          if (state.job)
+          if (state.job) {
             state.job.status = "cancelled";
+            state.resume = { available: true, retryUncertain: false };
+          }
           break;
         case "save-draft":
           state.draft = structuredClone(request.input.draft);

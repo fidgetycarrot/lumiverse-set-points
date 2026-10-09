@@ -14,15 +14,16 @@ function harness(hasDraft=true) {
   Object.assign(globalThis,{document:window.document,HTMLInputElement:window.HTMLInputElement,HTMLTextAreaElement:window.HTMLTextAreaElement});
   const root=window.document.createElement('div');window.document.body.append(root);
   const state:AppSnapshot={version:'0.1.0',permissions:[],connections:[{id:'model',name:'Writing model',provider:'test',model:'test'}],job:null,draft:hasDraft?fixture():null,saved:null,play:{chatId:'chat',characterId:'card',title:'The Letter',enabled:true,current:0,next:1,scenes:fixture().scenes,canUndo:false,busy:false,notice:''},diagnostics:[]};
-  let receive:(message:unknown)=>void=()=>{};let webFetch:((url:string)=>Promise<WebStoryPage>)|null=null;let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
+  let receive:(message:unknown)=>void=()=>{};let webFetch:((url:string)=>Promise<WebStoryPage>)|null=null;let connectionTest:((id:string)=>Promise<{message:string}>)=async()=>({message:'The provider accepted the neutral test request.'});let failure:string|null=null;let active=false;const requests:Array<{action:string;input:any}>=[];
   const ctx={ui:{registerDrawerTab:()=>({root,tabId:'set-points',setBadge:()=>{},onActivate:()=>()=>{},activate:()=>{active=true;},destroy:()=>{}}),registerInputBarAction:()=>({onClick:()=>()=>{},destroy:()=>{}})},dom:{addStyle:(css:string)=>{const style=window.document.createElement('style');style.textContent=css;window.document.head.append(style);return()=>style.remove();}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'chat',characterId:'card'}),ready:()=>{},onBackendMessage:(callback:(message:unknown)=>void)=>{receive=callback;return()=>{receive=()=>{};};},sendToBackend:(message:any)=>{requests.push(message);queueMicrotask(()=>{
     if(failure&&message.action!=='snapshot'){receive({type:'set-points:response',id:message.id,error:failure});return;}
+    if(message.action==='test-connection'){Promise.resolve().then(()=>connectionTest(message.input.connectionId)).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     if(message.action==='fetch-url'){Promise.resolve().then(()=>{if(!webFetch)throw new Error('No readable page');return webFetch(message.input.url);}).then(result=>receive({type:'set-points:response',id:message.id,result}),error=>receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)}));return;}
     let result:unknown;
     if(message.action==='snapshot')result=structuredClone(state);
     else if(message.action==='save-draft'){try{state.draft=validateDraft(message.input.draft);result=state.draft;}catch(error){receive({type:'set-points:response',id:message.id,error:error instanceof Error?error.message:String(error)});return;}}
-    else if(message.action==='start-import'){state.job={id:'job-a',status:'running',completed:0,total:3,label:'Reading section one'};result=state.job;}
-    else if(message.action==='cancel-import'){state.job={id:'job-a',status:'cancelled',completed:0,total:3,label:'Cancelled'};}
+    else if(message.action==='start-import'||message.action==='resume-import'){state.resume={available:false,retryUncertain:false};state.job={id:'job-a',status:'running',completed:0,total:3,label:'Reading section one'};result=state.job;}
+    else if(message.action==='cancel-import'){state.job={id:'job-a',status:'cancelled',completed:0,total:3,label:'Cancelled'};state.resume={available:true,retryUncertain:false};}
     else if(message.action==='play-force'){state.play.current=1;state.play.next=null;state.play.canUndo=true;result=state.play;}
     receive({type:'set-points:response',id:message.id,result:structuredClone(result)});
   });}} as unknown as SpindleFrontendContext;
@@ -31,7 +32,7 @@ function harness(hasDraft=true) {
   const field=(label:string)=>{const caption=Array.from(root.querySelectorAll('label')).find(item=>item.textContent===label)!;return root.querySelector(`#${caption.htmlFor}`) as unknown as HTMLInputElement;};
   const input=(label:string,value:string)=>{const el=field(label);el.value=value;el.dispatchEvent(new window.Event('input',{bubbles:true}) as unknown as Event);return el;};
   const openDraft=(text:string)=>{const input=root.querySelector('input[accept=".json,application/json"]')!;Object.defineProperty(input,'files',{configurable:true,value:[new window.File([text],'saved-draft.json',{type:'application/json'})]});input.dispatchEvent(new window.Event('change',{bubbles:true}));};
-  return {root,state,requests,button,field,input,openDraft,setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
+  return {root,state,requests,button,field,input,openDraft,setConnectionTest:(checker:(id:string)=>Promise<{message:string}>)=>{connectionTest=checker;},setPages:(fetcher:(url:string)=>Promise<WebStoryPage>)=>{webFetch=fetcher;},fail:(message:string)=>{failure=message;},changed:()=>receive({type:'set-points:changed'}),window,active:()=>active,dispose};
 }
 
 describe('request handling',()=>{
@@ -153,5 +154,64 @@ describe('web collection workspace',()=>{
   test('teardown cancels pending collection and late replies cannot overwrite source',async()=>{
     const app=harness();await tick();app.input('Story text','Survives closing');app.input('Story link',webUrl(1));let late!:(page:WebStoryPage)=>void;app.setPages(async()=>new Promise(resolve=>{late=resolve;}));
     app.button('Read linked pages').click();await tick();const source=app.field('Story text');app.dispose();late(webPage(1));await tick();expect(source.value).toBe('Survives closing');expect(app.root.querySelector('.sp-app')).toBeNull();
+  });
+});
+
+
+describe('neutral connection check',()=>{
+  test('sends only the selected connection ID and preserves story, review edits, and staged pages',async()=>{
+    const app=harness();await tick();app.state.connections.push({id:'second-model',name:'Second model',provider:'test',model:'second'});app.changed();await tick();
+    app.input('Story text','A private story passage');app.input('Story title','My private title');app.button('Review').click();app.input('Premise','My unsaved review edit');app.button('Import').click();
+    app.input('Story link',webUrl(1));app.setPages(async()=>webPage(1));app.button('Read page').click();await tick();
+    app.input('Adaptation connection','second-model');app.button('Check connection').click();await tick();
+    const request=app.requests.find(item=>item.action==='test-connection');expect(request?.input).toEqual({connectionId:'second-model'});expect(JSON.stringify(request)).not.toContain('private');
+    expect(app.field('Story text').value).toBe('A private story passage');expect(app.field('Story title').value).toBe('My private title');expect(app.field('Premise').value).toBe('My unsaved review edit');expect(app.root.textContent).toContain('1 page collected');expect(app.button('Use collected text').hidden).toBe(false);
+    const statuses=Array.from(app.root.querySelectorAll('[role="status"]')).map(item=>item.textContent).join(' ');expect(statuses).toContain('provider accepted');expect(statuses).toContain('does not guarantee');expect(app.root.textContent).toContain('Normal model charges apply.');
+  });
+  test('prevents overlapping checks and adaptation while a request is pending',async()=>{
+    const app=harness();await tick();app.input('Story text','Keep this text');let accept!:(result:{message:string})=>void;app.setConnectionTest(async()=>new Promise(resolve=>{accept=resolve;}));
+    app.button('Check connection').click();app.button('Check connection').click();await tick();expect(app.button('Check connection').disabled).toBe(true);expect(app.button('Create adaptation').disabled).toBe(true);expect(app.button('Read linked pages').disabled).toBe(true);
+    app.button('Create adaptation').click();expect(app.requests.filter(item=>item.action==='test-connection')).toHaveLength(1);expect(app.requests.some(item=>item.action==='start-import')).toBe(false);
+    accept({message:'The provider accepted the neutral test request.'});await tick();expect(app.button('Check connection').disabled).toBe(false);expect(app.button('Create adaptation').disabled).toBe(false);expect(app.field('Story text').value).toBe('Keep this text');
+  });
+  test('safe backend errors remain accessible and allow another check without losing edits',async()=>{
+    const app=harness();await tick();app.input('Story text','Keep these edited words');app.setConnectionTest(async()=>{throw new Error('The provider denied this request (HTTP 403). Check account access and model permissions.');});
+    app.button('Check connection').click();await tick();const error=app.root.querySelector('[role="status"][data-kind="error"]');expect(error?.textContent).toContain('HTTP 403');expect(error?.getAttribute('aria-live')).toBe('polite');expect(app.button('Check connection').disabled).toBe(false);expect(app.field('Story text').value).toBe('Keep these edited words');
+    app.setConnectionTest(async()=>({message:'The provider accepted the neutral test request.'}));app.button('Check connection').click();await tick();expect(app.root.querySelector('[role="status"][data-kind="error"]')).toBeNull();
+  });
+  test('is unavailable with no connection or while an adaptation runs',async()=>{
+    const app=harness();await tick();app.state.connections=[];app.changed();await tick();expect(app.button('Check connection').disabled).toBe(true);
+    app.state.connections=[{id:'model',name:'Model',provider:'test',model:'test'}];app.changed();await tick();app.button('Try a sample').click();app.button('Create adaptation').click();expect(app.button('Check connection').disabled).toBe(true);await tick();expect(app.button('Check connection').disabled).toBe(true);
+    app.button('Cancel import').click();await tick();expect(app.button('Check connection').disabled).toBe(false);
+  });
+});
+
+
+describe('saved import resume',()=>{
+  test('resumes after reopening with an empty form using saved backend options only',async()=>{
+    const app=harness();app.state.job={id:'older-job',status:'failed',completed:2,total:4,label:'Saved progress retained.'};app.state.resume={available:true,retryUncertain:false};await tick();
+    expect(app.button('Resume saved import').hidden).toBe(false);expect(app.field('Story text').value).toBe('');expect(app.root.textContent).toContain('Uses the story and settings saved for your last attempt.');
+    app.button('Resume saved import').click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({});expect(app.requests.some(item=>item.action==='start-import')).toBe(false);expect(app.field('Story text').value).toBe('');
+    expect(app.button('Resume saved import').hidden).toBe(true);expect(app.button('Create adaptation').disabled).toBe(true);
+  });
+  test('preserves current form, review edits, and staged pages when resuming a different saved import',async()=>{
+    const app=harness();await tick();app.input('Story text','Different source currently being edited');app.input('Story title','New source title');app.input('Who will you play?','A new role');app.button('Review').click();app.input('Premise','An unsaved premise edit');app.button('Import').click();
+    app.input('Story link',webUrl(1));app.setPages(async()=>webPage(1));app.button('Read page').click();await tick();
+    app.state.job={id:'saved-job',status:'cancelled',completed:1,total:3,label:'Cancelled'};app.state.resume={available:true,retryUncertain:false};app.changed();await tick();app.button('Resume saved import').click();await tick();
+    expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({});expect(app.field('Story text').value).toBe('Different source currently being edited');expect(app.field('Story title').value).toBe('New source title');expect(app.field('Who will you play?').value).toBe('A new role');expect(app.field('Premise').value).toBe('An unsaved premise edit');expect(app.root.textContent).toContain('1 page collected');
+  });
+  test('unknown request outcomes require the explicitly warned retry action',async()=>{
+    const app=harness();app.state.job={id:'uncertain-job',status:'failed',completed:1,total:4,label:'The request outcome is unknown.'};app.state.resume={available:true,retryUncertain:true};await tick();
+    const retry=app.button('Retry unfinished request');expect(retry.hidden).toBe(false);expect(app.root.textContent).toContain('Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.');
+    retry.click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({retryUncertain:true});
+  });
+  test('resume errors retain edits and leave retry available while busy checks disable it',async()=>{
+    const app=harness();app.state.job={id:'saved-job',status:'failed',completed:1,total:4,label:'Failed'};app.state.resume={available:true,retryUncertain:false};await tick();app.input('Story text','Keep current edits');app.fail('Saved import could not resume.');app.button('Resume saved import').click();await tick();
+    expect(app.field('Story text').value).toBe('Keep current edits');expect(app.root.querySelector('[role="status"]')?.textContent).toBe('Saved import could not resume.');expect(app.button('Resume saved import').disabled).toBe(false);
+    app.fail('');let accept!:(result:{message:string})=>void;app.setConnectionTest(async()=>new Promise(resolve=>{accept=resolve;}));app.button('Check connection').click();await tick();expect(app.button('Resume saved import').disabled).toBe(true);app.button('Resume saved import').click();expect(app.requests.filter(item=>item.action==='resume-import')).toHaveLength(1);
+    accept({message:'Accepted'});await tick();expect(app.button('Resume saved import').disabled).toBe(false);
+  });
+  test('older failed jobs without saved-import metadata do not offer recovery',async()=>{
+    const app=harness();app.state.job={id:'legacy-job',status:'failed',completed:2,total:4,label:'Prior version failed'};await tick();expect(app.button('Resume saved import').hidden).toBe(true);expect(app.button('Resume saved import').disabled).toBe(true);
   });
 });

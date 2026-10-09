@@ -9,7 +9,17 @@ function harness(generate: (input:any)=>Promise<unknown> = async()=>({content:'n
   const stored=new Map<string,unknown>();const calls:any[]=[];
   const api={
     permissions:{has:(name:string)=>name==='generation',getGranted:async()=>['generation']},
-    userStorage:{getJson:async(path:string,opts:any)=>structuredClone(stored.get(`${opts.userId}:${path}`)??opts.fallback),setJson:async(path:string,value:unknown,opts:any)=>{stored.set(`${opts.userId}:${path}`,structuredClone(value));}},
+    userStorage:{
+      getJson:async(path:string,opts:any)=>{const value=stored.get(`${opts?.userId}:${path}`);if(value===undefined){if(opts&&'fallback' in opts)return structuredClone(opts.fallback);throw new Error('Missing storage file');}return typeof value==='string'?JSON.parse(value):structuredClone(value);},
+      setJson:async(path:string,value:unknown,opts:any)=>{stored.set(`${opts?.userId}:${path}`,structuredClone(value));},
+      exists:async(path:string,userId:string)=>stored.has(`${userId}:${path}`),
+      read:async(path:string,userId:string)=>{const value=stored.get(`${userId}:${path}`);if(value===undefined)throw new Error('Missing storage file');return typeof value==='string'?value:JSON.stringify(value);},
+      write:async(path:string,value:string,userId:string)=>{stored.set(`${userId}:${path}`,value);},
+      move:async(from:string,to:string,userId:string)=>{const key=`${userId}:${from}`;if(!stored.has(key))throw new Error('Missing storage file');stored.set(`${userId}:${to}`,stored.get(key));stored.delete(key);},
+      delete:async(path:string,userId:string)=>{stored.delete(`${userId}:${path}`);},
+      mkdir:async()=>{},
+      list:async(prefix:string,userId:string)=>[...stored.keys()].filter(key=>key.startsWith(`${userId}:${prefix}`)).map(key=>key.slice(`${userId}:`.length)),
+    },
     connections:{get:async(id:string,userId:string)=>id==='model'?{id,name:'Model',model:'test',provider:'test',userId}:null,list:async()=>[{id:'model',name:'Model',model:'test',provider:'test'}]},
     generate:{raw:async(input:any)=>{calls.push(input);return generate(input);}},
   } as unknown as SpindleAPI;
@@ -61,7 +71,11 @@ describe('import jobs and draft storage',()=>{
     ['API error: 400 - context length exceeded','CONTEXT_LIMIT',400],
     ['HTTP 503: upstream unavailable','PROVIDER_UNAVAILABLE',503],
     ['OpenAI generation failed (400): Bad request','INVALID_REQUEST',400],
-    ['Anthropic generation failed (403): Forbidden','AUTHENTICATION',403],
+    ['Anthropic generation failed (403): Forbidden','REQUEST_DENIED',403],
+    ['OpenRouter generate failed (403): Provider returned error','REQUEST_DENIED',403],
+    ['OpenRouter generate failed (403): API key lacks permission','REQUEST_DENIED',403],
+    ['OpenRouter generate failed (403): Input was flagged','DECLINED',403],
+    ['OpenRouter generate failed (403): Content policy violation','DECLINED',403],
     ['Google generation failed (503): Service unavailable','PROVIDER_UNAVAILABLE',503],
     ['The operation timed out','TIMEOUT',undefined],
     ['fetch failed','CONNECTION_FAILED',undefined],
@@ -86,13 +100,146 @@ describe('import jobs and draft storage',()=>{
     const view=await app.snapshot(null);expect(view.job?.error).toContain('PROVIDER_UNAVAILABLE; HTTP 503');
     expect(JSON.stringify(await app.handle('diagnostics',{}))).not.toContain('PRIVATE_PROMPT');
   });
-  test('reports a request deadline as a timeout when the host only returns AbortError',async()=>{
-    const timeout=spyOn(AbortSignal,'timeout').mockReturnValue(AbortSignal.abort(new DOMException('Deadline reached','TimeoutError')));
+  test('settles a deadline as timeout even when the host never responds to cancellation',async()=>{
+    const deadline=new AbortController();
+    const timeout=spyOn(AbortSignal,'timeout').mockReturnValue(deadline.signal);
     try{
-      const h=harness(async(input)=>{expect(input.signal.aborted).toBe(true);throw new DOMException('Generation cancelled.','AbortError');});
-      const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});await app.waitForImport();
+      const h=harness(async()=>new Promise(()=>{}));
+      const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});
+      for(let i=0;i<20&&!h.calls.length;i++)await Bun.sleep(1);
+      expect(h.calls).toHaveLength(1);deadline.abort(new DOMException('Deadline reached','TimeoutError'));await app.waitForImport();
       const view=await app.snapshot(null);expect(view.job?.status).toBe('failed');expect(view.job?.error).toContain('TIMEOUT');
     }finally{timeout.mockRestore();}
+  });
+  test.each([
+    [{content:'',finish_reason:'stop',stop_details:{type:'finish_reason',category:'PROHIBITED_CONTENT'}},'DECLINED'],
+    [{content:'',finish_reason:'stop',stop_details:{type:'blocked_prompt',category:'unknown'}},'DECLINED'],
+    [{content:'',finish_reason:'stop',stop_details:{type:'refusal'}},'DECLINED'],
+    [{content:'',finish_reason:'max_output_tokens'},'OUTPUT_LIMIT'],
+    [{content:'',finish_reason:'stop',stop_details:{type:'finish_reason',category:'MAX_TOKENS'}},'OUTPUT_LIMIT'],
+    [{content:'',finish_reason:'error'},'RESPONSE_FAILED'],
+    [{content:'',finish_reason:'stop',stop_details:{type:'incomplete'}},'RESPONSE_FAILED'],
+    [{content:'',finish_reason:'stop',reasoning:'Private reasoning text'},'REASONING_ONLY'],
+    [{content:'',finish_reason:'stop',reasoning_details:[{text:'Private reasoning text'}]},'REASONING_ONLY'],
+    [{content:'',finish_reason:'stop'},'REASONING_ONLY'],
+  ] as const)('classifies response metadata %# without exposing private fields or retrying',async(response,code)=>{
+    const h=harness(async()=>({...response,stop_details:{...('stop_details' in response?response.stop_details:{}),explanation:'SECRET_STOP_EXPLANATION'},usage:{completion_tokens:16,provider_raw:{completion_tokens_details:{reasoning_tokens:12},prompt:'SECRET_RAW_USAGE'}}}));
+    const app=new SetPointsController(h.api,'alice');await app.handle('save-draft',{draft:draft()});
+    await app.handle('start-import',{options});await app.waitForImport();const view=await app.snapshot(null);
+    expect(view.job?.error).toContain(code);expect(view.draft?.id).toBe('test-draft');expect(h.calls).toHaveLength(1);
+    const diagnostic=JSON.stringify(await app.handle('diagnostics',{}));
+    expect(diagnostic).toContain('textCharacters=0');expect(diagnostic).toContain('outputTokens=16');expect(diagnostic).toContain('reasoningTokens=12');
+    for(const value of [view.job?.error??'',diagnostic])for(const secret of ['Private reasoning text','SECRET_STOP_EXPLANATION','SECRET_RAW_USAGE'])expect(value).not.toContain(secret);
+  });
+  test('only includes allowlisted stop codes and numeric usage in response diagnostics',async()=>{
+    const h=harness(async()=>({content:'',finish_reason:'PRIVATE_FINISH',stop_details:{category:'PRIVATE_CATEGORY'},usage:{completion_tokens:'PRIVATE_TOKEN',provider_raw:{completion_tokens_details:{reasoning_tokens:-3}}}}));
+    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});await app.waitForImport();
+    const diagnostic=JSON.stringify(await app.handle('diagnostics',{}));
+    expect(diagnostic).toContain('finish=unrecognized');expect(diagnostic).toContain('native=unrecognized');expect(diagnostic).toContain('outputTokens=unknown');expect(diagnostic).toContain('reasoningTokens=unknown');expect(diagnostic).not.toContain('PRIVATE_');
+  });
+  test('neutral connection check uses selected model but never sends or changes the story',async()=>{
+    const h=harness(async()=>({content:'OK',finish_reason:'stop'})),app=new SetPointsController(h.api,'alice');
+    await app.handle('save-draft',{draft:draft()});const before=structuredClone(h.stored.get('alice:workspace.json'));
+    const result=await app.handle('test-connection',{connectionId:'model',text:'PRIVATE_SOURCE',sourceUrl:'https://private.example/story'}) as {message:string};
+    expect(result.message).toContain('accepted');expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toMatchObject({type:'raw',connection_id:'model',provider:'test',model:'test',userId:'alice',parameters:{max_tokens:256,temperature:0.3}});
+    expect(JSON.stringify(h.calls[0].messages)).not.toContain('PRIVATE_SOURCE');expect(JSON.stringify(h.calls[0].messages)).not.toContain('Mara');
+    expect(h.stored.get('alice:workspace.json')).toEqual(before);expect((await app.snapshot(null)).job).toBeNull();
+  });
+  test.each(['length','stop'])('a blank neutral check (%s) is not reported as success',async(finish_reason)=>{
+    const h=harness(async()=>({content:'',finish_reason})),app=new SetPointsController(h.api,'alice');
+    await expect(app.handle('test-connection',{connectionId:'model'})).rejects.toThrow(finish_reason==='length'?'OUTPUT_LIMIT':'EMPTY_RESPONSE');
+    expect((await app.snapshot(null)).job).toBeNull();
+  });
+  test('neutral check enforces permissions and connection validity',async()=>{
+    const h=harness(),app=new SetPointsController(h.api,'alice');
+    await expect(app.handle('test-connection',{connectionId:'missing'})).rejects.toThrow('no longer available');
+    Object.assign(h.api.permissions,{has:()=>false});await expect(app.handle('test-connection',{connectionId:'model'})).rejects.toThrow('Grant generation');expect(h.calls).toHaveLength(0);
+  });
+  test('connection checks block parallel checks and imports, cancel on disposal, and release their lock',async()=>{
+    const h=harness(async()=>new Promise(()=>{})),app=new SetPointsController(h.api,'alice');
+    const check=app.handle('test-connection',{connectionId:'model'});await Bun.sleep(0);
+    await expect(app.handle('test-connection',{connectionId:'model'})).rejects.toThrow('already running');
+    await expect(app.handle('start-import',{options})).rejects.toThrow('connection check');expect(h.calls).toHaveLength(1);
+    app.dispose();await expect(check).rejects.toThrow('CANCELLED');expect(h.calls[0].signal.aborted).toBe(true);
+    await expect(app.handle('test-connection',{connectionId:'missing'})).rejects.toThrow('no longer available');
+  });
+  test('an active import blocks a neutral connection check',async()=>{
+    const h=harness(async()=>new Promise(()=>{})),app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});
+    await expect(app.handle('test-connection',{connectionId:'model'})).rejects.toThrow('adaptation to finish');app.dispose();await app.waitForImport();
+  });
+  test('resumes after restart without buying the completed source reading again',async()=>{
+    const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events:[{title:'Arrival',summary:'A traveler reaches the harbor.',participants:[],changes:'A journey begins.',sourceRefs:['chunk:1']}],warnings:[]};
+    let failing=true;
+    const h=harness(async(input)=>{
+      if(input.messages[1].content.startsWith('SOURCE CHUNK'))return {content:JSON.stringify(ledger),finish_reason:'stop'};
+      if(failing)throw new Error('OpenRouter generate failed (503): unavailable');
+      return {content:JSON.stringify(draft()),finish_reason:'stop'};
+    });
+    const first=new SetPointsController(h.api,'alice');await first.handle('start-import',{options});await first.waitForImport();
+    expect(h.calls).toHaveLength(2);expect((await first.snapshot(null)).resume?.available).toBe(true);
+    failing=false;
+    const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{});await resumed.waitForImport();
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(3);
+    expect(h.calls.filter(call=>call.messages[1].content.startsWith('SOURCE CHUNK'))).toHaveLength(1);
+    expect((await resumed.snapshot(null)).diagnostics.join(' ')).toContain('Reused a saved model response');
+    expect(JSON.stringify(await resumed.handle('diagnostics',{}))).not.toContain('Mara');
+  });
+  test('keeps an oversized paid ledger across restart and only retries its failed shortening step',async()=>{
+    const events=Array.from({length:14},(_,index)=>({title:`Event ${index+1}`,summary:'A traveler learns about the harbor. '.repeat(60),participants:[],changes:'A new lead.',sourceRefs:['chunk:1']}));
+    const oversized={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events,warnings:[]};
+    const short={...oversized,events:events.map(event=>({...event,summary:'A traveler learns about the harbor.'}))};
+    expect(JSON.stringify(oversized).length).toBeGreaterThan(24000);
+    let call=0;
+    const h=harness(async()=>{
+      call++;if(call===2)throw new Error('OpenRouter generate failed (503): unavailable');
+      return {content:JSON.stringify(call===1?oversized:call===3?short:draft()),finish_reason:'stop'};
+    });
+    const first=new SetPointsController(h.api,'alice');await first.handle('start-import',{options});await first.waitForImport();
+    expect(h.calls).toHaveLength(2);expect((await first.snapshot(null)).job?.status).toBe('failed');
+    const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{});await resumed.waitForImport();
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(4);
+    expect(h.calls.filter(input=>input.messages[1].content.startsWith('SOURCE CHUNK'))).toHaveLength(1);
+    expect(h.calls[2].messages[1].content).toContain('compact-existing-ledger');
+  });
+  test('prior versions do not pretend a failed import can be recovered',async()=>{
+    const h=harness();h.stored.set('alice:workspace.json',{draft:null,saved:null,job:{id:'old',status:'failed',completed:1,total:2,label:'Failed'}});
+    const app=new SetPointsController(h.api,'alice');expect((await app.snapshot(null)).resume?.available).toBe(false);
+    await expect(app.handle('resume-import',{})).rejects.toThrow('Earlier versions');expect(h.calls).toHaveLength(0);
+  });
+  test('a lost response requires the explicitly warned retry instead of silently paying again',async()=>{
+    const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events:[{title:'Arrival',summary:'A traveler reaches the harbor.',participants:[],changes:'A journey begins.',sourceRefs:['chunk:1']}],warnings:[]};
+    let first=true;
+    const h=harness(async(input)=>{if(first){first=false;throw new Error('fetch failed');}return {content:JSON.stringify(input.messages[1].content.startsWith('SOURCE CHUNK')?ledger:draft()),finish_reason:'stop'};});
+    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});await app.waitForImport();
+    expect(h.calls).toHaveLength(1);expect((await app.snapshot(null)).resume).toEqual({available:true,retryUncertain:true});
+    await app.handle('resume-import',{});await app.waitForImport();expect(h.calls).toHaveLength(1);
+    await app.handle('resume-import',{retryUncertain:true});await app.waitForImport();
+    expect(h.calls).toHaveLength(3);expect((await app.snapshot(null)).job?.status).toBe('complete');
+  });
+  test('resume stops before billing if the saved connection profile changed',async()=>{
+    const h=harness(async()=>{throw new Error('HTTP 503: unavailable');}),app=new SetPointsController(h.api,'alice');
+    await app.handle('start-import',{options});await app.waitForImport();expect(h.calls).toHaveLength(1);
+    Object.assign(h.api.connections,{get:async()=>({id:'model',model:'new-model',provider:'test'})});
+    await expect(app.handle('resume-import',{})).rejects.toThrow('settings have changed');expect(h.calls).toHaveLength(1);
+  });
+  test('recovers saved source and resume metadata from a complete pending workspace write',async()=>{
+    const h=harness(async()=>{throw new Error('HTTP 503: unavailable');}),first=new SetPointsController(h.api,'alice');
+    await first.handle('start-import',{options});await first.waitForImport();
+    h.stored.set('alice:workspace.json.tmp',h.stored.get('alice:workspace.json'));h.stored.delete('alice:workspace.json');
+    const resumed=new SetPointsController(h.api,'alice');expect((await resumed.snapshot(null)).resume?.available).toBe(true);
+    expect(h.stored.has('alice:workspace.json')).toBe(true);expect(h.stored.has('alice:workspace.json.tmp')).toBe(false);expect(h.calls).toHaveLength(1);
+  });
+  test('corrupt saved workspace blocks new paid requests instead of silently clearing progress',async()=>{
+    const h=harness();h.stored.set('alice:workspace.json','{broken');
+    const app=new SetPointsController(h.api,'alice');await expect(app.handle('start-import',{options})).rejects.toThrow('could not be read safely');
+    expect(h.calls).toHaveLength(0);expect(h.stored.get('alice:workspace.json')).toBe('{broken');
+  });
+  test('failed source persistence stops before dispatch and does not leave an active job',async()=>{
+    const h=harness(),app=new SetPointsController(h.api,'alice');
+    Object.assign(h.api.userStorage,{write:async()=>{throw new Error('Storage unavailable');}});
+    await expect(app.handle('start-import',{options})).rejects.toThrow('No model request was sent');
+    expect(h.calls).toHaveLength(0);expect((await app.snapshot(null)).job?.status).toBe('failed');
   });
   test('cancel settles a nonresponsive model without replacing the previous draft',async()=>{
     const h=harness(async()=>new Promise(()=>{})),app=new SetPointsController(h.api,'alice');await app.handle('save-draft',{draft:draft()});

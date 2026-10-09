@@ -4,13 +4,13 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.2** fixes adaptation requests so they explicitly use the provider and model selected in your Lumiverse connection. It also checks that a model is configured and reports connection failures without exposing raw provider responses. Multi-page collection and the existing scene controls remain available. Live generation with a real Lumiverse model connection still needs verification.
+Version **0.1.3** adds saved import progress, resume after restart, one bounded compaction attempt for an oversized intermediate summary, and a neutral **Check connection** action. It also improves diagnostics for denied, blank, refused, and incomplete responses. The reported Gemini 3.1 Pro HTTP 403 and Gemini 3.8 Flash blank-response causes remain unknown; this release does not claim to fix those upstream behaviors or verify successful live adaptation with those connections.
 
 ## What it does
 
 - Accepts pasted text and `.txt` / `.md` files. Link import can collect a sequence of readable story pages for you to inspect before adaptation.
-- Lets you choose a model connection, player role, starting point, and desired scene count.
-- Reads long sources in sections, merges character identities and chronology, then creates an editable adaptation.
+- Lets you choose a model connection, player role, starting point, and desired scene count. **Check connection** can test that selection with a small neutral request before sending your story.
+- Reads long sources in sections, merges character identities and chronology, then creates an editable adaptation. Saves model responses before format and size validation so completed matching requests can be reused after an interruption or validation failure.
 - Produces a narrator card, attached world book, initial greeting, and ordered alternate greetings.
 - Includes its own scene controls: **Follow the story**, **Choose next scene**, **Force next scene**, and **Undo last scene insertion**.
 - Keeps independent progression in each chat, with recovery after interrupted writes and protection against duplicate handoffs.
@@ -45,8 +45,8 @@ The declared `base64_decode` backend capability is needed by a bundled DOM-parse
 ## First story
 
 1. In **Import**, paste a story, open a text file, or choose **Try a sample**. For a multi-page story, open **Import from a link**, enter the first page, and choose **Read linked pages**. Review the collected pages, then choose **Use collected text**. **Read page** loads just the selected page.
-2. Enter the story title, who you will play, and where play begins. Choose an adaptation connection with a model configured in Lumiverse. Set Points sends that connection’s provider and model with each adaptation request. The role may be an existing character or a new one.
-3. Choose **Create adaptation**. Each section, merge, and final adaptation uses that connection and its normal provider charges. You can cancel while keeping your previous completed draft.
+2. Enter the story title, who you will play, and where play begins. Choose an adaptation connection with a model configured in Lumiverse. Set Points sends that connection’s provider and model with each adaptation request. The role may be an existing character or a new one. If you need to test the connection first, choose **Check connection**; this sends a small neutral request without your story and uses normal provider charges.
+3. Choose **Create adaptation**. New section-reading, merge, repair, compaction, and final-adaptation requests use that connection and normal provider charges. Matching saved requests are reused. You can cancel while keeping your previous completed draft; **Resume saved import** uses the source and settings saved for the last attempt.
 4. In **Review**, edit the premise, cast, starting knowledge, world lore, narrator instructions, and scenes. Check adaptation notes and each scene's continuity assumptions. Export the draft if you want a backup.
 5. Choose **Save to Lumiverse**. Set Points creates one narrator card and attaches its world book. It does not activate the world book globally or overwrite existing cards. Repeating the identical save recovers the existing card rather than duplicating it.
 6. Open the new character from Lumiverse's **Characters** browser and start a chat with its initial greeting. Return to Set Points' **Play** tab.
@@ -85,13 +85,29 @@ Section ledgers are merged in bounded groups to avoid a single unbounded merge r
 
 Starting cast and lore are intended to describe the chosen starting point. Later revelations belong in scene direction. This is model-guided handling, not guaranteed spoiler containment: the model sees the next scene privately and may infer or reveal more than intended. There are no hard prerequisite checks in this version.
 
-Each model request has a three-minute deadline and requests up to 16,000 output tokens. A small-context model may need shorter sources or fewer scenes. Cancellation and failed/refused/truncated responses do not silently replace a completed draft. Invalid output receives at most one format-repair attempt; a provider refusal is not retried as a formatting error.
+Each adaptation-model request has a three-minute deadline and requests up to 16,000 output tokens. A small-context model may need shorter sources or fewer scenes. Cancellation and failed/refused/truncated responses do not silently replace a completed draft. Invalid output receives at most one format-repair attempt; a provider refusal is not retried as a formatting error.
+
+An oversized intermediate story ledger can receive **one bounded compaction attempt**, using the summary already produced instead of rereading the original story. This is an additional model call at normal charges. Compaction must preserve the records, relationships, warnings, event order, and source references. If the protected information alone exceeds the limit, `COMPACTION_IMPOSSIBLE` stops before a compaction call. Repeating that identical attempt uses the saved response and reaches the same stop without another model charge; change the relevant input to make progress.
+
+## Saved progress and resuming
+
+**Resume saved import** appears when the last saved attempt failed or was cancelled. It uses that attempt’s saved story and settings, including after a restart. It does not replace or use edits currently in the source form. Completed matching steps are reused; any remaining model requests incur normal provider charges.
+
+Responses are saved before format and size validation, so a response that fails a local ledger-size check can still be reused. Reuse requires the exact request messages, connection/profile fingerprint, and sampler parameters to match. The checkpoint revision stays stable across cosmetic release changes. Changing a step’s source messages, model/profile, or sampler settings makes it a new request. Changing only the player role or scene count can still reuse identical source-reading prompts, while changed later steps need new calls.
+
+If a request’s outcome is unknown, Set Points never automatically repeats it. **Retry unfinished request** warns that the earlier request may already have been charged and that retrying can charge it again. Choosing that button explicitly authorizes repeating the uncertain request. This differs from reusing a completed response already saved locally.
+
+Saved progress starts with imports run under 0.1.3. Earlier failed runs from 0.1.2 did not save their responses and cannot be recovered by this update.
 
 ## Content and data
 
-The selected Lumiverse connection performs adaptation; your normal chat connection performs roleplay. Their content rules and behavior apply independently. Set Points has no added story-genre filter and does not attempt to bypass provider restrictions.
+The selected Lumiverse connection performs adaptation; your normal chat connection performs roleplay. Their content rules and behavior apply independently. Set Points has no added story-genre filter and does not attempt to bypass provider restrictions. The connection check uses the same selected connection and runs only when you click **Check connection**. It preserves source text, staged pages, and drafts. A blank, limited, reasoning-only, or failed response is reported as an unsuccessful check; a successful neutral check does not establish that a full story adaptation will be accepted.
 
-Raw pasted source is kept in the current interface and sent to the selected model for adaptation. It is not saved as a separate source file by the extension. Closing/reloading the interface can lose unsaved source text. Completed drafts, job status, and card-save receipts are stored in Lumiverse's per-user extension storage. Scene progress is stored with its chat. A draft includes adapted prose and its source title/URL, so treat exported drafts as story content.
+Raw adaptation and normal chat use the host’s shared credential path, but their prompts and generation settings differ. Success in chat alone cannot identify the cause of an adaptation failure. Set Points keeps your chosen model and reasoning settings. It does not automatically retry provider failures or switch models. The existing single format-repair attempt and the new single bounded compaction attempt are separate additional processing steps, each using normal provider charges when a matching response is not already saved.
+
+When an import begins, its raw source text and options are saved in Lumiverse’s private per-user extension storage so the last attempt can resume after a restart. That storage also holds cached model reply content and reasoning, with minimal response metadata, saved before format and size validation. Opaque provider details are excluded. These checkpoints contain story material and are separate from diagnostic exports, which exclude source text, response prose, and reasoning text.
+
+Completed drafts, job status, and card-save receipts also use per-user extension storage; scene progress is stored with its chat. Source-form edits that have not been submitted as an import can still be lost when the interface reloads. A draft includes adapted prose and its source title/URL, so treat exported drafts as story content.
 
 The optional link reader fetches the pages you select through Lumiverse's proxy without supplying login cookies. It extracts text without executing page scripts or loading page assets. Login walls, anti-bot checks, and JavaScript-only pages may require pasted text. Public hostname checks do not replace the host's network policy.
 
@@ -102,12 +118,18 @@ Only `{{user}}` and `{{char}}` display placeholders are accepted in generated/re
 - **Only part of a web story loads:** use **Read linked pages** from the first page. Check the collected-page list and stopping message. Supply explicit URLs in **Other page links** if automatic navigation cannot identify the next page.
 - **No adaptation connection:** add a model connection in Lumiverse and grant `generation`, then refresh Set Points.
 - **Connection has no model:** select and save a model in that Lumiverse connection before trying again. Set Points validates the model before requesting an adaptation.
-- **An adaptation fails at the first request:** update to 0.1.2 or later, then check the selected connection’s provider, model, and credentials. Earlier versions could send an empty model name even when the connection had a model configured. The new categorized errors provide troubleshooting guidance without displaying raw provider responses, story prose, or credentials.
+- **An adaptation fails at the first request:** update to 0.1.3, choose the intended connection, and click **Check connection**. Record its displayed result, then try your adaptation separately if appropriate. If it fails, record the new error code and use **Download diagnostics**. The neutral check sends no story text, makes a small billable request, and preserves your current work.
+- **Resume says the connection changed:** restore the connection settings used for the saved attempt, or deliberately choose **Create adaptation** with the new settings and normal model charges. Resume stops before dispatching a request when the saved profile no longer matches.
+- **HTTP 403:** `REQUEST_DENIED` means the provider denied the request without enough evidence to establish why. It is not automatically labeled invalid credentials or content moderation. `DECLINED` is used when explicit provider refusal or policy indicators are present.
+- **Blank or incomplete output:** diagnostics distinguish `EMPTY_RESPONSE`, `REASONING_ONLY`, `OUTPUT_LIMIT`, and `RESPONSE_FAILED` when the available metadata supports it. An empty answer without a precise stop reason remains unexplained. Review the reported category before changing your connection settings.
+- **A paid import stopped after reading the story:** use **Resume saved import** to reuse matching completed steps from the last saved attempt. Remaining requests still cost money. This recovery is available for imports started in 0.1.3, not earlier failed runs.
+- **Retry unfinished request:** the earlier request’s outcome is unknown and it may already have been charged. Use this explicitly warned action only when you want to send that request again.
+- **`COMPACTION_IMPOSSIBLE`:** the information that must be preserved cannot fit in the intermediate summary limit. Use a shorter source section or change the relevant import input. Repeating the identical attempt will reuse its saved result and cannot fix the size conflict.
 - **Refused, incomplete, or malformed output:** inspect the displayed error. Check the connection, shorten the source, reduce scenes, or reduce section size as appropriate. A refusal and a broken response are different outcomes.
 - **Scene will not advance:** check Follow is on, a next scene is selected, and all scene permissions are granted. Automatic handoff depends on the model following its direction. Force remains available.
 - **An interrupted save:** retry the same reviewed draft. Owned resource markers let Set Points find an existing card or complete a partial world book. It does not delete partial work automatically. A changed draft is a new save and may produce another card.
 - **Undo unavailable:** another message was added, the inserted scene was edited/removed, or a reply is in progress. Review the conversation before changing the next selection.
-- **Need a bug report:** use **Download diagnostics**. It includes version, job counts/status, chat/job identifiers, scene indices, and operation statuses; it excludes story prose and raw model/provider errors. A short neutral reproduction is useful, though it cannot test every story-specific extraction failure.
+- **Need a bug report:** after the check or failed adaptation, use **Download diagnostics**. It includes version, job counts/status, chat/job identifiers, scene indices, operation statuses, allowlisted finish/stop codes, text and reasoning lengths, and numeric usage where available. It excludes story prose, source URLs, raw provider responses, credentials, and reasoning text. Unknown stop codes are replaced with a generic marker. A short neutral reproduction is useful, though it cannot test every story-specific extraction failure.
 
 ## Development and verification
 
@@ -122,7 +144,7 @@ The backend and frontend are bundled separately. Source/API compatibility was ch
 
 The local preview in `dev/preview.html` uses a mocked host and model. Build it with `bun build dev/preview.ts --outdir dev/build --target browser`, serve the repository with a static HTTP server, and open `/dev/preview.html`. It demonstrates the interface; it does not validate a real provider or installation.
 
-The test suite covers source extraction, long-source merging, schema/refusal/truncation errors, cancellation, draft isolation, partial-save recovery, permission changes, direct host-shaped generated replies, duplicate/stale handoffs, scene edits, Undo, and interface state preservation. See `BUILD-REPORT.md` for release-specific verification and outstanding live checks.
+The test suite covers source extraction, long-source merging, schema/refusal/truncation errors, cancellation, draft isolation, partial-save recovery, permission changes, direct host-shaped generated replies, duplicate/stale handoffs, scene edits, Undo, and interface state preservation. Checkpoint tests cover reuse after restart, compaction of oversized saved ledgers, and explicit authorization before repeating a request with an unknown paid outcome. See `BUILD-REPORT.md` for release-specific verification and outstanding live checks.
 
 ## Credits
 

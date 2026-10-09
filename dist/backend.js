@@ -3097,7 +3097,7 @@ var require_canvas = __commonJS(function(exports, module) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.2";
+var VERSION = "0.1.3";
 
 // src/importer.ts
 var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000 });
@@ -3223,26 +3223,27 @@ function validateDraft(value) {
     createdAt: number(draft.createdAt, "createdAt", 0, Number.MAX_SAFE_INTEGER)
   };
 }
-function validateLedger(value, expectedChunks) {
-  checkSize(value, IMPORT_LIMITS.ledgerCharacters, "The story ledger");
+function validateLedger(value, expectedChunks, expanded = false) {
+  checkSize(value, expanded ? IMPORT_LIMITS.draftCharacters : IMPORT_LIMITS.ledgerCharacters, "The story ledger");
+  const descriptionLimit = (usual) => expanded ? IMPORT_LIMITS.draftCharacters : usual;
   const ledger = object(value, "ledger"), allowed = new Set(expectedChunks);
   const coveredChunks = refs(ledger.coveredChunks, "coveredChunks", allowed);
   if (coveredChunks.length !== allowed.size)
     fail("INCOMPLETE_SOURCE", "The model did not account for every source chunk. Retry with a shorter source or another connection.");
   return {
     coveredChunks,
-    premise: safeText(ledger.premise, "ledger.premise", 4000),
+    premise: safeText(ledger.premise, "ledger.premise", descriptionLimit(4000)),
     cast: list(ledger.cast, "ledger.cast", 64).map((value, i) => {
       const p = `ledger.cast[${i}]`, person = object(value, p);
-      return { name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 3000), voice: safeText(person.voice, `${p}.voice`, 1500), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledgeAtIntroduction: safeText(person.knowledgeAtIntroduction, `${p}.knowledgeAtIntroduction`, 3000), developments: safeText(person.developments, `${p}.developments`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
+      return { name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, descriptionLimit(3000)), voice: safeText(person.voice, `${p}.voice`, descriptionLimit(1500)), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledgeAtIntroduction: safeText(person.knowledgeAtIntroduction, `${p}.knowledgeAtIntroduction`, descriptionLimit(3000)), developments: safeText(person.developments, `${p}.developments`, descriptionLimit(4000)), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
     }),
     setting: list(ledger.setting, "ledger.setting", 64).map((value, i) => {
       const p = `ledger.setting[${i}]`, entry = object(value, p);
-      return { name: safeText(entry.name, `${p}.name`, 200), details: safeText(entry.details, `${p}.details`, 4000), sourceRefs: refs(entry.sourceRefs, `${p}.sourceRefs`, allowed) };
+      return { name: safeText(entry.name, `${p}.name`, 200), details: safeText(entry.details, `${p}.details`, descriptionLimit(4000)), sourceRefs: refs(entry.sourceRefs, `${p}.sourceRefs`, allowed) };
     }),
     events: list(ledger.events, "ledger.events", 128, 1).map((value, i) => {
       const p = `ledger.events[${i}]`, event = object(value, p);
-      return { title: safeText(event.title, `${p}.title`, 200), summary: safeText(event.summary, `${p}.summary`, 3000), participants: texts(event.participants, `${p}.participants`, 64, 200), changes: safeText(event.changes, `${p}.changes`, 3000), sourceRefs: refs(event.sourceRefs, `${p}.sourceRefs`, allowed) };
+      return { title: safeText(event.title, `${p}.title`, 200), summary: safeText(event.summary, `${p}.summary`, descriptionLimit(3000)), participants: texts(event.participants, `${p}.participants`, 64, 200), changes: safeText(event.changes, `${p}.changes`, descriptionLimit(3000)), sourceRefs: refs(event.sourceRefs, `${p}.sourceRefs`, allowed) };
     }),
     warnings: texts(ledger.warnings, "ledger.warnings", 64, 1500)
   };
@@ -3299,21 +3300,89 @@ function parseModelJson(content, finishReason) {
   }
   return result;
 }
-async function requestJson(messages, generate, validate, signal) {
+async function requestJson(messages, generate, validate, signal, recoverSize) {
   let attemptMessages = messages;
   for (let attempt = 0;attempt < 2; attempt++) {
     checkCancelled(signal);
     const response = await generateWithCancellation(generate, attemptMessages, signal);
     checkCancelled(signal);
+    let parsed;
     try {
-      return validate(parseModelJson(response.content, response.finish_reason));
+      parsed = parseModelJson(response.content, response.finish_reason);
+      return validate(parsed);
     } catch (error) {
+      if (parsed !== undefined && recoverSize && error instanceof ImportError && error.code === "OUTPUT_LIMIT")
+        return recoverSize(parsed);
       if (attempt > 0 || !(error instanceof ImportError) || !["MALFORMED_JSON", "INVALID_SCHEMA", "INVALID_REFERENCE", "INCOMPLETE_SOURCE"].includes(error.code))
         throw error;
       attemptMessages = [...messages, { role: "assistant", content: response.content }, { role: "user", content: `Your output did not match the required JSON schema: ${error.message} Return the complete corrected JSON object. Do not omit source material to fix formatting.` }];
     }
   }
   throw new Error("Unreachable import state.");
+}
+function sameValues(a, b) {
+  return JSON.stringify([...new Set(a)].sort()) === JSON.stringify([...new Set(b)].sort());
+}
+function preserveCompactionRecords(before, after) {
+  const recordsMatch = (a, b, matches) => {
+    if (a.length !== b.length)
+      return false;
+    const remaining = [...b];
+    return a.every((item) => {
+      const index = remaining.findIndex((candidate) => matches(item, candidate));
+      if (index < 0)
+        return false;
+      remaining.splice(index, 1);
+      return true;
+    });
+  };
+  const castKept = recordsMatch(before.cast, after.cast, (a, b) => a.name === b.name && sameValues(a.aliases, b.aliases) && a.relationships === b.relationships && sameValues(a.sourceRefs, b.sourceRefs));
+  const settingsKept = recordsMatch(before.setting, after.setting, (a, b) => a.name === b.name && sameValues(a.sourceRefs, b.sourceRefs));
+  const eventsKept = before.events.length === after.events.length && before.events.every((a, index) => {
+    const b = after.events[index];
+    return a.title === b.title && sameValues(a.participants, b.participants) && sameValues(a.sourceRefs, b.sourceRefs);
+  });
+  if (!castKept || !settingsKept || !eventsKept)
+    fail("COMPACTION_FAILED", "The shortened story summary changed protected characters, relationships, events, or references. No shortened version was accepted. Retry to resume earlier completed work.");
+}
+async function requestLedger(messages, generate, expected, signal, onCompaction, previous = []) {
+  const prepare = (value, expanded = false) => {
+    const result = validateLedger(value, expected, expanded);
+    result.warnings = [...new Set([...previous.flatMap((item) => item.warnings), ...result.warnings, ...missingCastWarnings(previous.flatMap((item) => item.cast), result.cast)])];
+    if (result.warnings.length > 64)
+      fail("COMPACTION_IMPOSSIBLE", "The story summary has too many warnings to preserve safely in this version. No warnings were discarded. Use a shorter story section; your completed draft was not replaced.");
+    return result;
+  };
+  return requestJson(messages, generate, (value) => validateLedger(prepare(value, true), expected), signal, async (value) => {
+    const original = prepare(value, true);
+    checkSize(original, IMPORT_LIMITS.draftCharacters, "The summary prepared for shortening");
+    if (JSON.stringify({ warnings: original.warnings, relationships: original.cast.map((person) => person.relationships) }).length >= IMPORT_LIMITS.ledgerCharacters) {
+      fail("COMPACTION_IMPOSSIBLE", "The protected relationships and warnings alone exceed the story summary limit. They were not discarded. Use a shorter story section.");
+    }
+    checkCancelled(signal);
+    onCompaction(false);
+    const compact = await generateWithCancellation(generate, [
+      { role: "system", content: `${sourcePolicy}
+Shorten an existing story ledger using this exact shape: ${ledgerSchema}
+This is a single recovery step; work only from the supplied ledger, without rereading or replacing the source. Aim for at most 18,000 JSON characters and never exceed ${IMPORT_LIMITS.ledgerCharacters}. Preserve every cast, setting, and event record; do not delete, combine, rename, or add records. Preserve coveredChunks and every record's sourceRefs exactly. Keep character names, aliases, relationships, event titles, participants, and setting names unchanged. Keep all input warnings verbatim. Condense repetition in other descriptions while preserving facts, personality, motivations, knowledge changes, chronology, and causal links. If any detail cannot be retained, explain it in an additional warning; never silently discard it. Each cast personality and knowledgeAtIntroduction must stay under 3,000 characters, voice under 1,500, and developments under 4,000. Keep premise and setting details under 4,000, event summary and changes under 3,000, and each warning under 1,500 characters. All fields remain required.` },
+      { role: "user", content: JSON.stringify({ task: "compact-existing-ledger", ledger: original }) }
+    ], signal);
+    checkCancelled(signal);
+    try {
+      const shortened = validateLedger(parseModelJson(compact.content, compact.finish_reason), expected);
+      preserveCompactionRecords(original, shortened);
+      shortened.warnings = [...new Set([...original.warnings, ...shortened.warnings])];
+      const result = validateLedger(shortened, expected);
+      onCompaction(true);
+      return result;
+    } catch (error) {
+      if (!(error instanceof ImportError))
+        throw error;
+      if (["MODEL_REFUSAL", "TRUNCATED_RESPONSE", "EMPTY_RESPONSE", "COMPACTION_FAILED"].includes(error.code))
+        throw error;
+      fail("COMPACTION_FAILED", "The story summary still does not fit its safe limits after one shortening attempt. No detail was silently cut. Retry to resume earlier completed work and regenerate only the failed step.");
+    }
+  });
 }
 function splitSource(text, chunkSize = IMPORT_LIMITS.defaultChunkSize) {
   if (typeof text !== "string" || !text.trim())
@@ -3362,21 +3431,28 @@ async function adaptStory(options, generate, onProgress, signal) {
   const startingPoint = safeText(options.startingPoint || "Beginning of the story", "startingPoint", 2000);
   const url = sourceUrl(options.sourceUrl);
   const chunks = splitSource(options.text, options.chunkSize ?? IMPORT_LIMITS.defaultChunkSize);
-  const total = operationCount(chunks.length);
+  let total = operationCount(chunks.length);
   let completed = 0;
   const progress = (label) => onProgress(completed, total, label);
+  const compactionProgress = (done) => {
+    if (done)
+      completed++;
+    else
+      total++;
+    progress(done ? "Shortened the existing story summary" : "Shortening the existing story summary without rereading the source");
+  };
   let ledgers = [];
   for (let i = 0;i < chunks.length; i++) {
     checkCancelled(signal);
     progress(`Reading source section ${i + 1} of ${chunks.length}`);
     const ref = `chunk:${i + 1}`;
-    ledgers.push(await requestJson([
+    ledgers.push(await requestLedger([
       { role: "system", content: `${sourcePolicy}
 Extract a compact, factual story ledger using this exact shape: ${ledgerSchema}
 All arrays are required, even if empty. Use "Not established in this section" for unknown character facts. events must have at least one event. Every sourceRefs and coveredChunks must use only ${ref}. Track chronology explicitly, including later changes and flashbacks. Use canonical names and aliases without conflating different people. Keep the entire JSON below ${IMPORT_LIMITS.ledgerCharacters} characters. Record significant facts that cannot fit as warnings, never silently discard them.` },
       { role: "user", content: `SOURCE CHUNK ${i + 1} OF ${chunks.length}
 ${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` }
-    ], generate, (value) => validateLedger(value, [ref]), signal));
+    ], generate, [ref], signal, compactionProgress));
     completed++;
     progress(`Read source section ${i + 1} of ${chunks.length}`);
   }
@@ -3387,14 +3463,12 @@ ${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` }
       checkCancelled(signal);
       progress(`Reconciling characters and events, pass ${round}`);
       const group = ledgers.slice(i, i + 3), expected = group.flatMap((item) => item.coveredChunks);
-      const merged = await requestJson([
+      const merged = await requestLedger([
         { role: "system", content: `${sourcePolicy}
 Merge these story ledgers into one canonical ledger with this exact shape: ${ledgerSchema}
 Reconcile names and aliases across sections, preserve relationships and their evolution, and order events chronologically. Do not invent resolutions for contradictory facts. coveredChunks must contain all input chunk references; all sourceRefs must point to provided chunks. Preserve major events and causal links; condense repetition. Preserve all input warnings and explain any lost detail or condensed subplots in warnings. Keep the complete result below ${IMPORT_LIMITS.ledgerCharacters} characters. All required fields must be present.` },
         { role: "user", content: JSON.stringify({ ledgers: group }) }
-      ], generate, (value) => validateLedger(value, expected), signal);
-      merged.warnings = [...new Set([...group.flatMap((item) => item.warnings), ...merged.warnings, ...missingCastWarnings(group.flatMap((item) => item.cast), merged.cast)])];
-      validateLedger(merged, expected);
+      ], generate, expected, signal, compactionProgress, group);
       next.push(merged);
       completed++;
       progress(`Reconciled story ledger, pass ${round}`);
@@ -3465,6 +3539,228 @@ ${draft.warnings.join(`
     tags: ["Set Points", "Narrator", "Story adaptation"],
     extensions: { [EXTENSION_ID]: { version: 1, draftId: draft.id, title: draft.title, scenes: draft.scenes } }
   };
+}
+
+// src/checkpoints.ts
+var FORMAT = 1;
+var MAX_BYTES = 1e6;
+
+class CheckpointError extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "CheckpointError";
+  }
+}
+var storageError = () => new CheckpointError("STORAGE_ERROR", "The paid response checkpoint could not be saved or read safely. No further model request was sent. Retry to recover the saved response; do not clear extension storage.");
+var uncertainError = (error) => {
+  const code = record(error).code;
+  const cause = typeof code === "string" && ["TIMEOUT", "CANCELLED", "CONNECTION_FAILED", "REQUEST_FAILED"].includes(code) ? `${code}; ` : "";
+  return new CheckpointError("UNCERTAIN_REQUEST", `The previous request may have been charged, but no completed response was recovered. Retry the unfinished request explicitly only if you accept that it may be charged again. (${cause}UNCERTAIN_REQUEST)`);
+};
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function canonical(value) {
+  const normalize = (input) => {
+    if (Array.isArray(input))
+      return input.map((item) => item === undefined ? null : normalize(item));
+    if (input !== null && typeof input === "object")
+      return Object.fromEntries(Object.keys(input).sort().filter((key) => input[key] !== undefined).map((key) => [key, normalize(input[key])]));
+    if (input === null || typeof input === "string" || typeof input === "boolean" || typeof input === "number" && Number.isFinite(input))
+      return input;
+    throw storageError();
+  };
+  return JSON.stringify(normalize(value));
+}
+async function digest(value) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function safeNumber(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+function savedResponse(result) {
+  const raw = record(result), response = {};
+  for (const key of ["content", "reasoning", "finish_reason"])
+    if (typeof raw[key] === "string")
+      response[key] = raw[key];
+  if (raw.refusal)
+    response.refusal = true;
+  if (raw.error)
+    response.error = true;
+  const details = record(raw.stop_details), stop = {};
+  for (const key of ["type", "category"])
+    if (typeof details[key] === "string")
+      stop[key] = details[key];
+  if (Object.keys(stop).length)
+    response.stop_details = stop;
+  if (Array.isArray(raw.reasoning_details) && raw.reasoning_details.length)
+    response.reasoning_details = [{}];
+  const usage = {}, inputUsage = record(raw.usage);
+  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens"]) {
+    const value = safeNumber(inputUsage[key]);
+    if (value !== undefined)
+      usage[key] = value;
+  }
+  const reasoningTokens = safeNumber(record(record(inputUsage.provider_raw).completion_tokens_details).reasoning_tokens);
+  if (reasoningTokens !== undefined)
+    usage.provider_raw = { completion_tokens_details: { reasoning_tokens: reasoningTokens } };
+  if (Object.keys(usage).length)
+    response.usage = usage;
+  return response;
+}
+function knownFailure(error) {
+  const value = record(error);
+  if (["TIMEOUT", "CANCELLED", "CONNECTION_FAILED", "REQUEST_FAILED"].includes(String(value.code)) || ["AbortError", "TimeoutError"].includes(String(value.name)))
+    return false;
+  if (typeof value.status === "number" && value.status >= 400 && value.status <= 599)
+    return true;
+  return ["AUTHENTICATION", "REQUEST_DENIED", "RATE_LIMIT", "CONTEXT_LIMIT", "DECLINED", "MODEL_UNAVAILABLE", "INVALID_REQUEST", "PROVIDER_UNAVAILABLE"].includes(String(value.code));
+}
+
+class ResponseCheckpoints {
+  api;
+  userId;
+  reused = 0;
+  retryUncertain = false;
+  last;
+  uncommitted = new Map;
+  serial = Promise.resolve();
+  active = 0;
+  constructor(api, userId) {
+    this.api = api;
+    this.userId = userId;
+  }
+  beginRun(options = {}) {
+    if (this.active)
+      throw new CheckpointError("STORAGE_ERROR", "Wait for the current request checkpoint to finish before starting another import.");
+    this.reused = 0;
+    this.last = undefined;
+    this.retryUncertain = options.retryUncertain === true;
+  }
+  locked(work) {
+    this.active++;
+    const result = this.serial.catch(() => {}).then(work);
+    this.serial = result;
+    return result.finally(() => {
+      this.active--;
+    });
+  }
+  path(key, kind) {
+    return `imports/responses/${key}${kind === "intent" ? ".intent" : ""}.json`;
+  }
+  async encode(value) {
+    const body = canonical(value);
+    const serialized = canonical({ ...value, checksum: await digest(body) });
+    if (new TextEncoder().encode(serialized).byteLength > MAX_BYTES)
+      throw storageError();
+    return serialized;
+  }
+  async decode(serialized, key, kind) {
+    if (new TextEncoder().encode(serialized).byteLength > MAX_BYTES)
+      throw storageError();
+    const value = record(JSON.parse(serialized)), { checksum, ...body } = value;
+    if (body.format !== FORMAT || body.key !== key || body.kind !== kind || typeof body.attemptId !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(body.attemptId) || checksum !== await digest(canonical(body)))
+      throw storageError();
+    if (kind === "response") {
+      if (!["complete", "rejected"].includes(String(body.state)) || !body.response || canonical(body.response) !== canonical(savedResponse(body.response)))
+        throw storageError();
+      if (Object.keys(body).sort().join(",") !== "attemptId,format,key,kind,response,state")
+        throw storageError();
+    } else if (!["pending", "failed"].includes(String(body.state)) || Object.keys(body).sort().join(",") !== "attemptId,format,key,kind,state")
+      throw storageError();
+    return body;
+  }
+  async write(value) {
+    try {
+      const data = await this.encode(value), path = this.path(value.key, value.kind), temp = `${path}.tmp`;
+      await this.api.userStorage.write(temp, data, this.userId);
+      if (await this.api.userStorage.read(temp, this.userId) !== data)
+        throw storageError();
+      await this.api.userStorage.move(temp, path, this.userId);
+      if (await this.api.userStorage.read(path, this.userId) !== data)
+        throw storageError();
+    } catch {
+      throw storageError();
+    }
+  }
+  async read(key, kind) {
+    try {
+      const path = this.path(key, kind), temp = `${path}.tmp`;
+      if (await this.api.userStorage.exists(temp, this.userId)) {
+        const data = await this.api.userStorage.read(temp, this.userId);
+        const value = await this.decode(data, key, kind);
+        await this.api.userStorage.move(temp, path, this.userId);
+        if (await this.api.userStorage.read(path, this.userId) !== data)
+          throw storageError();
+        return value;
+      }
+      if (!await this.api.userStorage.exists(path, this.userId))
+        return;
+      return await this.decode(await this.api.userStorage.read(path, this.userId), key, kind);
+    } catch {
+      throw storageError();
+    }
+  }
+  request(messages, connectionFingerprint, generate) {
+    return this.locked(async () => {
+      this.last = undefined;
+      let key;
+      try {
+        key = await digest(canonical({ format: FORMAT, messages, connectionFingerprint }));
+      } catch {
+        throw storageError();
+      }
+      const held = this.uncommitted.get(key);
+      if (held) {
+        await this.write(held);
+        this.uncommitted.delete(key);
+        this.reused++;
+        this.last = { key, attemptId: held.attemptId };
+        return structuredClone(held.response);
+      }
+      const previous = await this.read(key, "response");
+      if (previous?.state === "complete") {
+        this.reused++;
+        this.last = { key, attemptId: previous.attemptId };
+        return structuredClone(previous.response);
+      }
+      const intent = await this.read(key, "intent");
+      if (intent?.state === "pending" && intent.attemptId !== previous?.attemptId && !this.retryUncertain)
+        throw uncertainError();
+      const attempt = { format: FORMAT, key, attemptId: crypto.randomUUID(), kind: "intent", state: "pending" };
+      await this.write(attempt);
+      let result;
+      try {
+        result = await generate();
+      } catch (error) {
+        if (!knownFailure(error))
+          throw uncertainError(error);
+        await this.write({ ...attempt, state: "failed" });
+        throw error;
+      }
+      const entry = { format: FORMAT, key, attemptId: attempt.attemptId, kind: "response", state: "complete", response: savedResponse(result) };
+      this.uncommitted.set(key, entry);
+      await this.write(entry);
+      this.uncommitted.delete(key);
+      this.last = { key, attemptId: entry.attemptId };
+      return structuredClone(entry.response);
+    });
+  }
+  invalidateLast() {
+    return this.locked(async () => {
+      const last = this.last;
+      if (!last)
+        return;
+      const entry = await this.read(last.key, "response");
+      if (!entry || entry.attemptId !== last.attemptId)
+        throw storageError();
+      await this.write({ ...entry, state: "rejected" });
+      this.last = undefined;
+    });
+  }
 }
 
 // src/publisher.ts
@@ -3597,7 +3893,7 @@ var PENDING_MS = 15 * 60 * 1000;
 var object2 = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
 var clean = (v) => v.replace(SIGNAL_RE, "").trimEnd();
 var nonce = () => crypto.randomUUID().replaceAll("-", "");
-var digest = async (text) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))), (n) => n.toString(16).padStart(2, "0")).join("");
+var digest2 = async (text) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))), (n) => n.toString(16).padStart(2, "0")).join("");
 var lastConversation = (messages) => messages.filter((m) => m.role === "user" || m.role === "assistant").sort((a, b) => a.index_in_chat - b.index_in_chat).at(-1);
 var ownInsertion = (m) => object2(m.metadata?.[EXTENSION_ID]);
 var baseView = (notice) => ({ chatId: null, characterId: null, title: "", enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice });
@@ -3885,7 +4181,7 @@ The existing conversation determines what actually happened and what each charac
       const baseline = lastConversation(all.filter((m) => m.id !== excluded));
       if (!boundGenerationId && this.active.get(chatId)?.generationId !== generationId)
         return messages;
-      s.pending = { nonce: token, generationId, scene: scene.id, baseline: baseline?.id ?? null, baselineDigest: baseline ? await digest(JSON.stringify([baseline.id, baseline.role, baseline.content, baseline.swipe_id])) : null, expires: Date.now() + PENDING_MS };
+      s.pending = { nonce: token, generationId, scene: scene.id, baseline: baseline?.id ?? null, baselineDigest: baseline ? await digest2(JSON.stringify([baseline.id, baseline.role, baseline.content, baseline.swipe_id])) : null, expires: Date.now() + PENDING_MS };
       await this.save(s);
       if (this.cancelled.has(generationId) || !this.permitted()) {
         s.pending = null;
@@ -3928,7 +4224,7 @@ Guide the environment and non-player characters toward this situation only when 
         return patch;
       if (!ctx.content.trimEnd().endsWith(`<!--SET_POINTS:${pending.nonce}-->`))
         return patch;
-      return { ...patch, extra: { [HANDOFF_KEY]: { version: 1, nonce: pending.nonce, generationId: pending.generationId, scene: pending.scene, fingerprint: data.state.fingerprint, contentDigest: await digest(patch.content) } } };
+      return { ...patch, extra: { [HANDOFF_KEY]: { version: 1, nonce: pending.nonce, generationId: pending.generationId, scene: pending.scene, fingerprint: data.state.fingerprint, contentDigest: await digest2(patch.content) } } };
     });
   }
   async handleEvent(name, payload) {
@@ -3985,10 +4281,10 @@ Guide the environment and non-player characters toward this situation only when 
         return abort("The conversation moved on before the handoff. Use Force next scene when ready.");
       const baseline = pending.baseline && messages.find((m) => m.id === pending.baseline);
       const preceding = lastConversation(messages.filter((m) => m.index_in_chat < reply.index_in_chat));
-      if ((preceding?.id ?? null) !== pending.baseline || pending.baseline && (!baseline || baseline.index_in_chat >= reply.index_in_chat || await digest(JSON.stringify([baseline.id, baseline.role, baseline.content, baseline.swipe_id])) !== pending.baselineDigest))
+      if ((preceding?.id ?? null) !== pending.baseline || pending.baseline && (!baseline || baseline.index_in_chat >= reply.index_in_chat || await digest2(JSON.stringify([baseline.id, baseline.role, baseline.content, baseline.swipe_id])) !== pending.baselineDigest))
         return abort("The conversation changed before the handoff. Choose the next scene manually.");
       const stripped = clean(reply.content);
-      const contentDigest = await digest(stripped);
+      const contentDigest = await digest2(stripped);
       const proof = object2(reply.extra?.[HANDOFF_KEY] ?? reply.metadata?.[HANDOFF_KEY]);
       const proven = proof.version === 1 && proof.nonce === pending.nonce && proof.generationId === generationId && proof.scene === s.next && proof.fingerprint === s.fingerprint && proof.contentDigest === contentDigest;
       const exactToken = `<!--SET_POINTS:${pending.nonce}-->`;
@@ -12782,13 +13078,24 @@ function extractPage(response, url) {
 
 // src/backend.ts
 var STATE_PATH = "workspace.json";
-function record(value) {
+function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 function string(value, name) {
   if (typeof value !== "string" || !value.trim())
     throw new Error(`${name} is required.`);
   return value;
+}
+function sameSettings(a, b) {
+  const ordered = (_key, value) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value;
+  return JSON.stringify(a, ordered) === JSON.stringify(b, ordered);
+}
+var FILTER_STOPS = new Set(["refusal", "content_filter", "safety", "blocklist", "prohibited_content", "spii", "image_safety", "image_prohibited_content", "escalation", "recitation", "image_recitation"]);
+var LIMIT_STOPS = new Set(["length", "max_tokens", "max_output_tokens"]);
+var FAILED_STOPS = new Set(["error", "failed", "incomplete", "cancelled", "other", "image_other", "no_image", "malformed_response", "finish_reason_unspecified", "language", "malformed_function_call", "unexpected_tool_call", "too_many_tool_calls", "missing_thought_signature"]);
+var KNOWN_STOPS = new Set([...FILTER_STOPS, ...LIMIT_STOPS, ...FAILED_STOPS, "stop", "completed", "end_turn", "stop_sequence", "tool_calls", "function_call"]);
+function stopCode(value) {
+  return typeof value === "string" && KNOWN_STOPS.has(value.toLowerCase()) ? value.toLowerCase() : value == null ? "unspecified" : "unrecognized";
 }
 
 class ModelRequestError extends Error {
@@ -12801,9 +13108,9 @@ class ModelRequestError extends Error {
   }
 }
 function providerError(error) {
-  const value = record(error);
+  const value = record2(error);
   const message = typeof value.message === "string" ? value.message : typeof error === "string" ? error : "";
-  const candidate = value.status ?? value.statusCode ?? record(value.response).status ?? message.match(/\b(?:HTTP(?:\s+error)?|API\s+error|status(?:\s+code)?)\s*[:=]?\s*([45]\d{2})\b/i)?.[1] ?? message.match(/\bfailed\s*\(([45]\d{2})\):/i)?.[1];
+  const candidate = value.status ?? value.statusCode ?? record2(value.response).status ?? message.match(/\b(?:HTTP(?:\s+error)?|API\s+error|status(?:\s+code)?)\s*[:=]?\s*([45]\d{2})\b/i)?.[1] ?? message.match(/\bfailed\s*\(([45]\d{2})\):/i)?.[1];
   const status = /^[45]\d{2}$/.test(String(candidate)) ? Number(candidate) : undefined;
   const failure = (code, text) => new ModelRequestError(code, text, status);
   if (/timeout|timed?\s*out/i.test(message) || value.name === "TimeoutError")
@@ -12812,10 +13119,12 @@ function providerError(error) {
     return failure("CANCELLED", "The model request was cancelled. Your previous draft is still available.");
   if (/fetch failed|network|ECONN|ENOTFOUND|connection refused/i.test(message))
     return failure("CONNECTION_FAILED", "Lumiverse could not reach the model provider. Check the connection and try again.");
-  if (/refus|content.filter|safety|moderation/i.test(message))
-    return failure("DECLINED", "The model provider declined this request. No replacement content was saved.");
-  if (status === 401 || status === 403 || /\b401\b|unauthori|api.?key|authentication/i.test(message))
-    return failure("AUTHENTICATION", "The model connection could not authenticate or access this model. Check that connection in Lumiverse.");
+  if (/\brefus(?:al|ed)\b|content[ _-]?(?:filter|policy)|\bsafety\b|\bmoderation\b|(?:input|prompt|request).{0,60}\bflagged\b|PROHIBITED_CONTENT/i.test(message))
+    return failure("DECLINED", "The provider reported a content restriction or refusal. No replacement content was saved.");
+  if (status === 403)
+    return failure("REQUEST_DENIED", "The provider denied this request. This can mean an access restriction or content filtering; it does not by itself mean your credentials are invalid.");
+  if (status === 401 || /unauthori|authentication|(?:invalid|incorrect|missing|expired|revoked|disabled).{0,30}(?:api.?key|credentials|token)/i.test(message))
+    return failure("AUTHENTICATION", "The model connection could not authenticate. Check that connection in Lumiverse.");
   if (status === 429 || status === 402 || /\b429\b|rate.limit|quota|credits|balance/i.test(message))
     return failure("RATE_LIMIT", "The model provider reported a rate or credit limit. Check your connection and try again later.");
   if (/context|too.long|maximum.*token/i.test(message))
@@ -12835,6 +13144,7 @@ class SetPointsController {
   changed;
   runtime;
   publisher;
+  checkpoints;
   workspace = { draft: null, saved: null, job: null };
   ready;
   abort;
@@ -12843,44 +13153,59 @@ class SetPointsController {
   persistence = Promise.resolve();
   starting = false;
   saving = false;
+  checking = false;
+  checkAbort;
   constructor(api, userId, changed = () => {}) {
     this.api = api;
     this.userId = userId;
     this.changed = changed;
     this.runtime = new SceneRuntime(api, userId);
     this.publisher = new CardPublisher(api, userId);
+    this.checkpoints = new ResponseCheckpoints(api, userId);
     this.ready = this.restore();
   }
   async restore() {
     let saved;
     try {
-      saved = await this.api.userStorage.getJson(STATE_PATH, { fallback: this.workspace, userId: this.userId });
-    } catch {
-      const backup = `recovery/workspace-${Date.now()}.txt`;
-      try {
-        const raw = await this.api.userStorage.read(STATE_PATH, this.userId);
-        await this.api.userStorage.write(backup, raw, this.userId);
-      } catch {
-        throw new Error("Saved Set Points data could not be read or backed up. Check extension storage, then reload Set Points.");
+      const temp = `${STATE_PATH}.tmp`;
+      if (await this.api.userStorage.exists(temp, this.userId)) {
+        const pending = await this.api.userStorage.read(temp, this.userId);
+        const parsed = JSON.parse(pending);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("draft" in parsed) || !("job" in parsed))
+          throw new Error("Invalid workspace");
+        await this.api.userStorage.move(temp, STATE_PATH, this.userId);
+        if (await this.api.userStorage.read(STATE_PATH, this.userId) !== pending)
+          throw new Error("Workspace recovery failed");
       }
-      saved = { draft: null, saved: null, job: null };
-      this.note("Unreadable workspace backed up for recovery.");
+      saved = await this.api.userStorage.exists(STATE_PATH, this.userId) ? JSON.parse(await this.api.userStorage.read(STATE_PATH, this.userId)) : this.workspace;
+      if (!saved || typeof saved !== "object" || Array.isArray(saved) || !("draft" in saved) || !("job" in saved))
+        throw new Error("Invalid workspace");
+    } catch {
+      throw new Error("Saved Set Points data could not be read safely. No model request was sent. Keep extension storage intact so the source and paid responses can be recovered.");
     }
     try {
-      this.workspace = { draft: saved.draft ? validateDraft(saved.draft) : null, saved: saved.saved ?? null, job: saved.job ?? null };
+      this.workspace = { draft: saved.draft ? validateDraft(saved.draft) : null, saved: saved.saved ?? null, job: saved.job ?? null, ...saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {} };
     } catch {
       await this.api.userStorage.setJson(`recovery/workspace-${Date.now()}.json`, saved, { userId: this.userId });
-      this.workspace = { draft: null, saved: null, job: { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Saved draft needs attention", error: "The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft." } };
+      this.workspace = { draft: null, saved: null, ...saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}, job: { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Saved draft needs attention", error: "The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft." } };
       this.note("Invalid saved draft backed up for recovery.");
     }
     if (this.workspace.job?.status === "running") {
-      this.workspace.job = { ...this.workspace.job, status: "failed", label: "Import interrupted", error: "Lumiverse restarted during import. Your last completed draft is preserved. Start the import again." };
+      this.workspace.job = { ...this.workspace.job, status: "failed", label: "Import interrupted", error: this.workspace.lastImport ? "Lumiverse restarted during import. Resume saved import to reuse completed steps. Any request with an unknown outcome will need an explicit retry." : "Lumiverse restarted during import. Your last completed draft is preserved. Start the import again." };
       await this.persist();
     }
   }
   persist() {
-    const value = structuredClone(this.workspace);
-    const write = this.persistence.catch(() => {}).then(() => this.api.userStorage.setJson(STATE_PATH, value, { userId: this.userId }));
+    const value = JSON.stringify(this.workspace);
+    const write = this.persistence.catch(() => {}).then(async () => {
+      const temp = `${STATE_PATH}.tmp`;
+      await this.api.userStorage.write(temp, value, this.userId);
+      if (await this.api.userStorage.read(temp, this.userId) !== value)
+        throw new Error("Saved import verification failed. Keep extension storage intact.");
+      await this.api.userStorage.move(temp, STATE_PATH, this.userId);
+      if (await this.api.userStorage.read(STATE_PATH, this.userId) !== value)
+        throw new Error("Saved import verification failed. Keep extension storage intact.");
+    });
     this.persistence = write;
     return write;
   }
@@ -12891,6 +13216,96 @@ class SetPointsController {
   note(kind) {
     this.entries.push(`${new Date().toISOString()} ${kind}`);
     this.entries = this.entries.slice(-100);
+  }
+  async selectedConnection(value) {
+    const id = string(value, "Adaptation model connection");
+    const connection = await this.api.connections.get(id, this.userId);
+    if (!connection)
+      throw new Error("The selected model connection is no longer available.");
+    if (!connection.model?.trim())
+      throw new Error("The selected connection has no model. Choose a model for that connection in Lumiverse, then retry.");
+    if (!connection.provider?.trim())
+      throw new Error("The selected connection has no provider. Edit that connection in Lumiverse, then retry.");
+    return { id, model: connection.model, provider: connection.provider, fingerprint: { id, model: connection.model, provider: connection.provider, api_url: connection.api_url, preset_id: connection.preset_id, metadata: connection.metadata, reasoning_bindings: connection.reasoning_bindings, parameters: { temperature: 0.3, max_tokens: 16000 } } };
+  }
+  async requestModel(connection, messages, signal, maxTokens = 16000, timeoutMs = 180000) {
+    this.require("generation");
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const requestSignal = AbortSignal.any([signal, deadline]);
+    let onAbort;
+    try {
+      requestSignal.throwIfAborted();
+      const request = { type: "raw", connection_id: connection.id, provider: connection.provider, model: connection.model, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: maxTokens }, signal: requestSignal };
+      return await Promise.race([this.api.generate.raw(request), new Promise((_, reject) => {
+        onAbort = () => reject(requestSignal.reason);
+        requestSignal.addEventListener("abort", onAbort, { once: true });
+        if (requestSignal.aborted)
+          onAbort();
+      })]);
+    } catch (error) {
+      const failure = providerError(deadline.aborted && !signal.aborted ? new DOMException("The model request timed out.", "TimeoutError") : error);
+      this.note(`Model request failed: ${failure.code}${failure.status ? `; HTTP ${failure.status}` : ""}.`);
+      throw failure;
+    } finally {
+      if (onAbort)
+        requestSignal.removeEventListener("abort", onAbort);
+    }
+  }
+  readModelResponse(result, connectionCheck = false) {
+    const value = record2(result), details = record2(value.stop_details);
+    const finish = stopCode(value.finish_reason), native = stopCode(details.category);
+    const textLength = typeof value.content === "string" ? value.content.length : 0;
+    const reasoningLength = typeof value.reasoning === "string" ? value.reasoning.length : 0;
+    const tokens = record2(value.usage).completion_tokens;
+    const outputTokens = typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : "unknown";
+    const reasoningTokens = record2(record2(record2(value.usage).provider_raw).completion_tokens_details).reasoning_tokens;
+    const safeReasoningTokens = typeof reasoningTokens === "number" && Number.isSafeInteger(reasoningTokens) && reasoningTokens >= 0 ? reasoningTokens : "unknown";
+    const reasoningPresent = reasoningLength > 0 || Array.isArray(value.reasoning_details) && value.reasoning_details.length > 0 || typeof safeReasoningTokens === "number" && safeReasoningTokens > 0;
+    this.note(`Model response: finish=${finish}; native=${native}; textCharacters=${textLength}; reasoningCharacters=${reasoningLength}; reasoningPresent=${reasoningPresent}; outputTokens=${outputTokens}; reasoningTokens=${safeReasoningTokens}.`);
+    const fail = (code, message) => {
+      this.note(`Model response rejected: ${code}.`);
+      throw new ModelRequestError(code, message);
+    };
+    if (value.refusal || details.type === "refusal" || details.type === "blocked_prompt" || FILTER_STOPS.has(finish) || FILTER_STOPS.has(native))
+      fail("DECLINED", "The provider reported a content restriction or refusal. No replacement content was saved.");
+    if (LIMIT_STOPS.has(finish) || LIMIT_STOPS.has(native))
+      fail("OUTPUT_LIMIT", connectionCheck ? "The provider responded, but the small test reached its output allowance before returning a complete answer. Reasoning can consume this allowance." : "The model reached the output allowance before finishing. Reasoning can consume that allowance. Review the connection\u2019s reasoning settings or request fewer scenes.");
+    if (value.error || ["failed", "incomplete"].includes(String(details.type)) || FAILED_STOPS.has(finish) || FAILED_STOPS.has(native))
+      fail("RESPONSE_FAILED", "The provider returned an unsuccessful response. Download diagnostics for its stop category; no response text is included.");
+    if (typeof value.content !== "string")
+      fail("RESPONSE_FAILED", "The model returned an unexpected response format. Download diagnostics to help troubleshoot.");
+    if (!value.content.trim()) {
+      if (reasoningPresent)
+        fail("REASONING_ONLY", "The model returned reasoning without an answer. Review the connection\u2019s reasoning and output settings. No draft was replaced.");
+      fail("EMPTY_RESPONSE", "The model returned no answer and Lumiverse supplied no precise cause. Use Check connection, then download diagnostics if needed.");
+    }
+    return value;
+  }
+  async testConnection(connectionId) {
+    this.require("generation");
+    if (this.checking)
+      throw new Error("A connection check is already running.");
+    if (this.starting || this.workspace.job?.status === "running")
+      throw new Error("Wait for the adaptation to finish before checking a connection.");
+    this.checking = true;
+    const controller = new AbortController;
+    this.checkAbort = controller;
+    try {
+      const connection = await this.selectedConnection(connectionId);
+      this.note("Neutral connection check started.");
+      this.readModelResponse(await this.requestModel(connection, [
+        { role: "system", content: "This is a connection check. Reply briefly." },
+        { role: "user", content: "Reply with the word OK." }
+      ], controller.signal, 256, 30000), true);
+      this.note("Neutral connection check accepted.");
+      return { message: "The provider accepted the small test request. Your story was not sent or changed. A full adaptation can still be rejected because its content, size, and settings differ." };
+    } catch (error) {
+      this.note("Neutral connection check failed.");
+      throw error;
+    } finally {
+      this.checking = false;
+      this.checkAbort = undefined;
+    }
   }
   async snapshot(chatId) {
     await this.ready;
@@ -12904,11 +13319,14 @@ class SetPointsController {
       }
     }
     const play = chatId === null ? { chatId: null, characterId: null, title: "", enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice: "Open a chat with a Set Points narrator to use scene controls." } : await this.runtime.view(chatId);
-    return { version: VERSION, permissions, connections, ...structuredClone(this.workspace), play, diagnostics: [...this.entries] };
+    const { draft, saved, job } = structuredClone(this.workspace);
+    return { version: VERSION, permissions, connections, draft, saved, job, resume: { available: Boolean(this.workspace.lastImport && job && ["failed", "cancelled"].includes(job.status)), retryUncertain: Boolean(job?.retryUncertain) }, play, diagnostics: [...this.entries] };
   }
-  async start(options) {
+  async start(options, retryUncertain = false, resume = false) {
     await this.ready;
     this.require("generation");
+    if (this.checking)
+      throw new Error("Wait for the connection check to finish before adapting the story.");
     if (this.saving)
       throw new Error("Wait for the card to finish saving before importing another story.");
     if (this.starting || this.workspace.job?.status === "running")
@@ -12928,42 +13346,38 @@ class SetPointsController {
         throw new Error("Keep the title under 300 characters and role/starting point under 2,000 characters.");
       if (options.sourceUrl)
         options.sourceUrl = storyUrl(options.sourceUrl);
-      const connectionId = string(options.connectionId, "Adaptation model connection");
-      const connection = await this.api.connections.get(connectionId, this.userId);
-      if (!connection)
-        throw new Error("The selected model connection is no longer available.");
-      if (!connection.model?.trim())
-        throw new Error("The selected connection has no model. Choose a model for that connection in Lumiverse, then retry.");
-      if (!connection.provider?.trim())
-        throw new Error("The selected connection has no provider. Edit that connection in Lumiverse, then retry.");
-      const { model, provider } = connection;
+      const connection = await this.selectedConnection(options.connectionId);
+      if (resume && !sameSettings(connection.fingerprint, this.workspace.lastConnectionFingerprint))
+        throw new Error("The saved connection settings have changed. Resume paused before making any model request. Restore those settings, or use Create adaptation to start with the new settings and normal model charges.");
+      this.checkpoints.beginRun({ retryUncertain });
       this.abort = new AbortController;
       const controller = this.abort;
       const job = { id: crypto.randomUUID(), status: "running", completed: 0, total: 1, label: "Preparing the story" };
       this.workspace.job = job;
-      await this.persist();
+      this.workspace.lastImport = structuredClone(options);
+      this.workspace.lastConnectionFingerprint = structuredClone(connection.fingerprint);
+      try {
+        await this.persist();
+      } catch {
+        this.abort = undefined;
+        this.workspace.job = { ...job, status: "failed", label: "Import could not be saved", error: "The import could not be saved for recovery. No model request was sent. Check extension storage before retrying." };
+        this.changed();
+        throw new Error(this.workspace.job.error);
+      }
       this.note("Import started.");
       this.changed();
       this.jobTask = (async () => {
+        let responseReturned = false;
         try {
           const draft = await adaptStory(options, async (messages, signal) => {
-            this.require("generation");
-            const deadline = AbortSignal.timeout(180000);
-            let result;
-            try {
-              const request = { type: "raw", connection_id: connectionId, provider, model, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: 16000 }, signal: AbortSignal.any([signal ?? controller.signal, deadline]) };
-              result = await this.api.generate.raw(request);
-            } catch (error) {
-              const failure = providerError(deadline.aborted && !controller.signal.aborted ? new DOMException("The model request timed out.", "TimeoutError") : error);
-              this.note(`Model request failed: ${failure.code}${failure.status ? `; HTTP ${failure.status}` : ""}.`);
-              throw failure;
-            }
-            const value = record(result);
-            if (value.refusal || /content_filter|safety|refusal/i.test(String(value.finish_reason)))
-              throw new Error("The model provider declined this request. No replacement content was saved.");
-            if (typeof value.content !== "string")
-              throw new Error("The model returned no readable content. Check your selected connection.");
-            return value;
+            responseReturned = false;
+            controller.signal.throwIfAborted();
+            const reusedBefore = this.checkpoints.reused;
+            const result = await this.checkpoints.request(messages, connection.fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal));
+            responseReturned = true;
+            if (this.checkpoints.reused > reusedBefore)
+              this.note("Reused a saved model response.");
+            return this.readModelResponse(result);
           }, (completed, total, label) => {
             if (this.workspace.job?.id !== job.id)
               return;
@@ -12978,7 +13392,16 @@ class SetPointsController {
           this.note("Import completed. Draft ready to review.");
         } catch (error) {
           const cancelled = controller.signal.aborted;
-          this.workspace.job = { ...this.workspace.job, status: cancelled ? "cancelled" : "failed", label: cancelled ? "Import cancelled" : "Import needs attention", error: cancelled ? undefined : error instanceof Error ? error.message : "Import failed. Your last completed draft is preserved." };
+          let message = error instanceof Error ? error.message : "Import failed. Your last completed draft is preserved.";
+          if (!cancelled && responseReturned && (error instanceof ImportError && error.code !== "COMPACTION_IMPOSSIBLE" || error instanceof ModelRequestError)) {
+            try {
+              await this.checkpoints.invalidateLast();
+            } catch {
+              message = "The failed step could not be marked for retry. Saved responses were retained; check extension storage before retrying.";
+            }
+          }
+          const retryUncertain = error instanceof CheckpointError && error.code === "UNCERTAIN_REQUEST";
+          this.workspace.job = { ...this.workspace.job, status: cancelled ? "cancelled" : "failed", label: cancelled ? "Import cancelled; saved steps retained" : "Import needs attention", retryUncertain, error: cancelled ? undefined : `${message} Saved steps are retained. Resume saved import reuses them; remaining model requests use normal charges.` };
           this.note(cancelled ? "Import cancelled." : "Import failed; last completed draft preserved.");
           await this.persist().catch(() => this.note("Could not persist the import status."));
         } finally {
@@ -12993,10 +13416,12 @@ class SetPointsController {
   }
   async handle(action, input) {
     await this.ready;
-    const data = record(input);
+    const data = record2(input);
     switch (action) {
       case "snapshot":
         return this.snapshot(data.chatId === null ? null : typeof data.chatId === "string" ? data.chatId : undefined);
+      case "test-connection":
+        return this.testConnection(data.connectionId);
       case "fetch-url": {
         this.require("cors_proxy");
         const url = storyUrl(data.url);
@@ -13017,7 +13442,12 @@ class SetPointsController {
         }
       }
       case "start-import":
-        return this.start(record(data.options));
+        return this.start(record2(data.options));
+      case "resume-import": {
+        if (!this.workspace.lastImport)
+          throw new Error("There is no saved import to resume. Earlier versions did not save intermediate work.");
+        return this.start(structuredClone(this.workspace.lastImport), data.retryUncertain === true, true);
+      }
       case "cancel-import":
         this.abort?.abort();
         return { cancelled: Boolean(this.abort) };
@@ -13085,7 +13515,7 @@ class SetPointsController {
       }
       case "diagnostics": {
         const view = await this.runtime.view();
-        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
+        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, entries: [...this.entries] };
       }
       default:
         throw new Error("Unknown Set Points action. Reload the extension.");
@@ -13093,6 +13523,7 @@ class SetPointsController {
   }
   dispose() {
     this.abort?.abort();
+    this.checkAbort?.abort();
   }
   async waitForImport() {
     await this.jobTask;
@@ -13111,7 +13542,7 @@ function setupBackend(api) {
   };
   const stop = [];
   stop.push(api.onFrontendMessage((payload, userId, frontendSessionId) => {
-    const request = record(payload);
+    const request = record2(payload);
     if (request.type !== "set-points:request" || typeof request.id !== "string" || request.id.length > 100 || typeof request.action !== "string")
       return;
     instance(userId).handle(request.action, request.input).then((result) => {
