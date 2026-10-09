@@ -26,6 +26,15 @@ const response = (value: unknown, finish_reason?: string) => ({ content: JSON.st
 const verboseLedger = (refs = ['chunk:1'], events = 12) => ({ ...ledger(refs), events: Array.from({length:events}, (_,i) => ({ ...ledger(refs).events[0], title:`Harbor event ${i + 1}`, summary:'A repeated description of the harbor and the incoming storm. '.repeat(40).trim() })) });
 const shortenLedger = (value: ReturnType<typeof verboseLedger>) => ({ ...value, events:value.events.map(event => ({...event,summary:'Iona offers a clue at the harbor.'})) });
 
+function stagedReply(messages: GenerationMessage[], sample = draft()) {
+  const input = JSON.parse(messages[1].content);
+  if (input.task === 'set-points-plan-v1') return response({ title: sample.title, premise: sample.premise, narratorInstructions: sample.narratorInstructions, startingLore: input.ledger.setting.map((_: unknown, index: number) => index), scenes: sample.scenes.slice(0, input.preferences.requestedScenes).map((scene, i) => ({ title: scene.title, eventIndexes: [Math.min(i, input.ledger.events.length - 1)], brief: scene.direction, assumptions: scene.assumptions })), warnings: sample.warnings });
+  if (input.task === 'set-points-cast-v1') return response({ cast: input.characters.map((person: {id:string;name:string}) => ({ ...sample.cast.find(item => item.name === person.name) ?? draft().cast[0], id: person.id })), warnings: [] });
+  if (input.task === 'set-points-lore-v1') return response({ lore: input.entries.map((entry: {id:string}) => ({ ...sample.lore[0] ?? draft().lore[0], id: entry.id })), warnings: [] });
+  if (input.task === 'set-points-scenes-v1') return response({ scenes: input.scenes.map((scene: {id:string;assumptions:string[]}, i:number) => ({ ...sample.scenes[Number(scene.id.split('-')[1]) - 1] ?? sample.scenes[i % sample.scenes.length], id: scene.id, assumptions: scene.assumptions })), warnings: [] });
+  throw new Error(`Unexpected staged request ${input.task}`);
+}
+
 describe('source boundaries', () => {
   test('preserves every character and avoids cutting surrogate pairs', () => {
     const source = `${'a'.repeat(3999)}🦊${'b'.repeat(3500)}\n${'word '.repeat(1700)}`;
@@ -95,13 +104,13 @@ describe('adaptation pipeline', () => {
       }
       const input = JSON.parse(user);
       if (input.ledgers) return response(ledger(input.ledgers.flatMap((item: { coveredChunks: string[] }) => item.coveredChunks)));
-      return response(draft({ scenes: draft().scenes.map(scene => ({ ...scene, sourceRefs: [`chunk:${chunks.length}`] })) }));
+      return stagedReply(messages);
     };
     const result = await adaptStory(options({ text: source, chunkSize: 4000 }), generate, (...update) => progress.push(update));
     expect(seenSource.join('')).toBe(source);
-    expect(calls.length).toBe(chunks.length + Math.ceil(chunks.length / 3) + 1);
+    expect(calls.length).toBe(chunks.length + Math.ceil(chunks.length / 3) + 4);
     expect(result.source).toMatchObject({ characters: source.length, chunks: chunks.length });
-    expect(result.scenes[0].sourceRefs).toEqual([`chunk:${chunks.length}`]);
+    expect(result.scenes[0].sourceRefs).toEqual(chunks.map((_,i)=>`chunk:${i + 1}`));
     expect(calls.at(-1)![0].content).toContain('Never write these for the human');
     expect(calls.at(-1)![0].content).toContain('Keep future revelations');
     expect(calls.at(-1)![0].content).toContain('relationship context');
@@ -122,7 +131,7 @@ describe('adaptation pipeline', () => {
         return response(ledger(input.ledgers.flatMap((item: { coveredChunks: string[] }) => item.coveredChunks)));
       }
       expect(input.ledger.coveredChunks).toHaveLength(7);
-      return response(draft());
+      return stagedReply(messages);
     };
     await adaptStory(options({ text: source, chunkSize: 4000 }), generate, () => {});
     expect(mergedGroupSizes).toEqual([3, 3, 1, 3]);
@@ -136,10 +145,10 @@ describe('adaptation pipeline', () => {
         expect(messages.at(-1)?.content).toContain('required JSON schema');
         return { content: `\`\`\`json\n${JSON.stringify(ledger())}\n\`\`\`` };
       }
-      return response(draft());
+      return stagedReply(messages);
     }, () => {});
     expect(generated.title).toBe('The Lighthouse Letter');
-    expect(calls).toBe(3);
+    expect(calls).toBe(6);
     let badCalls = 0;
     await expect(adaptStory(options(), async () => { badCalls++; return { content: '{bad}' }; }, () => {})).rejects.toThrow('invalid JSON');
     expect(badCalls).toBe(2);
@@ -171,16 +180,17 @@ describe('adaptation pipeline', () => {
   });
   test('preserves extraction warnings and explicitly flags a reduced scene count', async () => {
     let calls = 0;
-    const result = await adaptStory(options({ sceneCount: 3 }), async () => {
+    const result = await adaptStory(options({ sceneCount: 3 }), async messages => {
       calls++;
-      return response(calls === 1 ? { ...ledger(), warnings: ['The source gives conflicting arrival dates.'] } : draft());
+      return calls === 1 ? response({ ...ledger(), warnings: ['The source gives conflicting arrival dates.'] }) : stagedReply(messages);
     }, () => {});
     expect(result.warnings).toContain('The source gives conflicting arrival dates.');
     expect(result.warnings.some(item => item.includes('2 scenes of the 3 requested'))).toBe(true);
   });
   test('flags cast identities lost by adaptation rather than silently discarding their context', async () => {
-    let calls = 0;
-    const result = await adaptStory(options(), async () => response(++calls === 1 ? ledger() : draft({ cast: [] })), () => {});
+    const generate:Generate = async () => response(ledger());
+    generate.peek = async () => response(draft({cast:[]}));
+    const result = await adaptStory(options(), generate, () => {});
     expect(result.warnings.some(item => item.includes('missing cast member: Mara'))).toBe(true);
   });
   test('cancels an in-flight model request even if the provider ignores the signal', async () => {
@@ -200,251 +210,292 @@ describe('adaptation pipeline', () => {
     expect(called).toBe(false);
   });
 
-  test('accepts an oversized valid ledger without another paid shortening call or lost facts', async () => {
-    const original = { ...verboseLedger(), warnings:['The arrival dates conflict.'] };
-    expect(JSON.stringify(original).length).toBeGreaterThan(IMPORT_LIMITS.ledgerCharacters);
-    const seen:GenerationMessage[][]=[],progress:Array<[number,number,string]>=[];
-    const result = await adaptStory(options(), async messages => {
-      seen.push(messages);
-      if (messages[1].content.startsWith('SOURCE CHUNK')) return response(original);
-      const input=JSON.parse(messages[1].content);
-      expect(input.task).toBeUndefined();
+  test('keeps oversized ledgers intact while replacing one large final request with small stages', async () => {
+    const original={...verboseLedger(),warnings:['The arrival dates conflict.']};
+    const tasks:string[]=[],progress:Array<[number,number,string]>=[];
+    const result=await adaptStory(options(),async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
+      const input=JSON.parse(messages[1].content);tasks.push(input.task);
       expect(input.ledger).toEqual(original);
-      return response(draft());
-    }, (...entry)=>progress.push(entry));
-    expect(seen).toHaveLength(2);
+      expect(input.task).not.toBe('compact-existing-ledger');
+      return stagedReply(messages);
+    },(...entry)=>progress.push(entry));
+    expect(tasks).toEqual(['set-points-plan-v1','set-points-cast-v1','set-points-lore-v1','set-points-scenes-v1']);
     expect(result.warnings).toContain(original.warnings[0]);
-    expect(progress.at(-1)?.slice(0,2)).toEqual([2,2]);
+    expect(progress.at(-1)?.slice(0,2)).toEqual([5,5]);
   });
 
-  test('restores all merge warnings even when they push the ledger above the old target', async () => {
-    const savedWarnings=[`First section: ${'uncertain chronology. '.repeat(60)}`,`Second section: ${'uncertain motives. '.repeat(60)}`].map(value=>value.trim());
-    let mergeCalls=0;
+  test('restores merge warnings above the old ledger target without another shortening request', async () => {
+    const warnings=[`First: ${'Uncertain date. '.repeat(90)}`,`Second: ${'Uncertain motive. '.repeat(80)}`].map(item=>item.trim());
     const result=await adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),async messages=>{
       if(messages[1].content.startsWith('SOURCE CHUNK')){
         const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
-        const index=Number(input.reference.split(':')[1])-1;
-        return response({...ledger([input.reference]),warnings:[savedWarnings[index]]});
+        return response({...ledger([input.reference]),warnings:[warnings[Number(input.reference.split(':')[1])-1]]});
       }
       const input=JSON.parse(messages[1].content);
-      expect(input.task).toBeUndefined();
-      if(input.ledgers){
-        mergeCalls++;
-        const merged=verboseLedger(['chunk:1','chunk:2'],9);
-        expect(JSON.stringify(merged).length).toBeLessThan(IMPORT_LIMITS.ledgerCharacters);
-        expect(JSON.stringify({...merged,warnings:savedWarnings}).length).toBeGreaterThan(IMPORT_LIMITS.ledgerCharacters);
-        return response(merged);
-      }
-      expect(input.ledger.warnings).toEqual(savedWarnings);
-      return response(draft());
+      if(input.ledgers)return response(verboseLedger(['chunk:1','chunk:2'],9));
+      expect(input.ledger.warnings).toEqual(warnings);
+      return stagedReply(messages);
     },()=>{});
-    expect(mergeCalls).toBe(1);
-    for(const warning of savedWarnings)expect(result.warnings).toContain(warning);
+    for(const warning of warnings)expect(result.warnings).toContain(warning);
   });
 
-  test('reuses valid saved shortening with byte-identical 0.1.3 extraction, shortening, and final prompts', async () => {
-    const original=verboseLedger();let calls=0,peeks=0;
+  test('reuses complete legacy output with exact0.1.3 extraction, shortening, and final hashes', async () => {
+    let calls=0,peeks=0;
     const hash=(messages:GenerationMessage[])=>new Bun.CryptoHasher('sha256').update(JSON.stringify(messages)).digest('hex');
     const generate:Generate=async messages=>{
       calls++;
-      if(messages[1].content.startsWith('SOURCE CHUNK')){
-        expect(hash(messages)).toBe('8c3155f55f89e130f7e505abe529a1d0fb0cdba330f06946de8cfeb6cbb1c82b');
-        return response(original);
+      expect(hash(messages)).toBe('8c3155f55f89e130f7e505abe529a1d0fb0cdba330f06946de8cfeb6cbb1c82b');
+      return response(verboseLedger());
+    };
+    generate.peek=async(messages,_signal,settings)=>{
+      peeks++;
+      const input=JSON.parse(messages[1].content);
+      if(input.task==='compact-existing-ledger'){
+        expect(hash(messages)).toBe('45786b2f65b9f678188e78e5131eb503c77ac9e8a0ec6a88dae43498f9596bcb');
+        return response(shortenLedger(input.ledger));
       }
+      expect(settings?.requireSettled).toBe(true);
       expect(hash(messages)).toBe('15213314b9440503f884c0e674be4ff5da8e37a13b4a05a128e5babc33d2097b');
-      expect(JSON.parse(messages[1].content).ledger).toEqual(shortenLedger(original));
       return response(draft());
     };
-    generate.peek=async messages=>{
-      peeks++;
-      expect(hash(messages)).toBe('45786b2f65b9f678188e78e5131eb503c77ac9e8a0ec6a88dae43498f9596bcb');
-      return response(shortenLedger(original));
-    };
-    await adaptStory(options(),generate,()=>{});
-    expect(calls).toBe(2);expect(peeks).toBe(1);
+    expect((await adaptStory(options(),generate,()=>{})).scenes[0].id).toBe('harbor');
+    expect(calls).toBe(1);expect(peeks).toBe(2);
   });
 
-  test('retains byte-identical 0.1.3 merge prompts', async () => {
+  test('retains byte-identical0.1.3 merge requests', async () => {
     await adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),async messages=>{
       if(messages[1].content.startsWith('SOURCE CHUNK')){
-        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
-        return response(ledger([input.reference]));
+        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));return response(ledger([input.reference]));
       }
-      const input=JSON.parse(messages[1].content);
-      if(input.ledgers){
+      if(JSON.parse(messages[1].content).ledgers){
         expect(new Bun.CryptoHasher('sha256').update(JSON.stringify(messages)).digest('hex')).toBe('3c9879356e50c87272d718dedf1ce4ec6a14a4781505185a172ae2f4a54688c9');
         return response(ledger(['chunk:1','chunk:2']));
       }
-      return response(draft());
+      return stagedReply(messages);
     },()=>{});
   });
 
-  test.each(['cast','relationships','references','events','chronology','settings','oversized','malformed','unsafe','absent'] as const)('falls back to the original when saved shortening is %s, with no paid repair', async field => {
-    const original=verboseLedger();let calls=0,peeks=0;
-    const generate:Generate=async messages=>{
-      calls++;
-      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
-      expect(JSON.parse(messages[1].content).ledger).toEqual(original);
+  test('reuses a successful cached legacy schema repair without paying for either legacy request', async () => {
+    let paid=0,peeks=0;
+    const generate:Generate=async()=>{paid++;return response(ledger());};
+    generate.peek=async(messages,_signal,settings)=>{
+      expect(settings?.requireSettled).toBe(true);
+      if(++peeks===1)return {content:'{broken JSON'};
+      expect(messages.at(-2)).toEqual({role:'assistant',content:'{broken JSON'});
+      expect(messages.at(-1)?.content).toBe('Your output did not match the required JSON schema: The model returned invalid JSON. Try another connection or a shorter source. Return the complete corrected JSON object. Do not omit source material to fix formatting.');
       return response(draft());
     };
-    generate.peek=async()=>{
-      peeks++;
+    await adaptStory(options(),generate,()=>{});
+    expect(paid).toBe(1);expect(peeks).toBe(2);
+  });
+
+  test.each(['cast','relationships','references','events','chronology','settings','oversized','malformed','unsafe','absent'] as const)('keeps the complete original when old saved shortening has invalid %s', async field=>{
+    const original=verboseLedger();let calls=0,shorteningPeeks=0;
+    const generate:Generate=async messages=>{
+      calls++;if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
+      expect(JSON.parse(messages[1].content).ledger).toEqual(original);
+      return stagedReply(messages);
+    };
+    generate.peek=async messages=>{
+      if(JSON.parse(messages[1].content).task!=='compact-existing-ledger')return undefined;
+      shorteningPeeks++;
       if(field==='absent')return undefined;
       if(field==='malformed')return {content:'{broken JSON'};
       if(field==='oversized')return response(original);
-      const compact=shortenLedger(original);
+      const compact=structuredClone(shortenLedger(original));
       if(field==='cast')compact.cast=[];
-      if(field==='relationships')compact.cast=[{...compact.cast[0],relationships:'Elias is an acquaintance.'}];
-      if(field==='references')compact.events=[{...compact.events[0],sourceRefs:['chunk:99']},...compact.events.slice(1)];
+      if(field==='relationships')compact.cast[0].relationships='Elias is an acquaintance.';
+      if(field==='references')compact.events[0].sourceRefs=['chunk:99'];
       if(field==='events')compact.events=compact.events.slice(1);
-      if(field==='chronology')compact.events=compact.events.reverse();
+      if(field==='chronology')compact.events.reverse();
       if(field==='settings')compact.setting=[];
       if(field==='unsafe')compact.premise='{{setvar::secret::value}}';
       return response(compact);
     };
     await adaptStory(options(),generate,()=>{});
-    expect(calls).toBe(2);expect(peeks).toBe(1);
+    expect(calls).toBe(5);expect(shorteningPeeks).toBe(1);
   });
 
-  test('a cached original and rejected shortening resume with only the final adaptation request', async () => {
-    const original=verboseLedger();let paidCalls=0;
+  test('falls back from a complete legacy draft whose inherited warnings cannot fit', async () => {
+    let calls=0,peeks=0;
     const generate:Generate=async messages=>{
-      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original); // Saved 0.1.3 response.
-      paidCalls++;
-      expect(JSON.parse(messages[1].content).ledger).toEqual(original);
-      return response(draft());
+      calls++;
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response({...ledger(),warnings:['A source warning.']});
+      return stagedReply(messages);
     };
-    generate.peek=async()=>response(original); // Saved rejected 0.1.3 shortening.
-    await adaptStory(options(),generate,()=>{});
-    expect(paidCalls).toBe(1);
+    generate.peek=async()=>{peeks++;return response(draft({warnings:Array.from({length:96},(_,i)=>`Old warning ${i}.`)}));};
+    const result=await adaptStory(options(),generate,()=>{});
+    expect(result.warnings).toContain('A source warning.');
+    expect(calls).toBe(5);expect(peeks).toBe(1);
   });
 
-  test('preserves original warnings when reusing a saved shortening', async () => {
-    const original={...verboseLedger(),warnings:['The source has conflicting dates.']};
-    const generate:Generate=async messages=>{
-      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
-      expect(JSON.parse(messages[1].content).ledger.warnings).toEqual(original.warnings);
-      return response(draft());
-    };
-    generate.peek=async()=>response({...shortenLedger(original),warnings:[]});
-    expect((await adaptStory(options(),generate,()=>{})).warnings).toContain(original.warnings[0]);
-  });
-
-  test('accepts expanded descriptive fields and protected relationship text above the old target', async () => {
-    for(const original of [
-      {...ledger(),premise:'Detailed premise. '.repeat(400).trim()},
-      {...ledger(),cast:Array.from({length:7},(_,i)=>({...ledger().cast[0],name:`Character ${i}`,relationships:'A relationship fact. '.repeat(175).trim()}))},
-    ]){
-      let calls=0;
-      await adaptStory(options(),async messages=>{
-        calls++;
-        if(calls===1)return response(original);
-        expect(JSON.parse(messages[1].content).ledger).toEqual(original);
-        return response(draft());
-      },()=>{});
-      expect(calls).toBe(2);
-    }
-  });
-
-  test('rejects hard-bound output and unsafe original markup before requesting more work', async () => {
-    for(const original of [
-      {...ledger(),premise:'x'.repeat(IMPORT_LIMITS.draftCharacters)},
-      {...verboseLedger(),premise:'{{setvar::secret::value}}'},
-    ]){
-      let calls=0;
-      await expect(adaptStory(options(),async()=>{calls++;return response(original);},()=>{})).rejects.toThrow();
-      expect(calls).toBe(1);
-    }
-  });
-
-  test('propagates storage failure and cancellation during cache-only recovery', async () => {
+  test('blocks fresh staged work when the old final request has an uncertain outcome', async () => {
     let calls=0;
-    const generate:Generate=async()=>{calls++;return response(verboseLedger());};
-    generate.peek=async()=>{throw new Error('Checkpoint storage failed');};
-    await expect(adaptStory(options(),generate,()=>{})).rejects.toThrow('Checkpoint storage failed');
+    const generate:Generate=async()=>{calls++;return response(ledger());};
+    generate.peek=async(_messages,_signal,settings)=>{
+      expect(settings?.requireSettled).toBe(true);
+      throw Object.assign(new Error('Previous paid outcome is unknown'),{code:'UNCERTAIN_REQUEST'});
+    };
+    await expect(adaptStory(options(),generate,()=>{})).rejects.toMatchObject({code:'UNCERTAIN_REQUEST'});
     expect(calls).toBe(1);
-    const controller=new AbortController();
-    generate.peek=async()=>{controller.abort();return new Promise(()=>{});};
-    await expect(adaptStory(options(),generate,()=>{},controller.signal)).rejects.toMatchObject({name:'AbortError'});
+  });
+
+  test('bounds batches, retains every identity and planned scene, and keeps progress free of story names', async () => {
+    const original={...ledger(),cast:Array.from({length:9},(_,i)=>({...ledger().cast[0],name:`Person ${i + 1}`})),setting:Array.from({length:9},(_,i)=>({...ledger().setting[0],name:`Location ${i + 1}`})),events:Array.from({length:5},(_,i)=>({...ledger().events[0],title:`Event ${i + 1}`}))};
+    const sample=draft({scenes:Array.from({length:5},(_,i)=>({...draft().scenes[i%2],id:`sample-${i}`,title:`Scene ${i + 1}`}))});
+    const counts:{cast:number[];lore:number[];scenes:number[]}={cast:[],lore:[],scenes:[]};
+    const labels:string[]=[],snapshots:Array<[number,number]>=[];
+    const result=await adaptStory(options({sceneCount:5}),async messages=>{
+      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(IMPORT_LIMITS.requestCharacters);
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
+      const input=JSON.parse(messages[1].content);
+      if(input.characters)counts.cast.push(input.characters.length);
+      if(input.entries)counts.lore.push(input.entries.length);
+      if(input.scenes)counts.scenes.push(input.scenes.length);
+      expect(messages[0].content).toContain('Never write these for the human');
+      expect(messages[0].content).toContain('Keep future revelations');
+      return stagedReply(messages,sample);
+    },(done,total,label)=>{labels.push(label);snapshots.push([done,total]);});
+    expect(counts).toEqual({cast:[4,4,1],lore:[4,4,1],scenes:[2,2,1]});
+    expect(result.cast.map(person=>person.name)).toEqual(original.cast.map(person=>person.name));
+    expect(result.lore.map(entry=>entry.name)).toEqual(original.setting.map(entry=>entry.name));
+    expect(result.scenes.map(scene=>scene.title)).toEqual(sample.scenes.map(scene=>scene.title));
+    expect(result.scenes.every(scene=>scene.sourceRefs[0]==='chunk:1')).toBe(true);
+    expect(labels.every(label=>!label.includes('Person')&&!label.includes('Location'))).toBe(true);
+    expect(snapshots.at(-1)).toEqual([11,11]);
+  });
+
+  test.each(['cast','lore','scenes'] as const)('rejects a %s batch that omits requested records after one bounded repair', async kind=>{
+    let failures=0;
+    await expect(adaptStory(options(),async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(ledger());
+      const result=stagedReply(messages),input=JSON.parse(messages[1].content);
+      if(input.task===`set-points-${kind}-v1`){failures++;const value=JSON.parse(result.content);value[kind]=[];return response(value);}
+      return result;
+    },()=>{})).rejects.toMatchObject({code:'INVALID_SCHEMA'});
+    expect(failures).toBe(2);
+  });
+
+  test('preserves starting-state exclusions and the plan’s continuity assumptions', async () => {
+    const result=await adaptStory(options(),async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(ledger());
+      const input=JSON.parse(messages[1].content),result=JSON.parse(stagedReply(messages).content);
+      if(input.task==='set-points-plan-v1'){result.startingLore=[];result.warnings=['Greyhaven details become known after the opening.'];}
+      if(input.task==='set-points-scenes-v1')for(const scene of result.scenes)scene.assumptions=[];
+      expect(input.task).not.toBe('set-points-lore-v1');
+      return response(result);
+    },()=>{});
+    expect(result.lore).toEqual([]);
+    expect(result.cast[0].name).toBe('Mara');
+    expect(result.scenes[1].assumptions).toContain('The player chooses to visit the chart room.');
+    expect(result.warnings.some(warning=>warning.includes('1 source setting entries were excluded'))).toBe(true);
+  });
+
+  test('rejects scene plans that move backwards after spanning later source events', async () => {
+    const original=verboseLedger();let planCalls=0;
+    await expect(adaptStory(options(),async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(original);
+      planCalls++;const result=JSON.parse(stagedReply(messages).content);
+      result.scenes[0].eventIndexes=[0,5];result.scenes[1].eventIndexes=[1];return response(result);
+    },()=>{})).rejects.toThrow('chronology');
+    expect(planCalls).toBe(2);
+  });
+
+  test('a truncated scene batch resumes independently without paying for completed reading or profiles', async () => {
+    const cache=new Map<string,Awaited<ReturnType<Generate>>>();let last='',reads=0,plans=0,profiles=0,sceneCalls=0;
+    const generate:Generate=async messages=>{
+      const key=JSON.stringify(messages);last=key;if(cache.has(key))return structuredClone(cache.get(key)!);
+      let result;
+      if(messages[1].content.startsWith('SOURCE CHUNK')){reads++;result=response(ledger());}
+      else{
+        const input=JSON.parse(messages[1].content);
+        if(input.task==='set-points-plan-v1')plans++;
+        if(['set-points-cast-v1','set-points-lore-v1'].includes(input.task))profiles++;
+        result=input.task==='set-points-scenes-v1'&&++sceneCalls===1?{content:'{"scenes":',finish_reason:'length'}:stagedReply(messages);
+      }
+      cache.set(key,result);return result;
+    };
+    await expect(adaptStory(options(),generate,()=>{})).rejects.toMatchObject({code:'TRUNCATED_RESPONSE'});
+    expect(sceneCalls).toBe(1);cache.delete(last);
+    await adaptStory(options(),generate,()=>{});
+    expect({reads,plans,profiles,sceneCalls}).toEqual({reads:1,plans:1,profiles:2,sceneCalls:2});
+  });
+
+  test('repairs malformed staged JSON once without regenerating the plan or reading', async () => {
+    let sceneCalls=0,otherCalls=0;
+    await adaptStory(options(),async messages=>{
+      if(messages[1].content.startsWith('SOURCE CHUNK'))return response(ledger());
+      if(JSON.parse(messages[1].content).task==='set-points-scenes-v1'){
+        if(++sceneCalls===1)return {content:'{invalid JSON'};
+        expect(messages.at(-1)?.content).toContain('required JSON schema');
+      }else otherCalls++;
+      return stagedReply(messages);
+    },()=>{});
+    expect(sceneCalls).toBe(2);expect(otherCalls).toBe(3);
+  });
+
+  test('checks fixed draft size before buying prose batches and retains all identities', async () => {
+    const original={...ledger(),cast:Array.from({length:55},(_,i)=>({...ledger().cast[0],name:`Person ${i}`,aliases:Array.from({length:16},(_,j)=>`${j}-${'a'.repeat(178)}`)}))};
+    expect(JSON.stringify(original).length).toBeLessThan(IMPORT_LIMITS.draftCharacters);
+    let calls=0;
+    await expect(adaptStory(options(),async messages=>{
+      calls++;if(calls===1)return response(original);
+      expect(JSON.parse(messages[1].content).task).toBe('set-points-plan-v1');return stagedReply(messages);
+    },()=>{})).rejects.toMatchObject({code:'DRAFT_SIZE_LIMIT'});
     expect(calls).toBe(2);
   });
 
-  test('splits large three-way merges into bounded groups and still completes progress', async () => {
-    const sizes:number[]=[],progress:Array<[number,number,string]>=[];
-    await adaptStory(options({text:'x'.repeat(12000),chunkSize:4000}),async messages=>{
-      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(IMPORT_LIMITS.requestCharacters);
-      if(messages[1].content.startsWith('SOURCE CHUNK')){
-        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
-        return response({...ledger([input.reference]),premise:'A'.repeat(90000)});
-      }
-      const input=JSON.parse(messages[1].content);
-      if(input.ledgers){
-        sizes.push(input.ledgers.length);
-        return response(ledger(input.ledgers.flatMap((item:{coveredChunks:string[]})=>item.coveredChunks)));
-      }
-      return response(draft());
-    },(...entry)=>progress.push(entry));
-    expect(sizes).toEqual([2,1,2]);
-    expect(progress.at(-1)?.slice(0,2)).toEqual([7,7]);
-  });
-
-  test('stops locally when two complete ledgers cannot fit the request bound, with free cached resume', async () => {
-    const cache=new Map<string,Awaited<ReturnType<Generate>>>();let paidCalls=0;
-    const generate:Generate=async messages=>{
-      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(IMPORT_LIMITS.requestCharacters);
-      const key=JSON.stringify(messages);if(cache.has(key))return structuredClone(cache.get(key)!);
-      paidCalls++;
-      expect(messages[1].content).toStartWith('SOURCE CHUNK');
-      const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
-      const result=response({...ledger([input.reference]),premise:'A'.repeat(130000)});
-      cache.set(key,result);return result;
-    };
-    for(let attempt=0;attempt<2;attempt++){
-      await expect(adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),generate,()=>{})).rejects.toMatchObject({code:'REQUEST_SIZE_LIMIT'});
-    }
-    expect(paidCalls).toBe(2);
-  });
-
-  test('preserves bounded final-format repair after accepting a large ledger', async () => {
+  test('rejects oversized staged prose without silently cutting it or making another paid attempt', async () => {
     let calls=0;
-    await adaptStory(options(),async messages=>{
-      calls++;
-      if(calls===1)return response(verboseLedger());
-      if(calls===2)return {content:'{invalid JSON'};
-      expect(messages.at(-1)?.content).toContain('required JSON schema');
-      return response(draft());
-    },()=>{});
+    await expect(adaptStory(options(),async messages=>{
+      calls++;if(messages[1].content.startsWith('SOURCE CHUNK'))return response(ledger());
+      const result=JSON.parse(stagedReply(messages).content);
+      if(JSON.parse(messages[1].content).task==='set-points-cast-v1'){
+        result.cast[0].personality='a'.repeat(3500);result.cast[0].knowledge='b'.repeat(3500);
+      }
+      return response(result);
+    },()=>{})).rejects.toThrow('character share of the draft');
     expect(calls).toBe(3);
   });
 
-  test('does not dispatch a format repair when its serialized messages exceed the request bound', async () => {
-    let calls=0;
-    await expect(adaptStory(options(),async()=>{
-      calls++;
-      if(calls===1)return response({...ledger(),premise:'A'.repeat(130000)});
-      return {content:`{${' '.repeat(130000)}invalid JSON`};
-    },()=>{})).rejects.toMatchObject({code:'REQUEST_SIZE_LIMIT'});
-    expect(calls).toBe(2);
+  test('splits large merge groups while keeping all dispatched messages within the input bound', async () => {
+    const sizes:number[]=[],progress:Array<[number,number]>=[];
+    await adaptStory(options({text:'x'.repeat(12000),chunkSize:4000}),async messages=>{
+      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(IMPORT_LIMITS.requestCharacters);
+      if(messages[1].content.startsWith('SOURCE CHUNK')){
+        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));return response({...ledger([input.reference]),premise:'A'.repeat(90000)});
+      }
+      const input=JSON.parse(messages[1].content);
+      if(input.ledgers){sizes.push(input.ledgers.length);return response(ledger(input.ledgers.flatMap((item:{coveredChunks:string[]})=>item.coveredChunks)));}
+      return stagedReply(messages);
+    },(done,total)=>progress.push([done,total]));
+    expect(sizes).toEqual([2,1,2]);expect(progress.at(-1)).toEqual([10,10]);
   });
 
-  test('retains cached stages when all merge warnings cannot fit the warning count limit', async () => {
-    const cache=new Map<string,Awaited<ReturnType<Generate>>>();let paidCalls=0;
+  test('an impossible merge stays cached and stops before another paid request on resume', async () => {
+    const cache=new Map<string,Awaited<ReturnType<Generate>>>();let paid=0;
     const generate:Generate=async messages=>{
-      const key=JSON.stringify(messages);if(cache.has(key))return structuredClone(cache.get(key)!);
-      paidCalls++;let result;
-      if(messages[1].content.startsWith('SOURCE CHUNK')){
-        const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
-        result=response({...ledger([input.reference]),warnings:Array.from({length:33},(_,i)=>`${input.reference} uncertain fact ${i + 1}.`)});
-      }else{
-        const input=JSON.parse(messages[1].content);
-        expect(input.ledgers).toHaveLength(2);
-        result=response(ledger(['chunk:1','chunk:2']));
-      }
-      cache.set(key,result);return result;
+      const key=JSON.stringify(messages);if(cache.has(key))return cache.get(key)!;
+      paid++;expect(messages[1].content).toStartWith('SOURCE CHUNK');
+      const input=JSON.parse(messages[1].content.split('\n').slice(1).join('\n'));
+      const result=response({...ledger([input.reference]),premise:'A'.repeat(130000)});cache.set(key,result);return result;
     };
-    for(let attempt=0;attempt<2;attempt++){
-      await expect(adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),generate,()=>{})).rejects.toMatchObject({code:'COMPACTION_IMPOSSIBLE'});
+    for(let attempt=0;attempt<2;attempt++)await expect(adaptStory(options({text:'x'.repeat(8000),chunkSize:4000}),generate,()=>{})).rejects.toMatchObject({code:'REQUEST_SIZE_LIMIT'});
+    expect(paid).toBe(2);
+  });
+
+  test('hard response bounds and unsafe original markup fail without extra model calls', async () => {
+    for(const original of [{...ledger(),premise:'x'.repeat(IMPORT_LIMITS.draftCharacters)},{...verboseLedger(),premise:'{{setvar::secret::value}}'}]){
+      let calls=0;await expect(adaptStory(options(),async()=>{calls++;return response(original);},()=>{})).rejects.toThrow();expect(calls).toBe(1);
     }
-    expect(paidCalls).toBe(3);
+  });
+
+  test('storage errors and cancellation propagate during cache-only recovery', async () => {
+    let calls=0;const generate:Generate=async()=>{calls++;return response(verboseLedger());};
+    generate.peek=async()=>{throw new Error('Checkpoint storage failed');};
+    await expect(adaptStory(options(),generate,()=>{})).rejects.toThrow('Checkpoint storage failed');expect(calls).toBe(1);
+    const controller=new AbortController();generate.peek=async()=>{controller.abort();return new Promise(()=>{});};
+    await expect(adaptStory(options(),generate,()=>{},controller.signal)).rejects.toMatchObject({name:'AbortError'});expect(calls).toBe(2);
   });
 });

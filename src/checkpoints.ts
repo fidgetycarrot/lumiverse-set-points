@@ -79,6 +79,12 @@ export class ResponseCheckpoints {
     return result.finally(() => { this.active--; });
   }
   private path(key: string, kind: 'response'|'intent'): string { return `imports/responses/${key}${kind === 'intent' ? '.intent' : ''}.json`; }
+  private async keys(messages: GenerationMessage[], primary: unknown, fallbacks: unknown[] = []): Promise<string[]> {
+    try {
+      const keys = await Promise.all([primary, ...fallbacks].map(connectionFingerprint => digest(canonical({ format: FORMAT, messages, connectionFingerprint }))));
+      return [...new Set(keys)];
+    } catch { throw storageError(); }
+  }
   private async encode(value: Checkpoint): Promise<string> {
     const body = canonical(value);
     const serialized = canonical({ ...value, checksum: await digest(body) });
@@ -120,47 +126,74 @@ export class ResponseCheckpoints {
       return await this.decode(await this.api.userStorage.read(path, this.userId), key, kind);
     } catch { throw storageError(); }
   }
+  private async requireSettled(keys: string[], responses: Map<string, Entry|undefined>): Promise<void> {
+    for (const key of keys) {
+      const response = responses.has(key) ? responses.get(key) : await this.read(key, 'response') as Entry|undefined;
+      const intent = await this.read(key, 'intent') as Intent|undefined;
+      if (intent?.state === 'pending' && intent.attemptId !== response?.attemptId && !this.retryUncertain) throw uncertainError();
+    }
+  }
   /** Inspect a paid result without dispatching or selecting it for invalidation. */
-  peek(messages: GenerationMessage[], connectionFingerprint: unknown, options: { includeRejected?: boolean } = {}): Promise<unknown|undefined> {
+  peek(messages: GenerationMessage[], connectionFingerprint: unknown, options: { includeRejected?: boolean; reuseFingerprints?: unknown[]; requireSettled?: boolean } = {}): Promise<unknown|undefined> {
     return this.locked(async () => {
-      let key: string;
-      try { key = await digest(canonical({ format: FORMAT, messages, connectionFingerprint })); }
-      catch { throw storageError(); }
-      const held = this.uncommitted.get(key);
-      if (held) {
-        await this.write(held);
-        this.uncommitted.delete(key);
-        this.reused++;
-        return structuredClone(held.response);
+      const keys = await this.keys(messages, connectionFingerprint, options.reuseFingerprints);
+      const responses = new Map<string, Entry|undefined>();
+      let candidate: Entry|undefined;
+      let rejectedPrimary: Entry|undefined;
+      for (const [index, key] of keys.entries()) {
+        const held = this.uncommitted.get(key);
+        if (held) {
+          await this.write(held);
+          this.uncommitted.delete(key);
+        }
+        const entry = held ?? await this.read(key, 'response') as Entry|undefined;
+        responses.set(key, entry);
+        // Rejected historical attempts must not become successful answers just
+        // because the caller changed its request allowance or reasoning setting.
+        if (!entry) continue;
+        if (entry.state === 'rejected') {
+          if (index === 0 && options.includeRejected) rejectedPrimary = entry;
+          continue;
+        }
+        candidate ??= entry;
+        if (!options.requireSettled) break;
       }
-      const entry = await this.read(key, 'response') as Entry|undefined;
-      if (!entry || entry.state === 'rejected' && !options.includeRejected) return undefined;
-      this.reused++;
-      return structuredClone(entry.response);
+      // Raw "complete" entries may still fail caller validation. A schema-change
+      // probe must resolve every older attempt before such a failure can cause
+      // new paid work under different messages.
+      if (options.requireSettled) await this.requireSettled(keys, responses);
+      candidate ??= rejectedPrimary;
+      if (candidate) {
+        this.reused++;
+        return structuredClone(candidate.response);
+      }
+      return undefined;
     });
   }
-  request(messages: GenerationMessage[], connectionFingerprint: unknown, generate: () => Promise<unknown>): Promise<unknown> {
+  request(messages: GenerationMessage[], connectionFingerprint: unknown, generate: () => Promise<unknown>, options: { reuseFingerprints?: unknown[] } = {}): Promise<unknown> {
     return this.locked(async () => {
       this.last = undefined;
-      let key: string;
-      try { key = await digest(canonical({ format: FORMAT, messages, connectionFingerprint })); }
-      catch { throw storageError(); }
-      const held = this.uncommitted.get(key);
-      if (held) {
-        await this.write(held);
-        this.uncommitted.delete(key);
-        this.reused++; this.last = { key, attemptId: held.attemptId };
-        return structuredClone(held.response);
+      const keys = await this.keys(messages, connectionFingerprint, options.reuseFingerprints);
+      const previous = new Map<string, Entry|undefined>();
+      for (const key of keys) {
+        const held = this.uncommitted.get(key);
+        if (held) {
+          await this.write(held);
+          this.uncommitted.delete(key);
+          this.reused++; this.last = { key, attemptId: held.attemptId };
+          return structuredClone(held.response);
+        }
+        const entry = await this.read(key, 'response') as Entry|undefined;
+        previous.set(key, entry);
+        if (entry?.state === 'complete') {
+          this.reused++; this.last = { key, attemptId: entry.attemptId };
+          return structuredClone(entry.response);
+        }
       }
-      const previous = await this.read(key, 'response') as Entry|undefined;
-      if (previous?.state === 'complete') {
-        this.reused++; this.last = { key, attemptId: previous.attemptId };
-        return structuredClone(previous.response);
-      }
-      const intent = await this.read(key, 'intent') as Intent|undefined;
-      // A rejected response still proves that this attempt finished. A different
-      // pending attempt has an unknown paid outcome and needs an explicit retry.
-      if (intent?.state === 'pending' && intent.attemptId !== previous?.attemptId && !this.retryUncertain) throw uncertainError();
+      // Only a new dispatch needs uncertainty approval. Reusing a completed
+      // answer above costs nothing even if another attempt has an unknown result.
+      await this.requireSettled(keys, previous);
+      const key = keys[0];
       const attempt: Intent = { format: FORMAT, key, attemptId: crypto.randomUUID(), kind: 'intent', state: 'pending' };
       await this.write(attempt);
       let result: unknown;

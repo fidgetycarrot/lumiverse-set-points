@@ -1,11 +1,11 @@
-import { EXTENSION_ID, type CastMember, type ImportOptions, type StoryDraft } from './types';
+import { EXTENSION_ID, type CastMember, type ImportOptions, type StoryDraft, type LoreEntry, type StoryScene } from './types';
 
 export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
 export type GenerationMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 type GenerationResponse = { content: string; finish_reason?: string };
 export type Generate = ((messages: GenerationMessage[], signal?: AbortSignal) => Promise<GenerationResponse>) & {
   /** Read a previous paid answer only; this hook must never dispatch a request. */
-  peek?: (messages: GenerationMessage[], signal?: AbortSignal) => Promise<GenerationResponse | undefined>;
+  peek?: (messages: GenerationMessage[], signal?: AbortSignal, options?: { requireSettled?: boolean }) => Promise<GenerationResponse | undefined>;
 };
 
 export class ImportError extends Error {
@@ -311,6 +311,185 @@ function mergeGroups(ledgers: Ledger[]): Ledger[][] {
   return groups;
 }
 
+type DraftMetadata = Pick<StoryDraft, 'version' | 'id' | 'playerRole' | 'startingPoint' | 'source' | 'createdAt'>;
+type Preferences = { sourceTitle: string; playerRole: string; startingPoint: string; requestedScenes: number };
+type PlannedScene = { id: string; title: string; eventIndexes: number[]; brief: string; assumptions: string[]; sourceRefs: string[] };
+type AdaptationPlan = { title: string; premise: string; narratorInstructions: string; startingLore: number[]; scenes: PlannedScene[]; warnings: string[] };
+
+function legacyDraftMessages(preferences: Preferences, ledger: Ledger): GenerationMessage[] {
+  return [
+    { role: 'system', content: `${sourcePolicy}\nAdapt the story into a playable narrator card using exactly this JSON shape: ${draftSchema}\n${agencyRules}\nCreate ${preferences.requestedScenes} scenes if the source supports that many; never invent padding to hit a count. At least one scene is required, and never exceed the requested count. Use unique simple IDs in each array. All schema fields and arrays are required. Each cast member and scene needs valid sourceRefs from the ledger. Keep greetings concise (roughly 150–300 words), reviewable, and open ended. Narrator instructions should cover player agency, continuity, character voices, and treating future scenes as conditional. Starting lore may describe established world rules and current facts, but must not expose later secrets. Retain relationship context faithfully. Carry ledger warnings into the result and flag continuity assumptions that should be reviewed. Keep the total JSON below ${IMPORT_LIMITS.draftCharacters - 5000} characters.` },
+    { role: 'user', content: JSON.stringify({ preferences, ledger }) },
+  ];
+}
+
+function validateAdaptation(value: unknown, metadata: DraftMetadata, sceneCount: number): StoryDraft {
+  const output = object(value, 'adaptation');
+  const draft = validateDraft({ ...output, ...metadata });
+  if (draft.scenes.length > sceneCount) fail('INVALID_SCHEMA', `scenes must contain no more than the requested ${sceneCount} scenes.`);
+  return draft;
+}
+
+function finalizeAdaptation(draft: StoryDraft, ledger: Ledger, requestedScenes: number): StoryDraft {
+  const warnings = [...ledger.warnings, ...draft.warnings, ...missingCastWarnings(ledger.cast, draft.cast)];
+  if (draft.source.chunks > 1) warnings.push(`Adapted from ${draft.source.chunks} source sections using a condensed story ledger. Review character consistency, chronology, and omitted subplots before saving.`);
+  if (draft.scenes.length < requestedScenes) warnings.push(`The model produced ${draft.scenes.length} scenes of the ${requestedScenes} requested. Review whether any major events are missing.`);
+  return validateDraft({ ...draft, warnings: [...new Set(warnings)] });
+}
+
+async function savedLegacyAdaptation(messages: GenerationMessage[], generate: Generate, validate: (value: unknown) => StoryDraft, finalize: (draft: StoryDraft) => StoryDraft, signal?: AbortSignal): Promise<StoryDraft | undefined> {
+  if (!generate.peek) return undefined;
+  let attemptMessages = messages;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await withCancellation(() => generate.peek!(attemptMessages, signal, { requireSettled: true }), signal);
+    checkCancelled(signal);
+    if (!response) return undefined;
+    let candidate: StoryDraft;
+    try { candidate = validate(parseModelJson(response.content, response.finish_reason)); }
+    catch (error) {
+      if (!(error instanceof ImportError)) throw error;
+      if (attempt > 0 || !['MALFORMED_JSON', 'INVALID_SCHEMA', 'INVALID_REFERENCE', 'INCOMPLETE_SOURCE'].includes(error.code)) return undefined;
+      // Reconstruct the old schema repair exactly, but never send it again.
+      attemptMessages = [...messages, { role: 'assistant', content: response.content }, { role: 'user', content: `Your output did not match the required JSON schema: ${error.message} Return the complete corrected JSON object. Do not omit source material to fix formatting.` }];
+      continue;
+    }
+    // Inherited warnings can make an otherwise valid old draft too large. This
+    // is not a fault in the last source response, and must not invalidate it.
+    try { return finalize(candidate); }
+    catch (error) { if (!(error instanceof ImportError)) throw error; return undefined; }
+  }
+  return undefined;
+}
+
+function validatePlan(value: unknown, ledger: Ledger, requestedScenes: number): AdaptationPlan {
+  const plan = object(value, 'plan');
+  const startingLore = list(plan.startingLore, 'startingLore', ledger.setting.length).map((item, i) => number(item, `startingLore[${i}]`, 0, ledger.setting.length - 1));
+  if (new Set(startingLore).size !== startingLore.length) fail('INVALID_SCHEMA', 'startingLore contains duplicate source indexes.');
+  let previousEvent = -1;
+  const scenes = list(plan.scenes, 'scenes', requestedScenes, 1).map((item, i): PlannedScene => {
+    const scene = object(item, `scenes[${i}]`), path = `scenes[${i}]`;
+    const eventIndexes = list(scene.eventIndexes, `${path}.eventIndexes`, ledger.events.length, 1).map((index, j) => number(index, `${path}.eventIndexes[${j}]`, 0, ledger.events.length - 1));
+    if (eventIndexes.some((index, j) => j > 0 && index <= eventIndexes[j - 1]) || eventIndexes[0] < previousEvent) fail('INVALID_SCHEMA', 'Scene event indexes must preserve source chronology without duplicate indexes within a scene.');
+    previousEvent = eventIndexes[eventIndexes.length - 1];
+    return { id: `scene-${i + 1}`, title: safeText(scene.title, `${path}.title`, 200), eventIndexes, brief: safeText(scene.brief, `${path}.brief`, 1500), assumptions: texts(scene.assumptions, `${path}.assumptions`, 6, 400), sourceRefs: [...new Set(eventIndexes.flatMap(index => ledger.events[index].sourceRefs))] };
+  });
+  return { title: safeText(plan.title, 'plan.title', 200), premise: safeText(plan.premise, 'plan.premise', 6000), narratorInstructions: safeText(plan.narratorInstructions, 'plan.narratorInstructions', 8000), startingLore, scenes, warnings: texts(plan.warnings, 'plan.warnings', 16, 1000) };
+}
+
+function orderedBatch(value: unknown, key: string, ids: string[]): { entries: RecordValue[]; warnings: string[] } {
+  const output = object(value, key), expected = new Set(ids), byId = new Map<string, RecordValue>();
+  for (const item of list(output[key], key, ids.length, ids.length)) {
+    const entry = object(item, key), id = identifier(entry.id, `${key}.id`);
+    if (!expected.has(id) || byId.has(id)) fail('INVALID_SCHEMA', `${key} must contain every requested ID exactly once and no extra IDs.`);
+    byId.set(id, entry);
+  }
+  return { entries: ids.map(id => byId.get(id)!), warnings: texts(output.warnings, 'warnings', 8, 1000) };
+}
+
+function checkProseBudget(value: unknown, skeleton: unknown, limit: number, label: string) {
+  if (JSON.stringify(value).length - JSON.stringify(skeleton).length > limit) fail('OUTPUT_LIMIT', `${label} exceeded its ${limit.toLocaleString()} character share of the draft. Ask for more concise descriptions or fewer scenes. No text was cut.`);
+}
+
+function packNewWarnings(values: string[]): string[] {
+  const result: string[] = [];
+  for (const value of [...new Set(values)]) {
+    const last = result.at(-1);
+    if (last !== undefined && last.length + value.length + 2 <= 2000) result[result.length - 1] = `${last}\n\n${value}`;
+    else result.push(value);
+  }
+  return result;
+}
+
+async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal): Promise<{ draft: StoryDraft; operations: number }> {
+  let completed = 0;
+  let total = 1 + Math.ceil(ledger.cast.length / 4) + Math.ceil(ledger.setting.length / 4) + Math.ceil(preferences.requestedScenes / 2);
+  report(completed, total, 'Planning the narrator and scene order');
+  const plan = await requestJson([
+    { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nPlan a staged adaptation. Return exactly {"title":"story title","premise":"premise at the chosen start","narratorInstructions":"narrator rules","startingLore":[0],"scenes":[{"title":"scene title","eventIndexes":[0],"brief":"one-sentence scene setup and relevant revelation","assumptions":[]}],"warnings":[]}. Source indexes are zero-based positions in ledger.setting and ledger.events. Select only setting entries appropriate for starting lore; explain omitted or future-only entries in warnings. The full ledger remains available to later scene generation. All source cast identities will be retained separately; do not reproduce their descriptions here. Plan at least one and at most ${preferences.requestedScenes} scenes, with no invented padding. Each scene must cite one or more existing event indexes in chronological order. The first scene begins at the chosen starting point. Do not write greetings, full cast profiles, or lore content yet. Keep the premise concise, narrator instructions focused, each scene brief to one short sentence, and assumptions to only necessary continuity conditions (at most six short items). Give only new warnings, at most sixteen concise items; source warnings are preserved automatically. Aim for a compact plan under 16,000 JSON characters. All fields are required.` },
+    { role: 'user', content: JSON.stringify({ task: 'set-points-plan-v1', preferences, ledger }) },
+  ], generate, value => validatePlan(value, ledger, preferences.requestedScenes), signal);
+  completed++;
+  const characters = ledger.cast.map((person, sourceIndex) => ({ id: `cast-${sourceIndex + 1}`, sourceIndex, name: person.name, aliases: person.aliases, sourceRefs: person.sourceRefs }));
+  const entries = plan.startingLore.map(sourceIndex => ({ id: `lore-${sourceIndex + 1}`, sourceIndex, name: ledger.setting[sourceIndex].name }));
+  const cast: CastMember[] = characters.map(person => ({ id: person.id, name: person.name, aliases: [...person.aliases], sourceRefs: [...person.sourceRefs], personality: '', voice: '', relationships: '', knowledge: '' }));
+  const lore: LoreEntry[] = entries.map(entry => ({ id: entry.id, name: entry.name, keys: [], content: '' }));
+  const scenes: StoryScene[] = plan.scenes.map(scene => ({ id: scene.id, title: scene.title, sourceRefs: [...scene.sourceRefs], assumptions: [...scene.assumptions], greeting: '', direction: '' }));
+  const knownWarnings = [...ledger.warnings, ...plan.warnings];
+  if (metadata.source.chunks > 1) knownWarnings.push(`Adapted from ${metadata.source.chunks} source sections using a condensed story ledger. Review character consistency, chronology, and omitted subplots before saving.`);
+  if (scenes.length < preferences.requestedScenes) knownWarnings.push(`The model produced ${scenes.length} scenes of the ${preferences.requestedScenes} requested. Review whether any major events are missing.`);
+  if (entries.length < ledger.setting.length) knownWarnings.push(`${ledger.setting.length - entries.length} source setting entries were excluded from starting lore. Their source facts remain available to scene generation; review the plan's warnings for future-only details or omissions.`);
+  const base: StoryDraft = { ...metadata, title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, cast, lore, scenes, warnings: [...new Set(knownWarnings)] };
+  const batches = Math.ceil(cast.length / 4) + Math.ceil(lore.length / 4) + Math.ceil(scenes.length / 2);
+  total = completed + batches;
+  const room = IMPORT_LIMITS.draftCharacters - JSON.stringify(base).length - 512;
+  const warningsReserve = Math.min(12_000, Math.max(1000, Math.floor(room * 0.08)));
+  const weight = cast.length * 2 + lore.length + scenes.length * 4;
+  const proseRoom = room - warningsReserve;
+  const budgets = { cast: Math.min(6000, Math.floor(proseRoom * 2 / weight)), lore: Math.min(4000, Math.floor(proseRoom / weight)), scenes: Math.min(12_000, Math.floor(proseRoom * 4 / weight)), warnings: Math.floor(warningsReserve / batches) };
+  if (room <= 0 || base.warnings.length > 83 || cast.length > 0 && budgets.cast < 600 || lore.length > 0 && budgets.lore < 300 || budgets.scenes < 1600) fail('DRAFT_SIZE_LIMIT', 'The planned identities, source references, warnings, and prose cannot fit this version’s draft size limit. No content was removed and completed responses remain saved. Use fewer scenes or a smaller story section.');
+  const additionalWarnings: string[] = [];
+  const foundation = { title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, scenes: plan.scenes };
+  const acceptWarnings = (warnings: string[]) => {
+    checkProseBudget(warnings, [], budgets.warnings, 'This batch’s new warnings');
+    return warnings;
+  };
+  for (let start = 0; start < characters.length; start += 4) {
+    const targets = characters.slice(start, start + 4), skeletons = cast.slice(start, start + 4);
+    report(completed, total, `Creating character batch ${Math.floor(start / 4) + 1} of ${Math.ceil(characters.length / 4)}`);
+    const result = await requestJson([
+      { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nWrite only the requested character profiles, as they are at the chosen starting point. Return exactly {"cast":[{"id":"requested id","personality":"traits","voice":"speech style","relationships":"relationships at the start","knowledge":"knowledge at the start"}],"warnings":[]}. Return every requested ID once, without adding or omitting characters. Names, aliases and source references are retained automatically. Preserve relationship context and motivations; keep later developments and secrets out of these starting profiles. Keep each field to a concise paragraph and stay below the provided serialized JSON prose budget per character. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate scenes or lore.` },
+      { role: 'user', content: JSON.stringify({ task: 'set-points-cast-v1', preferences, ledger, foundation, characters: targets, limits: { prosePerCharacter: budgets.cast, newWarnings: budgets.warnings } }) },
+    ], generate, value => {
+      const batch = orderedBatch(value, 'cast', targets.map(item => item.id));
+      const records = batch.entries.map((item, i): CastMember => {
+        const result = { ...skeletons[i], personality: safeText(item.personality, 'cast.personality', 4000), voice: safeText(item.voice, 'cast.voice', 2000), relationships: safeText(item.relationships, 'cast.relationships', 4000), knowledge: safeText(item.knowledge, 'cast.knowledge', 4000) };
+        checkProseBudget(result, skeletons[i], budgets.cast, 'A character profile'); return result;
+      });
+      return { records, warnings: acceptWarnings(batch.warnings) };
+    }, signal);
+    cast.splice(start, targets.length, ...result.records); additionalWarnings.push(...result.warnings); completed++;
+  }
+  for (let start = 0; start < entries.length; start += 4) {
+    const targets = entries.slice(start, start + 4), skeletons = lore.slice(start, start + 4);
+    report(completed, total, `Creating starting lore batch ${Math.floor(start / 4) + 1} of ${Math.ceil(entries.length / 4)}`);
+    const result = await requestJson([
+      { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nWrite only the requested starting lore entries. Return exactly {"lore":[{"id":"requested id","keys":["keyword"],"content":"facts safe to know at the chosen start"}],"warnings":[]}. Return every requested ID once, without adding or omitting entries. Names are retained automatically. Write only established starting facts, keeping future revelations and changes in the scene material. Keep content concise and stay below the provided serialized JSON prose budget per entry, including keywords. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate character profiles or scenes.` },
+      { role: 'user', content: JSON.stringify({ task: 'set-points-lore-v1', preferences, ledger, foundation, entries: targets, limits: { prosePerEntry: budgets.lore, newWarnings: budgets.warnings } }) },
+    ], generate, value => {
+      const batch = orderedBatch(value, 'lore', targets.map(item => item.id));
+      const records = batch.entries.map((item, i): LoreEntry => {
+        const result = { ...skeletons[i], keys: texts(item.keys, 'lore.keys', 24, 100, 1), content: safeText(item.content, 'lore.content', 6000) };
+        checkProseBudget(result, skeletons[i], budgets.lore, 'A starting lore entry'); return result;
+      });
+      return { records, warnings: acceptWarnings(batch.warnings) };
+    }, signal);
+    lore.splice(start, targets.length, ...result.records); additionalWarnings.push(...result.warnings); completed++;
+  }
+  for (let start = 0; start < plan.scenes.length; start += 2) {
+    const targets = plan.scenes.slice(start, start + 2), skeletons = scenes.slice(start, start + 2);
+    report(completed, total, `Creating scene batch ${Math.floor(start / 2) + 1} of ${Math.ceil(plan.scenes.length / 2)}`);
+    const result = await requestJson([
+      { role: 'system', content: `${sourcePolicy}\n${agencyRules}\nWrite only the requested scene openings. Return exactly {"scenes":[{"id":"requested id","greeting":"playable opening","direction":"private scene guidance","assumptions":[]}],"warnings":[]}. Return every requested ID once, without adding or omitting scenes. Titles, order and source references come from the approved plan and are retained automatically. Each greeting should be roughly 150–300 words, set a concrete situation, and stop before the player speaks or acts. Keep directions concise, faithful to the selected source events, and conditional on player choices. Established cast identities, voices, and relationships must stay consistent with the ledger. Preserve the planned continuity assumptions; add only necessary new assumptions. Stay below the provided serialized JSON prose budget per scene, including any additional assumptions. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not reproduce the narrator card, cast, lore, or other scenes.` },
+      { role: 'user', content: JSON.stringify({ task: 'set-points-scenes-v1', preferences, ledger, foundation, scenes: targets, limits: { prosePerScene: budgets.scenes, newWarnings: budgets.warnings } }) },
+    ], generate, value => {
+      const batch = orderedBatch(value, 'scenes', targets.map(item => item.id));
+      const records = batch.entries.map((item, i): StoryScene => {
+        const assumptions = [...new Set([...skeletons[i].assumptions, ...texts(item.assumptions, 'scenes.assumptions', 24, 1000)])];
+        const result = { ...skeletons[i], greeting: safeText(item.greeting, 'scenes.greeting', 8000), direction: safeText(item.direction, 'scenes.direction', 6000), assumptions: texts(assumptions, 'scenes.assumptions', 24, 1000) };
+        checkProseBudget(result, skeletons[i], budgets.scenes, 'A scene opening'); return result;
+      });
+      return { records, warnings: acceptWarnings(batch.warnings) };
+    }, signal);
+    scenes.splice(start, targets.length, ...result.records); additionalWarnings.push(...result.warnings); completed++;
+  }
+  base.warnings = [...new Set([...base.warnings, ...packNewWarnings(additionalWarnings.filter(warning => !base.warnings.includes(warning)))])];
+  try { return { draft: validateDraft(base), operations: completed }; }
+  catch (error) {
+    if (!(error instanceof ImportError)) throw error;
+    fail('DRAFT_SIZE_LIMIT', 'The completed sections could not be assembled within this version’s draft limits. Completed responses remain saved; no content was cut.');
+  }
+}
+
 export async function adaptStory(options: ImportOptions, generate: Generate, onProgress: (completed: number, total: number, label: string) => void, signal?: AbortSignal): Promise<StoryDraft> {
   checkCancelled(signal);
   const sceneCount = number(options.sceneCount, 'sceneCount', 1, IMPORT_LIMITS.scenes);
@@ -346,24 +525,25 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
     ledgers = next; round++;
   }
   const ledger = ledgers[0];
-  const metadata = { version: 1, id: `sp-${crypto.randomUUID()}`, playerRole, startingPoint, source: { title, ...(url ? { url } : {}), characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
-  progress('Creating the narrator, starting lore, and scene openings');
-  const adapted = await requestJson([
-    { role: 'system', content: `${sourcePolicy}\nAdapt the story into a playable narrator card using exactly this JSON shape: ${draftSchema}\n${agencyRules}\nCreate ${sceneCount} scenes if the source supports that many; never invent padding to hit a count. At least one scene is required, and never exceed the requested count. Use unique simple IDs in each array. All schema fields and arrays are required. Each cast member and scene needs valid sourceRefs from the ledger. Keep greetings concise (roughly 150–300 words), reviewable, and open ended. Narrator instructions should cover player agency, continuity, character voices, and treating future scenes as conditional. Starting lore may describe established world rules and current facts, but must not expose later secrets. Retain relationship context faithfully. Carry ledger warnings into the result and flag continuity assumptions that should be reviewed. Keep the total JSON below ${IMPORT_LIMITS.draftCharacters - 5000} characters.` },
-    { role: 'user', content: JSON.stringify({ preferences: { sourceTitle: title, playerRole, startingPoint, requestedScenes: sceneCount }, ledger }) },
-  ], generate, value => {
-    const output = object(value, 'adaptation');
-    const draft = validateDraft({ ...output, ...metadata });
-    if (draft.scenes.length > sceneCount) fail('INVALID_SCHEMA', `scenes must contain no more than the requested ${sceneCount} scenes.`);
-    return draft;
-  }, signal);
-  const warnings = [...ledger.warnings, ...adapted.warnings, ...missingCastWarnings(ledger.cast, adapted.cast)];
-  if (chunks.length > 1) warnings.push(`Adapted from ${chunks.length} source sections using a condensed story ledger. Review character consistency, chronology, and omitted subplots before saving.`);
-  if (adapted.scenes.length < sceneCount) warnings.push(`The model produced ${adapted.scenes.length} scenes of the ${sceneCount} requested. Review whether any major events are missing.`);
-  adapted.warnings = [...new Set(warnings)];
+  const metadata: DraftMetadata = { version: 1, id: `sp-${crypto.randomUUID()}`, playerRole, startingPoint, source: { title, ...(url ? { url } : {}), characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
+  const preferences: Preferences = { sourceTitle: title, playerRole, startingPoint, requestedScenes: sceneCount };
+  progress('Checking for a saved complete adaptation');
+  let adapted = await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, value => validateAdaptation(value, metadata, sceneCount), value => finalizeAdaptation(value, ledger, sceneCount), signal);
+  if (adapted) completed++;
+  else {
+    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal);
+    adapted = staged.draft;
+    completed += staged.operations;
+  }
+  total = completed;
   checkCancelled(signal);
-  const result = validateDraft(adapted);
-  completed++; progress('Draft ready for review');
+  let result: StoryDraft;
+  try { result = finalizeAdaptation(adapted, ledger, sceneCount); }
+  catch (error) {
+    if (!(error instanceof ImportError)) throw error;
+    fail('DRAFT_SIZE_LIMIT', 'The completed sections could not be assembled within this version’s draft limits. Completed responses remain saved; no content was cut.');
+  }
+  progress('Draft ready for review');
   return result;
 }
 

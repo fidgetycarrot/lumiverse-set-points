@@ -5,6 +5,14 @@ import { draft } from './fixtures';
 import { DEMO_STORY, type ImportOptions, type ImportJob, type WebStoryPage } from '../src/types';
 
 const options:ImportOptions={text:DEMO_STORY,sourceTitle:'The Lighthouse Letter',playerRole:'Mara',startingPoint:'The harbor',sceneCount:4,chunkSize:12000,connectionId:'model'};
+function stagedReply(input:any) {
+  const body=JSON.parse(input.messages[1].content), example=draft();
+  if(body.task==='set-points-plan-v1')return {title:example.title,premise:example.premise,narratorInstructions:example.narratorInstructions,startingLore:[],scenes:example.scenes.map(scene=>({title:scene.title,eventIndexes:[0],brief:'A traveler follows a clue.',assumptions:scene.assumptions})),warnings:[]};
+  if(body.task==='set-points-cast-v1')return {cast:body.characters.map((person:any)=>({id:person.id,personality:'Cautious and resourceful.',voice:'Direct.',relationships:'Acquainted with the traveler.',knowledge:'Knows the harbor.'})),warnings:[]};
+  if(body.task==='set-points-lore-v1')return {lore:body.entries.map((entry:any)=>({id:entry.id,keys:['harbor'],content:'A small coastal harbor.'})),warnings:[]};
+  if(body.task==='set-points-scenes-v1')return {scenes:body.scenes.map((scene:any)=>({id:scene.id,greeting:'A lantern glows by the harbor. What do you do?',direction:'Offer the next clue without choosing for the player.',assumptions:scene.assumptions})),warnings:[]};
+  throw new Error('Unexpected adaptation request in test');
+}
 function harness(generate: (input:any)=>Promise<unknown> = async()=>({content:'not json',finish_reason:'stop'})) {
   const stored=new Map<string,unknown>();const calls:any[]=[];
   const api={
@@ -44,13 +52,13 @@ describe('import jobs and draft storage',()=>{
       // Mirror Lumiverse worker-host: connection_id does not supply input.model.
       const upstream={provider:input.provider||'',model:input.model||''};
       if(upstream.model!==model||upstream.provider!==provider) throw new Error('API error: 400 - model is required');
-      return {content:JSON.stringify(input.messages[1].content.startsWith('SOURCE CHUNK')?ledger:draft()),finish_reason:'stop'};
+      return {content:JSON.stringify(input.messages[1].content.startsWith('SOURCE CHUNK')?ledger:stagedReply(input)),finish_reason:'stop'};
     });
     Object.assign(h.api.connections,{get:async()=>({id:'model',name:'Private connection',provider,model,api_url:'https://private.example',has_api_key:true})});
     const app=new SetPointsController(h.api,'alice');
     await app.handle('start-import',{options});await app.waitForImport();
     const view=await app.snapshot(null);
-    expect(view.job?.status).toBe('complete');expect(view.draft?.scenes).toHaveLength(2);expect(h.calls).toHaveLength(2);
+    expect(view.job?.status).toBe('complete');expect(view.draft?.scenes).toHaveLength(2);expect(h.calls).toHaveLength(3);
     for(const call of h.calls){
       expect(call).toMatchObject({type:'raw',connection_id:'model',provider,model,userId:'alice'});
       expect(call).not.toHaveProperty('api_url');expect(call).not.toHaveProperty('api_key');
@@ -174,13 +182,13 @@ describe('import jobs and draft storage',()=>{
     const h=harness(async(input)=>{
       if(input.messages[1].content.startsWith('SOURCE CHUNK'))return {content:JSON.stringify(ledger),finish_reason:'stop'};
       if(failing)throw new Error('OpenRouter generate failed (503): unavailable');
-      return {content:JSON.stringify(draft()),finish_reason:'stop'};
+      return {content:JSON.stringify(stagedReply(input)),finish_reason:'stop'};
     });
     const first=new SetPointsController(h.api,'alice');await first.handle('start-import',{options});await first.waitForImport();
     expect(h.calls).toHaveLength(2);expect((await first.snapshot(null)).resume?.available).toBe(true);
     failing=false;
     const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{});await resumed.waitForImport();
-    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(3);
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(4);
     expect(h.calls.filter(call=>call.messages[1].content.startsWith('SOURCE CHUNK'))).toHaveLength(1);
     expect((await resumed.snapshot(null)).diagnostics.join(' ')).toContain('Reused a saved model response');
     expect(JSON.stringify(await resumed.handle('diagnostics',{}))).not.toContain('Mara');
@@ -190,26 +198,26 @@ describe('import jobs and draft storage',()=>{
     const oversized={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events,warnings:[]};
     expect(JSON.stringify(oversized).length).toBeGreaterThan(24000);
     let call=0;
-    const h=harness(async()=>{
+    const h=harness(async(input)=>{
       call++;if(call===2)throw new Error('OpenRouter generate failed (503): unavailable');
-      return {content:JSON.stringify(call===1?oversized:draft()),finish_reason:'stop'};
+      return {content:JSON.stringify(call===1?oversized:stagedReply(input)),finish_reason:'stop'};
     });
     const first=new SetPointsController(h.api,'alice');await first.handle('start-import',{options});await first.waitForImport();
     expect(h.calls).toHaveLength(2);expect((await first.snapshot(null)).job?.status).toBe('failed');
     const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{});await resumed.waitForImport();
-    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(3);
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(4);
     expect(h.calls.filter(input=>input.messages[1].content.startsWith('SOURCE CHUNK'))).toHaveLength(1);
     expect(h.calls.every(input=>!input.messages[1].content.includes('compact-existing-ledger'))).toBe(true);
     expect(JSON.parse(h.calls[2].messages[1].content).ledger.events).toEqual(events.map(event=>({...event,summary:event.summary.trim()})));
   });
   test('upgrades the actual 0.1.3 shortening-failure checkpoint without repurchasing reading or shortening',async()=>{
     const fixture=await Bun.file(new URL('./fixtures/recovery-v013.json',import.meta.url)).json() as {files:Record<string,string>};
-    const h=harness(async()=>({content:JSON.stringify(draft()),finish_reason:'stop'}));
+    const h=harness(async(input)=>({content:JSON.stringify(stagedReply(input)),finish_reason:'stop'}));
     for(const [path,value] of Object.entries(fixture.files))h.stored.set(`alice:${path}`,value);
     const app=new SetPointsController(h.api,'alice');
     const before=await app.snapshot(null);expect(before.job?.error).toContain('after one shortening attempt');expect(before.resume?.available).toBe(true);
     await app.handle('resume-import',{});await app.waitForImport();
-    expect((await app.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(1);
+    expect((await app.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(2);
     const input=JSON.parse(h.calls[0].messages[1].content);
     expect(input.ledger.events).toHaveLength(14);expect(input.ledger.events[13].summary).toBe('A traveler learns about the harbor. '.repeat(60).trim());
     expect(h.calls[0].messages[1].content).not.toContain('compact-existing-ledger');
@@ -220,15 +228,74 @@ describe('import jobs and draft storage',()=>{
     const app=new SetPointsController(h.api,'alice');expect((await app.snapshot(null)).resume?.available).toBe(false);
     await expect(app.handle('resume-import',{})).rejects.toThrow('Earlier versions');expect(h.calls).toHaveLength(0);
   });
+  test('upgrades the published 0.1.4 output-limit failure using old reading and new staged settings',async()=>{
+    const fixture=await Bun.file(new URL('./fixtures/output-limit-v014.json',import.meta.url)).json() as {files:Record<string,string>};
+    const h=harness(async input=>({content:JSON.stringify(stagedReply(input)),finish_reason:'stop'}));
+    for(const [path,value] of Object.entries(fixture.files))h.stored.set(`alice:${path}`,value);
+    const app=new SetPointsController(h.api,'alice');
+    expect((await app.snapshot(null)).job?.error).toContain('OUTPUT_LIMIT');
+    await app.handle('resume-import',{maxOutputTokens:32000,reasoningMode:'off'});await app.waitForImport();
+    const view=await app.snapshot(null);
+    expect(view.job?.status).toBe('complete');expect(h.calls).toHaveLength(2);
+    expect(h.calls.map(call=>JSON.parse(call.messages[1].content).task)).toEqual(['set-points-plan-v1','set-points-scenes-v1']);
+    for(const call of h.calls){expect(call.parameters.max_tokens).toBe(32000);expect(call.reasoning).toEqual({source:'off'});}
+    expect(view.resume).toMatchObject({maxOutputTokens:32000,reasoningMode:'off'});
+    expect(view.diagnostics.join(' ')).toContain('Reused a saved model response');
+  });
+  test('changed allowance retries a truncated reading step once and persists reasoning choice',async()=>{
+    const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events:[{title:'Arrival',summary:'A traveler reaches a harbor.',participants:[],changes:'A journey begins.',sourceRefs:['chunk:1']}],warnings:[]};
+    let first=true;
+    const h=harness(async input=>{if(first){first=false;return {content:'',finish_reason:'length'};}return {content:JSON.stringify(input.messages[1].content.startsWith('SOURCE CHUNK')?ledger:stagedReply(input)),finish_reason:'stop'};});
+    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});await app.waitForImport();
+    expect(h.calls).toHaveLength(1);expect((await app.snapshot(null)).job?.phase).toContain('Reading source section');
+    const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{maxOutputTokens:64000,reasoningMode:'low'});await resumed.waitForImport();
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(4);
+    expect(h.calls[0].parameters.max_tokens).toBe(16000);expect(h.calls[0]).not.toHaveProperty('reasoning');
+    for(const call of h.calls.slice(1)){expect(call.parameters.max_tokens).toBe(64000);expect(call.reasoning).toEqual({source:'custom',apiReasoning:true,effort:'low'});}
+  });
+  test('new staged requests cannot bypass an uncertain final request saved by published 0.1.4',async()=>{
+    const fixture=await Bun.file(new URL('./fixtures/uncertain-final-v014.json',import.meta.url)).json() as {files:Record<string,string>};
+    const h=harness(async input=>({content:JSON.stringify(stagedReply(input)),finish_reason:'stop'}));
+    for(const [path,value] of Object.entries(fixture.files))h.stored.set(`alice:${path}`,value);
+    const app=new SetPointsController(h.api,'alice');
+    await app.handle('resume-import',{maxOutputTokens:32000,reasoningMode:'off'});await app.waitForImport();
+    expect(h.calls).toHaveLength(0);expect((await app.snapshot(null)).resume?.retryUncertain).toBe(true);
+    await app.handle('resume-import',{maxOutputTokens:32000,reasoningMode:'off',retryUncertain:true});await app.waitForImport();
+    expect((await app.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(2);
+  });
+  test('changing settings after a scene truncation reuses completed reading and plan across restart',async()=>{
+    const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events:[{title:'Arrival',summary:'A traveler reaches a harbor.',participants:[],changes:'A journey begins.',sourceRefs:['chunk:1']}],warnings:[]};
+    let failScene=true;
+    const h=harness(async input=>{
+      if(input.messages[1].content.startsWith('SOURCE CHUNK'))return {content:JSON.stringify(ledger),finish_reason:'stop'};
+      if(JSON.parse(input.messages[1].content).task==='set-points-scenes-v1'&&failScene)return {content:'{"scenes":[',finish_reason:'length'};
+      return {content:JSON.stringify(stagedReply(input)),finish_reason:'stop'};
+    });
+    const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});await app.waitForImport();
+    expect(h.calls).toHaveLength(3);expect((await app.snapshot(null)).job?.status).toBe('failed');
+    failScene=false;const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{maxOutputTokens:32000,reasoningMode:'off'});await resumed.waitForImport();
+    expect((await resumed.snapshot(null)).job?.status).toBe('complete');expect(h.calls).toHaveLength(4);
+    expect(JSON.parse(h.calls[3].messages[1].content).task).toBe('set-points-scenes-v1');
+  });
+  test('changed response settings cannot bypass an uncertain paid reading attempt',async()=>{
+    const h=harness(async()=>{throw new Error('fetch failed');}),app=new SetPointsController(h.api,'alice');
+    await app.handle('start-import',{options});await app.waitForImport();expect(h.calls).toHaveLength(1);
+    const resumed=new SetPointsController(h.api,'alice');await resumed.handle('resume-import',{maxOutputTokens:64000,reasoningMode:'off'});await resumed.waitForImport();
+    expect(h.calls).toHaveLength(1);expect((await resumed.snapshot(null)).resume?.retryUncertain).toBe(true);
+  });
+  test.each([{maxOutputTokens:0},{maxOutputTokens:1000000},{maxOutputTokens:'32000'},{reasoningMode:'maximum'}])('rejects invalid import response controls before billing (%j)',async settings=>{
+    const h=harness(),app=new SetPointsController(h.api,'alice');
+    await expect(app.handle('start-import',{options:{...options,...settings}})).rejects.toThrow('Choose');expect(h.calls).toHaveLength(0);
+  });
   test('a lost response requires the explicitly warned retry instead of silently paying again',async()=>{
     const ledger={coveredChunks:['chunk:1'],premise:'A traveler seeks a lighthouse.',cast:[],setting:[],events:[{title:'Arrival',summary:'A traveler reaches the harbor.',participants:[],changes:'A journey begins.',sourceRefs:['chunk:1']}],warnings:[]};
     let first=true;
-    const h=harness(async(input)=>{if(first){first=false;throw new Error('fetch failed');}return {content:JSON.stringify(input.messages[1].content.startsWith('SOURCE CHUNK')?ledger:draft()),finish_reason:'stop'};});
+    const h=harness(async(input)=>{if(first){first=false;throw new Error('fetch failed');}return {content:JSON.stringify(input.messages[1].content.startsWith('SOURCE CHUNK')?ledger:stagedReply(input)),finish_reason:'stop'};});
     const app=new SetPointsController(h.api,'alice');await app.handle('start-import',{options});await app.waitForImport();
-    expect(h.calls).toHaveLength(1);expect((await app.snapshot(null)).resume).toEqual({available:true,retryUncertain:true});
+    expect(h.calls).toHaveLength(1);expect((await app.snapshot(null)).resume).toMatchObject({available:true,retryUncertain:true});
     await app.handle('resume-import',{});await app.waitForImport();expect(h.calls).toHaveLength(1);
     await app.handle('resume-import',{retryUncertain:true});await app.waitForImport();
-    expect(h.calls).toHaveLength(3);expect((await app.snapshot(null)).job?.status).toBe('complete');
+    expect(h.calls).toHaveLength(4);expect((await app.snapshot(null)).job?.status).toBe('complete');
   });
   test('resume stops before billing if the saved connection profile changed',async()=>{
     const h=harness(async()=>{throw new Error('HTTP 503: unavailable');}),app=new SetPointsController(h.api,'alice');

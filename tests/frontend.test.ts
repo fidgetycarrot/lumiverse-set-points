@@ -190,20 +190,20 @@ describe('neutral connection check',()=>{
 describe('saved import resume',()=>{
   test('resumes after reopening with an empty form using saved backend options only',async()=>{
     const app=harness();app.state.job={id:'older-job',status:'failed',completed:2,total:4,label:'Saved progress retained.'};app.state.resume={available:true,retryUncertain:false};await tick();
-    expect(app.button('Resume saved import').hidden).toBe(false);expect(app.field('Story text').value).toBe('');expect(app.root.textContent).toContain('Uses the story and settings saved for your last attempt.');
-    app.button('Resume saved import').click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({});expect(app.requests.some(item=>item.action==='start-import')).toBe(false);expect(app.field('Story text').value).toBe('');
+    expect(app.button('Resume saved import').hidden).toBe(false);expect(app.field('Story text').value).toBe('');expect(app.root.textContent).toContain('Uses the saved story and import settings');
+    app.button('Resume saved import').click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({maxOutputTokens:16000,reasoningMode:'inherit'});expect(app.requests.some(item=>item.action==='start-import')).toBe(false);expect(app.field('Story text').value).toBe('');
     expect(app.button('Resume saved import').hidden).toBe(true);expect(app.button('Create adaptation').disabled).toBe(true);
   });
   test('preserves current form, review edits, and staged pages when resuming a different saved import',async()=>{
     const app=harness();await tick();app.input('Story text','Different source currently being edited');app.input('Story title','New source title');app.input('Who will you play?','A new role');app.button('Review').click();app.input('Premise','An unsaved premise edit');app.button('Import').click();
     app.input('Story link',webUrl(1));app.setPages(async()=>webPage(1));app.button('Read page').click();await tick();
     app.state.job={id:'saved-job',status:'cancelled',completed:1,total:3,label:'Cancelled'};app.state.resume={available:true,retryUncertain:false};app.changed();await tick();app.button('Resume saved import').click();await tick();
-    expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({});expect(app.field('Story text').value).toBe('Different source currently being edited');expect(app.field('Story title').value).toBe('New source title');expect(app.field('Who will you play?').value).toBe('A new role');expect(app.field('Premise').value).toBe('An unsaved premise edit');expect(app.root.textContent).toContain('1 page collected');
+    expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({maxOutputTokens:16000,reasoningMode:'inherit'});expect(app.field('Story text').value).toBe('Different source currently being edited');expect(app.field('Story title').value).toBe('New source title');expect(app.field('Who will you play?').value).toBe('A new role');expect(app.field('Premise').value).toBe('An unsaved premise edit');expect(app.root.textContent).toContain('1 page collected');
   });
   test('unknown request outcomes require the explicitly warned retry action',async()=>{
     const app=harness();app.state.job={id:'uncertain-job',status:'failed',completed:1,total:4,label:'The request outcome is unknown.'};app.state.resume={available:true,retryUncertain:true};await tick();
     const retry=app.button('Retry unfinished request');expect(retry.hidden).toBe(false);expect(app.root.textContent).toContain('Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.');
-    retry.click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({retryUncertain:true});
+    retry.click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({maxOutputTokens:16000,reasoningMode:'inherit',retryUncertain:true});
   });
   test('resume errors retain edits and leave retry available while busy checks disable it',async()=>{
     const app=harness();app.state.job={id:'saved-job',status:'failed',completed:1,total:4,label:'Failed'};app.state.resume={available:true,retryUncertain:false};await tick();app.input('Story text','Keep current edits');app.fail('Saved import could not resume.');app.button('Resume saved import').click();await tick();
@@ -213,5 +213,39 @@ describe('saved import resume',()=>{
   });
   test('older failed jobs without saved-import metadata do not offer recovery',async()=>{
     const app=harness();app.state.job={id:'legacy-job',status:'failed',completed:2,total:4,label:'Prior version failed'};await tick();expect(app.button('Resume saved import').hidden).toBe(true);expect(app.button('Resume saved import').disabled).toBe(true);
+  });
+});
+
+
+describe('model response settings',()=>{
+  test('new imports use explicit defaults unless the user changes the response settings',async()=>{
+    const app=harness();await tick();app.button('Try a sample').click();expect(app.field('Response allowance').value).toBe('16000');expect(app.field('Reasoning mode').value).toBe('inherit');
+    app.button('Create adaptation').click();await tick();let options=app.requests.find(item=>item.action==='start-import')?.input.options;expect(options.maxOutputTokens).toBe(16000);expect(options.reasoningMode).toBe('inherit');
+    app.button('Cancel import').click();await tick();app.input('Response allowance','32000');app.input('Reasoning mode','off');expect(app.requests.filter(item=>item.action==='start-import')).toHaveLength(1);
+    app.button('Create adaptation').click();await tick();options=app.requests.filter(item=>item.action==='start-import').at(-1)?.input.options;expect(options.maxOutputTokens).toBe(32000);expect(options.reasoningMode).toBe('off');
+    expect(app.root.textContent).toContain('may cost more or be rejected by your provider');
+  });
+  test('resume uses saved response choices independently from the current import form',async()=>{
+    const app=harness();app.state.job={id:'saved-settings',status:'failed',completed:3,total:5,label:'Failed',error:'Output limit reached',phase:'Building the narrator profile'};app.state.resume={available:true,retryUncertain:false,maxOutputTokens:32000,reasoningMode:'low'};await tick();
+    expect(app.field('Unfinished response allowance').value).toBe('32000');expect(app.field('Unfinished reasoning mode').value).toBe('low');expect(app.root.textContent).toContain('Stopped during Building the narrator profile. Output limit reached');
+    app.input('Story text','Different new source');app.input('Response allowance','8000');app.input('Reasoning mode','off');app.button('Resume saved import').click();await tick();
+    expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({maxOutputTokens:32000,reasoningMode:'low'});expect(app.field('Story text').value).toBe('Different new source');expect(app.field('Response allowance').value).toBe('8000');
+  });
+  test('unfinished settings survive background refresh and are sent only on deliberate resume',async()=>{
+    const app=harness();app.state.job={id:'saved-settings',status:'failed',completed:2,total:4,label:'Failed'};app.state.resume={available:true,retryUncertain:false,maxOutputTokens:16000,reasoningMode:'inherit'};await tick();
+    app.input('Unfinished response allowance','64000');app.input('Unfinished reasoning mode','off');app.changed();await tick();
+    expect(app.field('Unfinished response allowance').value).toBe('64000');expect(app.field('Unfinished reasoning mode').value).toBe('off');expect(app.requests.some(item=>item.action==='resume-import')).toBe(false);expect(app.root.textContent).toContain('Completed steps are reused even when you change the response settings');
+    app.button('Resume saved import').click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({maxOutputTokens:64000,reasoningMode:'off'});
+  });
+  test('a different failed job loads its own saved settings and retains explicit uncertain retry consent',async()=>{
+    const app=harness();app.state.job={id:'first-job',status:'failed',completed:1,total:4,label:'Failed'};app.state.resume={available:true,retryUncertain:false,maxOutputTokens:16000,reasoningMode:'inherit'};await tick();app.input('Unfinished response allowance','64000');
+    app.state.job={id:'second-job',status:'failed',completed:2,total:5,label:'Failed'};app.state.resume={available:true,retryUncertain:true,maxOutputTokens:8000,reasoningMode:'low'};app.changed();await tick();expect(app.field('Unfinished response allowance').value).toBe('8000');expect(app.field('Unfinished reasoning mode').value).toBe('low');
+    app.button('Retry unfinished request').click();await tick();expect(app.requests.find(item=>item.action==='resume-import')?.input).toEqual({maxOutputTokens:8000,reasoningMode:'low',retryUncertain:true});
+  });
+  test('busy operations disable response settings and resume errors preserve chosen overrides',async()=>{
+    const app=harness();app.state.job={id:'saved-settings',status:'failed',completed:1,total:4,label:'Failed'};app.state.resume={available:true,retryUncertain:false};await tick();
+    app.input('Unfinished response allowance','32000');app.input('Unfinished reasoning mode','low');app.fail('The provider rejected these settings.');app.button('Resume saved import').click();await tick();expect(app.field('Unfinished response allowance').value).toBe('32000');expect(app.field('Unfinished reasoning mode').value).toBe('low');expect(app.button('Resume saved import').disabled).toBe(false);
+    app.fail('');let accept!:(value:{message:string})=>void;app.setConnectionTest(async()=>new Promise(resolve=>{accept=resolve;}));app.button('Check connection').click();await tick();expect(app.field('Response allowance').disabled).toBe(true);expect(app.field('Unfinished reasoning mode').disabled).toBe(true);
+    accept({message:'Accepted'});await tick();expect(app.field('Response allowance').disabled).toBe(false);expect(app.field('Unfinished reasoning mode').disabled).toBe(false);
   });
 });

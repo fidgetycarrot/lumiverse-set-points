@@ -1,55 +1,58 @@
-# Set Points 0.1.4 — verification
+# Set Points 0.1.5 — verification
 
-Prepared October 8, 2026.
+Prepared October 9, 2026.
 
-## Change in 0.1.4
+## Change in 0.1.5
 
-The 24,000-character intermediate-summary size is now a prompt target, not an acceptance gate. A structurally valid original ledger up to 192,000 characters is preserved. The importer makes no new paid compaction requests.
+New final-card generation is split into a compact plan, cast/lore batches of at most four entries, and scene batches of at most two. Each completed plan or batch is cached separately. The importer does not send a new monolithic whole-card request. A valid complete legacy final response or its valid saved repair is reused only from cache; partial or truncated legacy output is not salvaged into batch data.
 
-If a valid compacted response from 0.1.3 is already saved, it can be read from the cache to preserve matching downstream merge results. Otherwise the original saved ledger is retained unchanged. Original request prompts and checkpoint `FORMAT 1` are preserved so a failed 0.1.3 import can reuse its saved work.
+Completed compatible source-reading, merge, plan, and batch responses can be reused even when response allowance or reasoning mode changes. The original story/request messages and model profile must still match. Resume uses the saved story and import setup, independently of current form edits; only its separately selected response allowance and reasoning overrides apply to unfinished requests.
 
-Actual serialized model requests are checked against a 256,000-character budget before sending. Merge grouping adapts to that budget. If even a pair of summaries cannot fit, the importer stops locally without sending a new paid request and retains the saved work. Final card limits, source-reference checks, and markup validation remain strict.
+Default settings remain 16,000 output tokens and inherited reasoning. Optional allowances are 8,000, 16,000, 32,000, or 64,000 tokens; reasoning choices are inherit, off, or low. These are explicit per-import choices. Changing a control does not send a request, and the extension does not automatically raise settings or retry the provider. Larger allowances or unsupported reasoning choices may be rejected by the provider.
 
-## Resuming and charges
+Raw request parameters normally override a preset output ceiling, but a host custom request body can override those parameters. Provider limits also apply. The selected allowance is requested, not guaranteed. Reasoning passthrough and raw-generation behavior were checked against the published SDK and Lumiverse 1.2.0 host source; see the [official generation API](https://docs.lumiverse.chat/backend-api/generation/).
 
-Update the existing extension in place and use **Resume saved import**. Do not uninstall or clear its private storage before resuming. Resume uses the last saved source and settings, preserving current form edits. Completed matching responses are reused; remaining uncached merge and final-adaptation requests still incur normal provider charges. This is not a promise that the entire resumed import is free.
+Adaptation requests now have a ten-minute deadline. The separate neutral connection check remains at 30 seconds and 256 output tokens. Failed phases are retained in the interface and diagnostics.
 
-Cache identity continues to use exact request messages, the connection/profile fingerprint, and sampler parameters. A changed request may require a new model call. A request with an unknown outcome is never automatically repeated; **Retry unfinished request** retains its explicit possible-duplicate-charge warning. Earlier failed 0.1.2 runs remain unrecoverable because those versions did not save their responses.
+## Saved work, compatibility, and charges
 
-The last import’s raw source and options, plus cached response content and reasoning with minimal metadata, remain in private per-user extension storage. Opaque provider details are excluded. Diagnostic exports exclude checkpoint source, response prose, and reasoning text.
+Update the installed extension in place and keep its private storage intact. Existing saved source, model responses, reasoning, and minimal response metadata remain per-user data. Diagnostic exports exclude source prose, response prose, credentials, and reasoning text.
 
-The neutral connection check and categorized provider errors from 0.1.3 remain available. The chosen model and reasoning settings are unchanged, and provider failures are not automatically retried. The existing single format-repair attempt remains separate from the removed paid-compaction path.
+Legacy extraction, merge, compaction lookup, and final-card prompts remain available with checkpoint `FORMAT 1`. Valid legacy compacted responses are looked up without new compaction calls. Original valid ledgers up to 192,000 characters and the 256,000-character serialized request budget remain supported, with strict final-card, reference, and markup validation.
+
+New reading, merge, plan, batch, or format-repair requests incur normal provider charges. More, smaller batches may increase input-token charges; no lower-cost or free-import outcome is promised. Complete compatible responses are reused, but unfinished work still needs new requests. An unknown request outcome still requires the explicitly warned **Retry unfinished request** action. Failed 0.1.2 runs without saved responses remain unrecoverable.
 
 ## Current release verification
 
-All 207 tests passed across 8 files, with 1,159 assertions. TypeScript checking passed. Bun 1.4.2 produced the backend (506,000 bytes), frontend (61,052 bytes), and mocked preview (71,562 bytes). The official Lumiverse 1.2.0 capability scanner reported no undeclared capabilities with the existing `base64_decode` declaration.
+All **243 tests passed across 10 files**, with **1,416 assertions**. TypeScript checking passed. Bun 1.4.2 produced the backend (526,701 bytes), frontend (65,112 bytes), and mocked preview (75,622 bytes). The official Lumiverse 1.2.0 capability scanner found no undeclared capabilities with the existing `base64_decode` declaration.
 
-The upgrade regression uses neutral saved workspace and response files generated by the actual published 0.1.3 backend bundle. That run failed with the reported shortening-limit message. The 0.1.4 controller resumed those files, reused the original source-reading response, skipped the failed shortening, and completed with only one new mocked final-adaptation request. Separate hash assertions verify byte-identical 0.1.3 extraction, legacy-shortening, merge, and final prompts. Tests also cover valid legacy compacted-response reuse, oversized merge grouping, request-budget failures before dispatch, cancellation, checkpoint integrity, and diagnostic redaction.
+Neutral fixtures generated by the actual published 0.1.4 backend reproduce a final output-limit failure and an unknown final-request outcome. Upgrade tests confirm that the former reuses saved reading and runs only the new plan/scene requests with selected response settings, while the latter sends no new request until explicitly retried. A saved 0.1.3 compaction-failure fixture also resumes through the new stages.
 
-The user’s failed story has not been retested with 0.1.4. No successful live adaptation or new dependency-audit result is claimed.
+Coverage includes batch boundaries, retaining requested identities and scene order, exact legacy prompt/repair hashes, retrying only a failed scene batch after restart, changing response settings without repurchasing completed work, provider-specific reasoning controls, source-free diagnostics, and unknown-request protection across settings and schema changes. An independent regression confirms that overflowing warnings in an old complete draft cannot invalidate its valid paid reading response. No user story was used. No successful live provider adaptation or new dependency audit is claimed.
 
 ## Previous release verification references
 
-These historical results do not verify 0.1.4:
+These historical results do not verify 0.1.5:
 
 | Version | Tests | Assertions | Test files |
 | --- | ---: | ---: | ---: |
+| 0.1.4 | 207 | 1,159 | 8 |
 | 0.1.3 | 190 | 1,079 | 8 |
 | 0.1.2 | 123 | 663 | 7 |
 | 0.1.1 | 103 | 427 | 7 |
 
-Version 0.1.3 passed TypeScript, Bun 1.4.2 production builds, and the Lumiverse 1.2.0 capability scan with only `base64_decode` declared. Its tests covered restart reuse, explicit uncertain-request authorization, diagnostic redaction, and the former bounded-compaction behavior. That release’s paid-compaction path is superseded by 0.1.4’s original-ledger preservation and cache-only legacy reuse.
+Version 0.1.4 passed TypeScript, Bun 1.4.2 builds, and the Lumiverse 1.2.0 capability scan with only `base64_decode` declared. Its neutral upgrade regression used saved files generated by the published 0.1.3 backend, reused the reading result after a shortening failure, and completed with one new mocked final-card request. Version 0.1.5 replaces that new whole-card request path with staged generation; the old result is not evidence for the new path.
 
 ## Still to verify in a live installation
 
-The reported 0.1.3 compaction failure has saved work that the new resume path is designed to reuse. Its original story has not been provided or retested here, so end-to-end success is not established. The separately reported Gemini 3.1 Pro HTTP 403 and Gemini 3.8 Flash blank-response causes remain unknown. Raw generation and normal chat share the host’s credential path but have different prompts and settings; this update does not establish or fix those upstream causes.
+Mocked tests and neutral saved fixtures do not establish adaptation quality, provider acceptance of a requested output allowance, or live reasoning-override compatibility. A successful connection check also does not establish that a larger story request will be accepted.
 
 Suggested verification:
 
-1. Update the installed extension to 0.1.4 without uninstalling or clearing its private storage.
-2. Choose **Resume saved import** for the saved 0.1.3 attempt. Confirm that completed reading steps are reused and no new compaction request is sent.
-3. Allow any remaining normal merge and final-adaptation requests only with their normal charges understood. If the request budget prevents a merge, confirm that it stops locally and retains progress.
-4. If it fails, record the new error code and download diagnostics. Check that exported response details contain only allowed codes, lengths, and numeric usage.
-5. If the adaptation succeeds, review the cast, starting knowledge, scene assumptions, and player agency before saving the narrator card.
+1. Update the extension to 0.1.5 in place, preserving its private storage.
+2. Review the failed phase and choose **Resume saved import** for the saved attempt. Leave the default response settings or deliberately select a supported alternative for unfinished requests.
+3. Confirm completed reading and merge work is reused, and that remaining generation progresses through the plan and bounded batches. New requests use normal model charges.
+4. If a request fails, record the retained phase and error code and download diagnostics. Verify that exports contain allowed codes, lengths, and numeric usage rather than source, response, or reasoning text.
+5. When adaptation completes, review the cast, lore, continuity assumptions, scene openings, and player agency before saving the card.
 
 Repository installation target: [fidgetycarrot/lumiverse-set-points](https://github.com/fidgetycarrot/lumiverse-set-points).

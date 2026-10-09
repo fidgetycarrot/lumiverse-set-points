@@ -14,6 +14,20 @@ function sameSettings(a: unknown, b: unknown): boolean {
   const ordered = (_key: string, value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value;
   return JSON.stringify(a, ordered) === JSON.stringify(b, ordered);
 }
+const OUTPUT_ALLOWANCES = [8000, 16000, 32000, 64000] as const;
+const REASONING_MODES = ['inherit', 'off', 'low'] as const;
+type ResponseSettings = { maxOutputTokens: number; reasoningMode: typeof REASONING_MODES[number] };
+function responseSettings(value: Pick<ImportOptions, 'maxOutputTokens'|'reasoningMode'>): ResponseSettings {
+  const maxOutputTokens = value.maxOutputTokens ?? 16000, reasoningMode = value.reasoningMode ?? 'inherit';
+  if (!(OUTPUT_ALLOWANCES as readonly unknown[]).includes(maxOutputTokens)) throw new Error('Choose an output allowance of 8,000, 16,000, 32,000, or 64,000 tokens.');
+  if (!(REASONING_MODES as readonly unknown[]).includes(reasoningMode)) throw new Error('Choose connection reasoning, low reasoning, or reasoning off.');
+  return { maxOutputTokens, reasoningMode };
+}
+function requestFingerprint(base: unknown, settings: ResponseSettings): unknown {
+  // The default is byte-compatible with 0.1.3/0.1.4 checkpoints. Only these
+  // explicit per-request controls may vary when reusing completed paid work.
+  return { ...record(base), parameters: { temperature: 0.3, max_tokens: settings.maxOutputTokens }, ...(settings.reasoningMode === 'inherit' ? {} : { reasoningMode: settings.reasoningMode }) };
+}
 // Lumiverse 1.2's raw worker API requires these fields even with connection_id.
 // spindle-types 0.6.40 omits them from GenerationRequestDTO.
 type RawModelRequest = GenerationRequestDTO & { provider: string; model: string };
@@ -123,7 +137,7 @@ export class SetPointsController {
     if (!connection.provider?.trim()) throw new Error('The selected connection has no provider. Edit that connection in Lumiverse, then retry.');
     return { id, model: connection.model, provider: connection.provider, fingerprint: { id, model: connection.model, provider: connection.provider, api_url: connection.api_url, preset_id: connection.preset_id, metadata: connection.metadata, reasoning_bindings: connection.reasoning_bindings, parameters: { temperature: 0.3, max_tokens: 16000 } } };
   }
-  private async requestModel(connection: { id: string; model: string; provider: string }, messages: GenerationMessage[], signal: AbortSignal, maxTokens = 16000, timeoutMs = 180_000): Promise<unknown> {
+  private async requestModel(connection: { id: string; model: string; provider: string }, messages: GenerationMessage[], signal: AbortSignal, maxTokens = 16000, timeoutMs = 600_000, reasoningMode: ResponseSettings['reasoningMode'] = 'inherit'): Promise<unknown> {
     this.require('generation');
     const deadline = AbortSignal.timeout(timeoutMs);
     const requestSignal = AbortSignal.any([signal, deadline]);
@@ -131,6 +145,9 @@ export class SetPointsController {
     try {
       requestSignal.throwIfAborted();
       const request: RawModelRequest = { type: 'raw', connection_id: connection.id, provider: connection.provider, model: connection.model, userId: this.userId, messages, parameters: { temperature: 0.3, max_tokens: maxTokens }, signal: requestSignal };
+      if (reasoningMode !== 'inherit') request.reasoning = reasoningMode === 'off' && connection.provider !== 'openrouter'
+        ? { source: 'off' } : { source: 'custom', apiReasoning: true, effort: reasoningMode === 'off' ? 'none' : 'low' };
+      this.note(`Model request settings: requestedOutputTokens=${maxTokens}; reasoning=${reasoningMode}.`);
       // Settle locally as well as asking the host to cancel. A lost host reply
       // must not leave the connection check or import running indefinitely.
       return await Promise.race([this.api.generate.raw(request), new Promise<never>((_, reject) => {
@@ -162,7 +179,7 @@ export class SetPointsController {
       throw new ModelRequestError(code, message);
     };
     if (value.refusal || details.type === 'refusal' || details.type === 'blocked_prompt' || FILTER_STOPS.has(finish) || FILTER_STOPS.has(native)) fail('DECLINED', 'The provider reported a content restriction or refusal. No replacement content was saved.');
-    if (LIMIT_STOPS.has(finish) || LIMIT_STOPS.has(native)) fail('OUTPUT_LIMIT', connectionCheck ? 'The provider responded, but the small test reached its output allowance before returning a complete answer. Reasoning can consume this allowance.' : 'The model reached the output allowance before finishing. Reasoning can consume that allowance. Review the connection’s reasoning settings or request fewer scenes.');
+    if (LIMIT_STOPS.has(finish) || LIMIT_STOPS.has(native)) fail('OUTPUT_LIMIT', connectionCheck ? 'The provider responded, but the small test reached its output allowance before returning a complete answer. Reasoning can consume this allowance.' : 'The model reached its output allowance before finishing this step. Under Settings for unfinished requests, increase the response allowance if the model supports it or lower the reasoning mode. Completed steps can be reused; retrying this unfinished step uses normal charges.');
     if (value.error || ['failed', 'incomplete'].includes(String(details.type)) || FAILED_STOPS.has(finish) || FAILED_STOPS.has(native)) fail('RESPONSE_FAILED', 'The provider returned an unsuccessful response. Download diagnostics for its stop category; no response text is included.');
     if (typeof value.content !== 'string') fail('RESPONSE_FAILED', 'The model returned an unexpected response format. Download diagnostics to help troubleshoot.');
     if (!(value.content as string).trim()) {
@@ -202,10 +219,11 @@ export class SetPointsController {
     }
     const play = chatId === null ? { chatId: null, characterId: null, title: '', enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice: 'Open a chat with a Set Points narrator to use scene controls.' } : await this.runtime.view(chatId);
     const { draft, saved, job } = structuredClone(this.workspace);
-    return { version: VERSION, permissions, connections, draft, saved, job, resume: { available: Boolean(this.workspace.lastImport && job && ['failed', 'cancelled'].includes(job.status)), retryUncertain: Boolean(job?.retryUncertain) }, play, diagnostics: [...this.entries] };
+    return { version: VERSION, permissions, connections, draft, saved, job, resume: { available: Boolean(this.workspace.lastImport && job && ['failed', 'cancelled'].includes(job.status)), retryUncertain: Boolean(job?.retryUncertain), ...responseSettings(this.workspace.lastImport ?? {}) }, play, diagnostics: [...this.entries] };
   }
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
+    const settings = responseSettings(options);
     this.require('generation');
     if (this.checking) throw new Error('Wait for the connection check to finish before adapting the story.');
     if (this.saving) throw new Error('Wait for the card to finish saving before importing another story.');
@@ -243,26 +261,29 @@ export class SetPointsController {
             responseReturned = false;
             controller.signal.throwIfAborted();
             const reusedBefore = this.checkpoints.reused;
-            const result = await this.checkpoints.request(messages, connection.fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal));
+            const fingerprint = requestFingerprint(connection.fingerprint, settings);
+            const reuseFingerprints = OUTPUT_ALLOWANCES.flatMap(maxOutputTokens => REASONING_MODES.map(reasoningMode => requestFingerprint(connection.fingerprint, { maxOutputTokens, reasoningMode })));
+            const result = await this.checkpoints.request(messages, fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal, settings.maxOutputTokens, 600_000, settings.reasoningMode), { reuseFingerprints });
             responseReturned = true;
             if (this.checkpoints.reused > reusedBefore) this.note('Reused a saved model response.');
             return this.readModelResponse(result);
           };
-          generate.peek = async messages => {
+          generate.peek = async (messages, _signal, peekOptions) => {
             controller.signal.throwIfAborted();
-            const result = await this.checkpoints.peek(messages, connection.fingerprint, { includeRejected: true });
+            const reuseFingerprints = OUTPUT_ALLOWANCES.flatMap(maxOutputTokens => REASONING_MODES.map(reasoningMode => requestFingerprint(connection.fingerprint, { maxOutputTokens, reasoningMode })));
+            const result = await this.checkpoints.peek(messages, requestFingerprint(connection.fingerprint, settings), { includeRejected: true, reuseFingerprints, requireSettled: peekOptions?.requireSettled });
             controller.signal.throwIfAborted();
             if (result === undefined) return undefined;
             try { return this.readModelResponse(result); }
             catch (error) {
               if (!(error instanceof ModelRequestError)) throw error;
-              this.note('Saved shortening response was unusable; keeping the original summary.');
+              this.note('Saved response could not be reused.');
               return undefined;
             }
           };
           const draft = await adaptStory(options, generate, (completed, total, label) => {
             if (this.workspace.job?.id !== job.id) return;
-            this.workspace.job = { ...job, completed, total, label };
+            this.workspace.job = { ...job, completed, total, label, phase: label };
             this.changed();
           }, controller.signal);
           controller.signal.throwIfAborted();
@@ -274,11 +295,13 @@ export class SetPointsController {
         } catch (error) {
           const cancelled = controller.signal.aborted;
           let message = error instanceof Error ? error.message : 'Import failed. Your last completed draft is preserved.';
-          if (!cancelled && responseReturned && (error instanceof ImportError && !['COMPACTION_IMPOSSIBLE', 'REQUEST_SIZE_LIMIT'].includes(error.code) || error instanceof ModelRequestError)) {
+          if (!cancelled && responseReturned && (error instanceof ImportError && !['COMPACTION_IMPOSSIBLE', 'REQUEST_SIZE_LIMIT', 'DRAFT_SIZE_LIMIT'].includes(error.code) || error instanceof ModelRequestError)) {
             try { await this.checkpoints.invalidateLast(); }
             catch { message = 'The failed step could not be marked for retry. Saved responses were retained; check extension storage before retrying.'; }
           }
           const retryUncertain = error instanceof CheckpointError && error.code === 'UNCERTAIN_REQUEST';
+          const phase = this.workspace.job?.phase;
+          if (phase) this.note(`Import stopped during: ${phase}.`);
           this.workspace.job = { ...this.workspace.job!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Import cancelled; saved steps retained' : 'Import needs attention', retryUncertain, error: cancelled ? undefined : `${message} Saved steps are retained. Resume saved import reuses them; remaining model requests use normal charges.` };
           this.note(cancelled ? 'Import cancelled.' : 'Import failed; last completed draft preserved.');
           await this.persist().catch(() => this.note('Could not persist the import status.'));
@@ -309,7 +332,10 @@ export class SetPointsController {
       case 'start-import': return this.start(record(data.options) as unknown as ImportOptions);
       case 'resume-import': {
         if (!this.workspace.lastImport) throw new Error('There is no saved import to resume. Earlier versions did not save intermediate work.');
-        return this.start(structuredClone(this.workspace.lastImport), data.retryUncertain === true, true);
+        const options = structuredClone(this.workspace.lastImport);
+        if (data.maxOutputTokens !== undefined) options.maxOutputTokens = data.maxOutputTokens as number;
+        if (data.reasoningMode !== undefined) options.reasoningMode = data.reasoningMode as ImportOptions['reasoningMode'];
+        return this.start(options, data.retryUncertain === true, true);
       }
       case 'cancel-import': this.abort?.abort(); return { cancelled: Boolean(this.abort) };
       case 'save-draft': {

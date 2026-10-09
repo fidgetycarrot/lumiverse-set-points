@@ -1,5 +1,5 @@
 // src/types.ts
-var VERSION = "0.1.4";
+var VERSION = "0.1.5";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -291,6 +291,8 @@ function setup(ctx) {
   let webAbort = null;
   let stagedPages = null;
   let appliedSourceUrl;
+  let resumeSettingsJobId = null;
+  let resumeSettingsDirty = false;
   let refreshInFlight = null;
   let refreshAgain = false;
   let polling;
@@ -424,6 +426,31 @@ function setup(ctx) {
       wrap.append(help);
     }
     return { wrap, input };
+  }
+  function selectField(label, choices, value, onChange) {
+    const wrap = node("div", "sp-field"), caption = node("label", "sp-label", label), input = node("select");
+    input.id = `sp-${suffix}-field-${++fieldIndex}`;
+    caption.htmlFor = input.id;
+    for (const [key, text] of choices)
+      input.append(option(text, key));
+    input.value = value;
+    if (onChange) {
+      input.addEventListener("change", onChange);
+      input.addEventListener("input", onChange);
+    }
+    wrap.append(caption, input);
+    return { wrap, input };
+  }
+  const responseAllowances = [["8000", "8,000 tokens"], ["16000", "16,000 tokens · default"], ["32000", "32,000 tokens"], ["64000", "64,000 tokens"]];
+  const reasoningModes = [["inherit", "Use connection settings"], ["off", "Off"], ["low", "Low"]];
+  const responseSettingsHint = "A larger response allowance may cost more or be rejected by your provider. Reasoning overrides also depend on provider support.";
+  function readResponseSettings(allowance, reasoning) {
+    const maxOutputTokens = Number(allowance.value), reasoningMode = reasoning.value;
+    if (![8000, 16000, 32000, 64000].includes(maxOutputTokens))
+      throw new Error("Choose one of the available response allowances.");
+    if (!["inherit", "off", "low"].includes(reasoningMode))
+      throw new Error("Choose one of the available reasoning settings.");
+    return { maxOutputTokens, reasoningMode };
   }
   function intro(title, copy) {
     const value = node("div", "sp-intro");
@@ -594,6 +621,10 @@ function setup(ctx) {
     checkConnectionButton.disabled = !!busy || !connection.value;
     connection.disabled = connectionChecking;
     resumeButton.disabled = !!busy || !snapshot?.resume?.available;
+    outputAllowance.input.disabled = !!busy;
+    reasoningChoice.input.disabled = !!busy;
+    resumeAllowance.input.disabled = !!busy;
+    resumeReasoning.input.disabled = !!busy;
     importButton.disabled = !!busy;
     fetchButton.disabled = !!busy;
     fetchLinkedButton.disabled = !!busy;
@@ -657,6 +688,13 @@ function setup(ctx) {
   const chunk = field("Characters per section", "12000", undefined, { type: "number", min: 4000, max: 20000, hint: "Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context." });
   advanced.body.append(chunk.wrap);
   panels.import.append(advanced.root);
+  const responseSettings = details("Model response settings");
+  const outputAllowance = selectField("Response allowance", responseAllowances, "16000");
+  const reasoningChoice = selectField("Reasoning mode", reasoningModes, "inherit");
+  const responseGrid = node("div", "sp-grid");
+  responseGrid.append(outputAllowance.wrap, reasoningChoice.wrap);
+  responseSettings.body.append(paragraph("Set how much room the model has to answer and whether to override its reasoning setting. Allowances are measured in tokens, which can be words or parts of words.", "sp-hint"), responseGrid, paragraph(responseSettingsHint, "sp-hint"));
+  panels.import.append(responseSettings.root);
   const progressBox = node("div", "sp-progress");
   progressBox.hidden = true;
   const progressText = paragraph("", "sp-small");
@@ -671,20 +709,33 @@ function setup(ctx) {
   });
   const resumeHint = paragraph("", "sp-hint");
   resumeHint.hidden = true;
+  const resumeSettings = node("div", "sp-stack");
+  resumeSettings.hidden = true;
+  const resumeAllowance = selectField("Unfinished response allowance", responseAllowances, "16000", () => {
+    resumeSettingsDirty = true;
+  });
+  const resumeReasoning = selectField("Unfinished reasoning mode", reasoningModes, "inherit", () => {
+    resumeSettingsDirty = true;
+  });
+  const resumeGrid = node("div", "sp-grid");
+  resumeGrid.append(resumeAllowance.wrap, resumeReasoning.wrap);
+  resumeSettings.append(node("div", "sp-section-label", "Settings for unfinished requests"), resumeGrid, paragraph(responseSettingsHint, "sp-hint"));
   const resumeButton = button("Resume saved import", async () => {
     if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
       throw new Error("Wait for page loading, the connection check, or the current adaptation to finish.");
     if (!snapshot?.resume?.available)
       throw new Error("There is no saved import available to resume.");
     const retryUncertain = snapshot.resume.retryUncertain;
+    const responseOptions = readResponseSettings(resumeAllowance.input, resumeReasoning.input);
     adaptationStarting = true;
     syncImportControls();
     try {
-      const job = await rpc.request("resume-import", retryUncertain ? { retryUncertain: true } : {});
+      const job = await rpc.request("resume-import", { ...responseOptions, ...retryUncertain ? { retryUncertain: true } : {} });
       if (snapshot)
         snapshot.job = job;
+      resumeSettingsDirty = false;
       renderJob(job);
-      notify("Resuming the story and settings saved for your last attempt. Completed matching steps are reused.");
+      notify("Resuming the saved story. Completed steps are reused; only unfinished requests use your selected response settings.");
       await refresh();
     } finally {
       adaptationStarting = false;
@@ -693,7 +744,7 @@ function setup(ctx) {
     }
   }, true);
   resumeButton.hidden = true;
-  progressBox.append(progressText, progress, cancel, resumeHint, resumeButton);
+  progressBox.append(progressText, progress, cancel, resumeHint, resumeSettings, resumeButton);
   panels.import.append(progressBox);
   const importButton = button("Create adaptation  →", async () => {
     if (loadingPages || adaptationStarting || connectionChecking || snapshot?.job?.status === "running")
@@ -707,7 +758,7 @@ function setup(ctx) {
       throw new Error("Choose between 2 and 24 scenes.");
     if (!Number.isInteger(chunkNumber) || chunkNumber < 4000 || chunkNumber > 20000)
       throw new Error("Section size must be between 4,000 and 20,000 characters.");
-    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber };
+    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
     adaptationStarting = true;
     syncImportControls();
     try {
@@ -724,7 +775,7 @@ function setup(ctx) {
     }
   }, true);
   importButton.classList.add("sp-wide");
-  panels.import.append(importButton, paragraph("Creates a draft for you to review. Each section and the final adaptation use your connected model and its normal charges.", "sp-footnote"));
+  panels.import.append(importButton, paragraph("Creates a draft for you to review. Reading, planning, and each character, lore, or scene batch use your model’s normal charges. Completed steps are saved for reuse.", "sp-footnote"));
   function updateSourceCount() {
     count.textContent = `${source.input.value.length.toLocaleString()} characters`;
   }
@@ -735,11 +786,20 @@ function setup(ctx) {
     cancel.hidden = !running;
     resumeButton.hidden = !canResume;
     resumeHint.hidden = !canResume;
+    resumeSettings.hidden = !canResume;
+    if (canResume && (!resumeSettingsDirty || resumeSettingsJobId !== (job?.id ?? null))) {
+      resumeSettingsJobId = job?.id ?? null;
+      resumeSettingsDirty = false;
+      const savedAllowance = snapshot?.resume?.maxOutputTokens ?? 16000;
+      resumeAllowance.input.value = [8000, 16000, 32000, 64000].includes(savedAllowance) ? String(savedAllowance) : "16000";
+      const savedReasoning = snapshot?.resume?.reasoningMode ?? "inherit";
+      resumeReasoning.input.value = ["inherit", "off", "low"].includes(savedReasoning) ? savedReasoning : "inherit";
+    }
     resumeButton.textContent = snapshot?.resume?.retryUncertain ? "Retry unfinished request" : "Resume saved import";
-    resumeHint.textContent = "Uses the story and settings saved for your last attempt. Completed steps are reused; remaining requests use normal model charges." + (snapshot?.resume?.retryUncertain ? " Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again." : "");
+    resumeHint.textContent = "Uses the saved story and import settings, not the edits in the current form. Completed steps are reused even when you change the response settings below; remaining requests use normal model charges." + (snapshot?.resume?.retryUncertain ? " Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again." : "");
     syncImportControls();
     if (job) {
-      progressText.textContent = job.error || job.label;
+      progressText.textContent = job.status === "failed" && job.phase ? `Stopped during ${job.phase}. ${job.error || job.label}` : job.error || job.label;
       progress.max = Math.max(1, job.total);
       progress.value = Math.min(job.completed, progress.max);
     }

@@ -1,5 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
-import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
+import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ReasoningMode, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
 import { styles } from './styles';
 import { collectStoryPages, type WebCollection, type WebCollectionProgress } from './web-import';
 
@@ -76,6 +76,8 @@ export function setup(ctx: SpindleFrontendContext) {
   let webAbort: AbortController|null = null;
   let stagedPages: WebCollection|null = null;
   let appliedSourceUrl: string|undefined;
+  let resumeSettingsJobId: string|null = null;
+  let resumeSettingsDirty = false;
   let refreshInFlight: Promise<void>|null = null;
   let refreshAgain = false;
   let polling: ReturnType<typeof setInterval>|undefined;
@@ -138,6 +140,20 @@ export function setup(ctx: SpindleFrontendContext) {
     wrap.append(caption,input);
     if(opts.hint) { const help=paragraph(opts.hint,'sp-hint'); help.id=`${id}-hint`; input.setAttribute('aria-describedby',help.id); wrap.append(help); }
     return {wrap,input};
+  }
+  function selectField(label:string,choices:Array<[string,string]>,value:string,onChange?:()=>void){
+    const wrap=node('div','sp-field'),caption=node('label','sp-label',label),input=node('select');input.id=`sp-${suffix}-field-${++fieldIndex}`;caption.htmlFor=input.id;
+    for(const [key,text] of choices)input.append(option(text,key));input.value=value;
+    if(onChange){input.addEventListener('change',onChange);input.addEventListener('input',onChange);}wrap.append(caption,input);return {wrap,input};
+  }
+  const responseAllowances:Array<[string,string]>=[['8000','8,000 tokens'],['16000','16,000 tokens · default'],['32000','32,000 tokens'],['64000','64,000 tokens']];
+  const reasoningModes:Array<[string,string]>=[['inherit','Use connection settings'],['off','Off'],['low','Low']];
+  const responseSettingsHint='A larger response allowance may cost more or be rejected by your provider. Reasoning overrides also depend on provider support.';
+  function readResponseSettings(allowance:HTMLSelectElement,reasoning:HTMLSelectElement):{maxOutputTokens:number;reasoningMode:ReasoningMode}{
+    const maxOutputTokens=Number(allowance.value),reasoningMode=reasoning.value;
+    if(![8000,16000,32000,64000].includes(maxOutputTokens))throw new Error('Choose one of the available response allowances.');
+    if(!['inherit','off','low'].includes(reasoningMode))throw new Error('Choose one of the available reasoning settings.');
+    return {maxOutputTokens,reasoningMode:reasoningMode as ReasoningMode};
   }
   function intro(title:string,copy:string) { const value=node('div','sp-intro'); const text=node('div');text.append(node('h2','',title),paragraph(copy));value.append(text);return value; }
   function download(name:string,value:unknown) {
@@ -217,6 +233,7 @@ export function setup(ctx: SpindleFrontendContext) {
     const busy=loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running';
     checkConnectionButton.disabled=!!busy||!connection.value;connection.disabled=connectionChecking;
     resumeButton.disabled=!!busy||!snapshot?.resume?.available;
+    outputAllowance.input.disabled=!!busy;reasoningChoice.input.disabled=!!busy;resumeAllowance.input.disabled=!!busy;resumeReasoning.input.disabled=!!busy;
     importButton.disabled=!!busy;fetchButton.disabled=!!busy;fetchLinkedButton.disabled=!!busy;useCollected.disabled=!!busy||!stagedPages?.pages.length;
   }
   linkSection.body.append(paragraph('Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.','sp-hint'),url.wrap,otherUrls.wrap,row(fetchButton,fetchLinkedButton),paragraph('Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.','sp-hint'),collectionBox);
@@ -245,20 +262,31 @@ export function setup(ctx: SpindleFrontendContext) {
   connectionWrap.append(checkConnectionButton,paragraph('Sends a small test request without your story. Normal model charges apply.','sp-hint'),connectionStatus);
   const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,start.wrap,optionGrid);panels.import.append(options);
   const advanced=details('Long-story settings');const chunk=field('Characters per section','12000',undefined,{type:'number',min:4000,max:20000,hint:'Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context.'});advanced.body.append(chunk.wrap);panels.import.append(advanced.root);
+  const responseSettings=details('Model response settings');
+  const outputAllowance=selectField('Response allowance',responseAllowances,'16000');
+  const reasoningChoice=selectField('Reasoning mode',reasoningModes,'inherit');
+  const responseGrid=node('div','sp-grid');responseGrid.append(outputAllowance.wrap,reasoningChoice.wrap);
+  responseSettings.body.append(paragraph('Set how much room the model has to answer and whether to override its reasoning setting. Allowances are measured in tokens, which can be words or parts of words.','sp-hint'),responseGrid,paragraph(responseSettingsHint,'sp-hint'));panels.import.append(responseSettings.root);
   const progressBox=node('div','sp-progress');progressBox.hidden=true;const progressText=paragraph('','sp-small');const progress=node('progress');progress.max=1;progress.value=0;progress.setAttribute('aria-label','Story import progress');
   const cancel=button('Cancel import',async()=>{ await rpc.request('cancel-import');notify('Import cancelled. Your previous draft is still available.');await refresh(); });
   const resumeHint=paragraph('','sp-hint');resumeHint.hidden=true;
+  const resumeSettings=node('div','sp-stack');resumeSettings.hidden=true;
+  const resumeAllowance=selectField('Unfinished response allowance',responseAllowances,'16000',()=>{resumeSettingsDirty=true;});
+  const resumeReasoning=selectField('Unfinished reasoning mode',reasoningModes,'inherit',()=>{resumeSettingsDirty=true;});
+  const resumeGrid=node('div','sp-grid');resumeGrid.append(resumeAllowance.wrap,resumeReasoning.wrap);
+  resumeSettings.append(node('div','sp-section-label','Settings for unfinished requests'),resumeGrid,paragraph(responseSettingsHint,'sp-hint'));
   const resumeButton=button('Resume saved import',async()=>{
     if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for page loading, the connection check, or the current adaptation to finish.');
     if(!snapshot?.resume?.available)throw new Error('There is no saved import available to resume.');
     const retryUncertain=snapshot.resume.retryUncertain;
+    const responseOptions=readResponseSettings(resumeAllowance.input,resumeReasoning.input);
     adaptationStarting=true;syncImportControls();
     try{
-      const job=await rpc.request<ImportJob>('resume-import',retryUncertain?{retryUncertain:true}:{});
-      if(snapshot)snapshot.job=job;renderJob(job);notify('Resuming the story and settings saved for your last attempt. Completed matching steps are reused.');await refresh();
+      const job=await rpc.request<ImportJob>('resume-import',{...responseOptions,...(retryUncertain?{retryUncertain:true}:{})});
+      if(snapshot)snapshot.job=job;resumeSettingsDirty=false;renderJob(job);notify('Resuming the saved story. Completed steps are reused; only unfinished requests use your selected response settings.');await refresh();
     }finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
   },true);resumeButton.hidden=true;
-  progressBox.append(progressText,progress,cancel,resumeHint,resumeButton);panels.import.append(progressBox);
+  progressBox.append(progressText,progress,cancel,resumeHint,resumeSettings,resumeButton);panels.import.append(progressBox);
   const importButton=button('Create adaptation  →',async()=> {
     if(loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running')throw new Error('Wait for page loading, the connection check, or the current adaptation to finish.');
     if(!source.input.value.trim()) throw new Error('Add story text before creating an adaptation.');
@@ -266,19 +294,24 @@ export function setup(ctx: SpindleFrontendContext) {
     const sceneNumber=Number(sceneCount.input.value),chunkNumber=Number(chunk.input.value);
     if(!Number.isInteger(sceneNumber)||sceneNumber<2||sceneNumber>24) throw new Error('Choose between 2 and 24 scenes.');
     if(!Number.isInteger(chunkNumber)||chunkNumber<4000||chunkNumber>20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
-    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber};
+    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
     adaptationStarting=true;syncImportControls();
     try{const job=await rpc.request<ImportJob>('start-import',{options});if(snapshot)snapshot.job=job;renderJob(job);notify('Your story is being adapted. You can leave this panel open or return later.');await refresh();}
     finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
   },true);importButton.classList.add('sp-wide');
-  panels.import.append(importButton,paragraph('Creates a draft for you to review. Each section and the final adaptation use your connected model and its normal charges.','sp-footnote'));
+  panels.import.append(importButton,paragraph('Creates a draft for you to review. Reading, planning, and each character, lore, or scene batch use your model’s normal charges. Completed steps are saved for reuse.','sp-footnote'));
   function updateSourceCount(){ count.textContent=`${source.input.value.length.toLocaleString()} characters`; }
   function renderJob(job:ImportJob|null) {
-    const running=job?.status==='running';const canResume=!!snapshot?.resume?.available&&!running;progressBox.hidden=!job&&!canResume;cancel.hidden=!running;resumeButton.hidden=!canResume;resumeHint.hidden=!canResume;
+    const running=job?.status==='running';const canResume=!!snapshot?.resume?.available&&!running;progressBox.hidden=!job&&!canResume;cancel.hidden=!running;resumeButton.hidden=!canResume;resumeHint.hidden=!canResume;resumeSettings.hidden=!canResume;
+    if(canResume&&(!resumeSettingsDirty||resumeSettingsJobId!==(job?.id??null))){
+      resumeSettingsJobId=job?.id??null;resumeSettingsDirty=false;
+      const savedAllowance=snapshot?.resume?.maxOutputTokens??16000;resumeAllowance.input.value=[8000,16000,32000,64000].includes(savedAllowance)?String(savedAllowance):'16000';
+      const savedReasoning=snapshot?.resume?.reasoningMode??'inherit';resumeReasoning.input.value=['inherit','off','low'].includes(savedReasoning)?savedReasoning:'inherit';
+    }
     resumeButton.textContent=snapshot?.resume?.retryUncertain?'Retry unfinished request':'Resume saved import';
-    resumeHint.textContent='Uses the story and settings saved for your last attempt. Completed steps are reused; remaining requests use normal model charges.'+(snapshot?.resume?.retryUncertain?' Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.':'');
+    resumeHint.textContent='Uses the saved story and import settings, not the edits in the current form. Completed steps are reused even when you change the response settings below; remaining requests use normal model charges.'+(snapshot?.resume?.retryUncertain?' Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.':'');
     syncImportControls();
-    if(job) { progressText.textContent=job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
+    if(job) { progressText.textContent=job.status==='failed'&&job.phase?`Stopped during ${job.phase}. ${job.error||job.label}`:job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
     if(running&&!polling) polling=setInterval(()=>{void refresh();},2500);
     if(!running&&polling) {clearInterval(polling);polling=undefined;}
     tab.setBadge(running?'…':null);

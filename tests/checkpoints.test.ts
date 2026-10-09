@@ -245,4 +245,134 @@ describe('durable paid-response checkpoints', () => {
     expect(await cache.peek(messages, fingerprint)).toEqual(response);
     expect(calls).toBe(1);
   });
+  test('new allowance reuses a completed old response byte-for-byte and invalidates its actual key', async () => {
+    const h = harness(); let calls = 0;
+    const nextSettings = { ...fingerprint, parameters: { ...fingerprint.parameters, max_tokens: 32000 } };
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await first.request(messages, fingerprint, async () => { calls++; return response; });
+    const originalFiles = [...h.files.entries()];
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    expect(await cache.request(messages, nextSettings, async () => { calls++; return {}; }, { reuseFingerprints: [fingerprint] })).toEqual(response);
+    expect([...h.files.entries()]).toEqual(originalFiles); expect(calls).toBe(1);
+    await cache.invalidateLast();
+    expect(await cache.peek(messages, fingerprint)).toBeUndefined();
+    expect(await cache.peek(messages, nextSettings)).toBeUndefined();
+    await cache.request(messages, nextSettings, async () => { calls++; return { ...response, content: 'New complete answer' }; }, { reuseFingerprints: [fingerprint] });
+    expect(calls).toBe(2);
+    expect((await cache.peek(messages, fingerprint, { includeRejected: true }) as any).content).toBe(response.content);
+    expect((await cache.peek(messages, nextSettings) as any).content).toBe('New complete answer');
+  });
+  test('primary completed response wins over fallback and pending historical attempts do not block free reuse', async () => {
+    const h = harness();
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await rejected(first.request(messages, fingerprint, async () => { throw Object.assign(new Error('timeout'), { code: 'TIMEOUT' }); }), 'UNCERTAIN_REQUEST');
+    await first.request(messages, primary, async () => response);
+    const cache = new ResponseCheckpoints(h.api, 'alice'); let calls = 0;
+    expect(await cache.request(messages, primary, async () => { calls++; return {}; }, { reuseFingerprints: [fingerprint] })).toEqual(response);
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint] })).toEqual(response);
+    await rejected(cache.peek(messages, primary, { reuseFingerprints: [fingerprint], requireSettled: true }), 'UNCERTAIN_REQUEST');
+    expect(calls).toBe(0);
+  });
+  test('fallback complete answer remains reusable when the primary attempt has an unknown outcome', async () => {
+    const h = harness();
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await first.request(messages, fingerprint, async () => response);
+    await rejected(first.request(messages, primary, async () => { throw Object.assign(new Error('timeout'), { code: 'TIMEOUT' }); }), 'UNCERTAIN_REQUEST');
+    const cache = new ResponseCheckpoints(h.api, 'alice'); let calls = 0;
+    expect(await cache.request(messages, primary, async () => { calls++; return {}; }, { reuseFingerprints: [fingerprint] })).toEqual(response);
+    expect(calls).toBe(0);
+  });
+  test('a larger allowance cannot bypass an uncertain old request without explicit retry', async () => {
+    const h = harness(); let calls = 0;
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await rejected(first.request(messages, fingerprint, async () => { calls++; throw Object.assign(new Error('timeout'), { code: 'TIMEOUT' }); }), 'UNCERTAIN_REQUEST');
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    const generate = async () => { calls++; return response; };
+    const before = [...h.files.entries()];
+    await rejected(cache.request(messages, primary, generate, { reuseFingerprints: [fingerprint] }), 'UNCERTAIN_REQUEST');
+    expect([...h.files.entries()]).toEqual(before); expect(calls).toBe(1);
+    cache.beginRun({ retryUncertain: true });
+    await cache.request(messages, primary, generate, { reuseFingerprints: [fingerprint] });
+    expect(calls).toBe(2);
+  });
+  test('corrupt fallback blocks a new dispatch and is not overwritten', async () => {
+    const h = harness(); let calls = 0;
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    await new ResponseCheckpoints(h.api, 'alice').request(messages, fingerprint, async () => response);
+    const path = onlyResponsePath(h.files); h.files.set(path, '{broken');
+    const before = [...h.files.entries()];
+    await rejected(new ResponseCheckpoints(h.api, 'alice').request(messages, primary, async () => { calls++; return response; }, { reuseFingerprints: [fingerprint] }), 'STORAGE_ERROR');
+    expect(calls).toBe(0); expect([...h.files.entries()]).toEqual(before);
+  });
+  test('fallback held answer is saved before reuse instead of generating at a new allowance', async () => {
+    const h = harness(); let calls = 0;
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    h.fail((operation, path) => { if (operation === 'write' && !path.includes('.intent.')) throw new Error('disk full'); });
+    await rejected(cache.request(messages, fingerprint, async () => { calls++; return response; }), 'STORAGE_ERROR');
+    await rejected(cache.request(messages, primary, async () => { calls++; return {}; }, { reuseFingerprints: [fingerprint] }), 'STORAGE_ERROR');
+    h.fail();
+    expect(await cache.request(messages, primary, async () => { calls++; return {}; }, { reuseFingerprints: [fingerprint] })).toEqual(response);
+    expect(calls).toBe(1);
+  });
+  test('peek reads complete fallbacks only, even when includeRejected is enabled', async () => {
+    const h = harness();
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    await cache.request(messages, fingerprint, async () => response);
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint] })).toEqual(response);
+    await cache.invalidateLast();
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint], includeRejected: true })).toBeUndefined();
+    expect(await cache.peek(messages, fingerprint, { includeRejected: true })).toEqual(response);
+  });
+  test('peek prefers a complete fallback over an included rejected primary', async () => {
+    const h = harness(); const cache = new ResponseCheckpoints(h.api, 'alice');
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    await cache.request(messages, fingerprint, async () => response);
+    await cache.request(messages, primary, async () => ({ content: 'truncated', finish_reason: 'length' }));
+    await cache.invalidateLast();
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint], includeRejected: true, requireSettled: true })).toEqual(response);
+  });
+  test('requireSettled peek stops schema-changing work from bypassing an unknown old attempt', async () => {
+    const h = harness();
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await rejected(first.request(messages, fingerprint, async () => { throw Object.assign(new Error('timeout'), { code: 'TIMEOUT' }); }), 'UNCERTAIN_REQUEST');
+    const cache = new ResponseCheckpoints(h.api, 'alice'); const before = [...h.files.entries()];
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint] })).toBeUndefined();
+    await rejected(cache.peek(messages, primary, { reuseFingerprints: [fingerprint], requireSettled: true }), 'UNCERTAIN_REQUEST');
+    expect([...h.files.entries()]).toEqual(before);
+    cache.beginRun({ retryUncertain: true });
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint], requireSettled: true })).toBeUndefined();
+    expect([...h.files.entries()]).toEqual(before);
+  });
+  test('requireSettled accepts a settled rejected response but catches a newer unresolved attempt', async () => {
+    const h = harness(); const first = new ResponseCheckpoints(h.api, 'alice');
+    await first.request(messages, fingerprint, async () => ({ content: 'truncated', finish_reason: 'length' }));
+    await first.invalidateLast();
+    expect(await first.peek(messages, fingerprint, { includeRejected: true, requireSettled: true })).toEqual({ content: 'truncated', finish_reason: 'length' });
+    await rejected(first.request(messages, fingerprint, async () => { throw Object.assign(new Error('timeout'), { code: 'TIMEOUT' }); }), 'UNCERTAIN_REQUEST');
+    const cache = new ResponseCheckpoints(h.api, 'alice');
+    await rejected(cache.peek(messages, fingerprint, { includeRejected: true, requireSettled: true }), 'UNCERTAIN_REQUEST');
+  });
+  test('a raw completed truncated candidate cannot hide another budget\'s unknown legacy attempt', async () => {
+    const h = harness(); let calls = 0;
+    const primary = { ...fingerprint, parameters: { max_tokens: 32000 } };
+    const truncated = { content: '{unfinished', finish_reason: 'length' };
+    const first = new ResponseCheckpoints(h.api, 'alice');
+    await first.request(messages, primary, async () => { calls++; return truncated; });
+    await rejected(first.request(messages, fingerprint, async () => { calls++; throw Object.assign(new Error('timeout'), { code: 'TIMEOUT' }); }), 'UNCERTAIN_REQUEST');
+    const cache = new ResponseCheckpoints(h.api, 'alice'), before = [...h.files.entries()];
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint] })).toEqual(truncated);
+    await rejected(cache.peek(messages, primary, { reuseFingerprints: [fingerprint], requireSettled: true }), 'UNCERTAIN_REQUEST');
+    // The same protection applies if the unfinished saved answer is a fallback.
+    await rejected(cache.peek(messages, fingerprint, { reuseFingerprints: [primary], requireSettled: true }), 'UNCERTAIN_REQUEST');
+    expect(calls).toBe(2); expect([...h.files.entries()]).toEqual(before);
+    cache.beginRun({ retryUncertain: true });
+    expect(await cache.peek(messages, primary, { reuseFingerprints: [fingerprint], requireSettled: true })).toEqual(truncated);
+    expect(calls).toBe(2); expect([...h.files.entries()]).toEqual(before);
+  });
 });
