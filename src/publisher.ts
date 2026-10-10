@@ -1,25 +1,33 @@
 import { roleInstruction, requireRoleReview } from './roles';
 import type { SpindleAPI, WorldBookEntryCreateDTO } from 'lumiverse-spindle-types';
-import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, appearanceGuide, cardPayload, validateDraft } from './importer';
+import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_FIXED_RULE, APPEARANCE_RULE, appearanceEntryText, approvedLooks, cardPayload, mainCharacterIds, validateDraft } from './importer';
+import { requirePersonaAccess, savePersona } from './persona';
 import { EXTENSION_ID, type SavedStory, type StoryDraft } from './types';
 
 type Receipt = { key: string; draftId: string; worldBookId?: string; characterId?: string; complete?: boolean };
 export async function draftKey(draft: StoryDraft): Promise<string> {
-  // Publication guidance changed in 0.1.10. A new receipt creates a fresh card
-  // instead of returning a pre-update card with the old restrictive rules.
-  // Draft identity and paid model-response checkpoints are unaffected.
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 3, draft })));
+  // Publication guidance changed in 0.1.10, and appearance entries in 0.1.12.
+  // A new receipt creates a fresh card instead of returning a pre-update card
+  // with the old rules. Draft identity and paid model-response checkpoints are
+  // unaffected. The persona is saved on its own, so editing it never makes a
+  // second card.
+  const { persona: _persona, ...card } = draft;
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 4, draft: card })));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export function worldEntries(draft: StoryDraft): WorldBookEntryCreateDTO[] {
-  const approvedAppearances = appearanceGuide(draft);
+  const looks = approvedLooks(draft), main = mainCharacterIds(draft);
   return [
-    ...(approvedAppearances ? [{ comment: 'Approved character appearances', key: [], constant: true,
-      probability: 100, use_probability: false, priority: 100, content: `${APPEARANCE_RULE}\n\n${approvedAppearances}` }] : []),
+    ...(looks.length ? [{ comment: 'Appearance rule', key: [], constant: true,
+      probability: 100, use_probability: false, priority: 100, content: `${APPEARANCE_RULE}\n\n${APPEARANCE_FIXED_RULE}` }] : []),
     { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\n\n${roleInstruction(draft)}\nThese are starting facts. Later events in the chat take precedence. ${draft.openingStyle==='story'?'During live chat after the scripted opening, leave':'Leave'} the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}` },
     ...draft.cast.map(member => ({ comment: member.name, key: [member.name, ...member.aliases], constant: false,
       content: `${member.name}\nPersonality: ${member.personality}\nVoice: ${member.voice}\nRelationships at the start: ${member.relationships}\nKnowledge at the start: ${member.knowledge}\nUse subsequent chat events for changes to these starting facts.` })),
+    // One entry per character, found by name. Main characters stay on so a few
+    // turns of "she" cannot lose them.
+    ...looks.map(look => ({ comment: `${look.name} · appearance`, key: [look.name, ...look.aliases], constant: main.has(look.characterId),
+      probability: 100, use_probability: false, priority: 100, content: appearanceEntryText(look.name, look) })),
     ...draft.lore.map(entry => ({ comment: entry.name, key: entry.keys, constant: entry.keys.length === 0, content: entry.content })),
   ].map(entry => ({ ...entry, disabled: false, use_regex: false, prevent_recursion: true, exclude_recursion: true, vectorized: false }));
 }
@@ -36,6 +44,12 @@ export class CardPublisher {
   private async create(draft: StoryDraft): Promise<SavedStory> {
     for (const permission of ['characters', 'world_books']) if (!this.api.permissions.has(permission)) throw new Error(`Grant ${permission} in Lumiverse’s Extensions panel to save a card.`);
     requireRoleReview(draft);
+    requirePersonaAccess(this.api, draft);
+    // The persona is set up last, so a retry after a failure there finds the
+    // card already saved and only finishes the persona.
+    return { ...await this.saveCard(draft), ...await savePersona(this.api, draft, this.userId) };
+  }
+  private async saveCard(draft: StoryDraft): Promise<SavedStory> {
     const key = await draftKey(draft);
     const path = `receipts/${key}.json`;
     const marker = { key, draftId: draft.id };

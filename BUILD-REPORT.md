@@ -1,8 +1,18 @@
-# Set Points 0.1.11 — verification
+# Set Points 0.1.12 — verification
 
-Prepared October 9, 2026.
+Prepared October 10, 2026.
 
-## Change in 0.1.11
+## Change in 0.1.12
+
+**Persona step.** `StoryDraft.persona` is an optional, validated field with three modes: make a persona, use an existing one, or leave personas alone (the default, and the meaning of an absent field). Review shows it directly after the role settings. A new persona is composed locally from the played cast member's starting-point fields (personality, voice, relationships, knowledge at the start) and approved appearance; no model request is made and no later-story material is read. While its text still equals that composition it follows edits to the character; once reworded it is left alone. Publication creates the persona after the card, marks it with the draft ID, and on later saves updates it only while it still holds the text Set Points last wrote. A persona edited inside Lumiverse is kept and reported. The persona is excluded from the card receipt key, so persona-only edits never create a second card. Missing `personas` permission stops publication before any resource is created. The active persona changes only through the explicit **Switch to this persona now** action. The played character is not removed from the narrator's cast notes.
+
+**Designed looks.** A separate opt-in job (`src/looks.ts`) with its own checkpoints. Pass one reads the source in sections for stated and implied visual clues; every clue must quote its section, compared with tolerance for curly quotes and line wrapping, and unmatched or later/uncertain clues are dropped with a count. Pass two designs the cast in a single request (groups of eight for larger casts, later groups given earlier results) under contrast, specificity, and anti-stock-phrase rules, with invented ages defaulting to adult. Output is nine fixed fields per character, each labeled story / implied / invented. Acceptance only lowers labels: a claimed story trait with no saved stated clue becomes invented. A stated clue about a field that the design does not cite is attached to that trait for review instead of buying a repair. Structural faults (missing or duplicate fields, wrong characters, unsafe text) get the existing single format repair. **Reroll** is one request for one character using the clues saved with its look, the looks it must differ from, and an optional note; it does not reread the source. Results stay separate from the draft until the person uses a look. Using a look writes labeled lines into the existing approved fields; a reroll replaces a look in the draft only when the previous look was there unedited. Looks are bound to draft ID and cast IDs, so prose edits in Review keep them. Cancel, resume, restart recovery, connection-profile checks, explicit unknown-outcome retries, and mutual exclusion with other model work follow the image-description job.
+
+**Appearance entries.** Publication revision 4. The single always-on **Approved character appearances** entry and the guide copy in the card description are replaced by one entry per described character, keyed by name and aliases, with the starting outfit on its own line. The human's character and the three characters named in the most scenes are constant; others are keyword-activated. A constant **Appearance rule** entry and the system prompt carry the existing authority rule plus a fixed-traits rule. Blank approvals publish nothing. Re-saving a pre-update draft creates a new card and world book once; old cards and chats are untouched. Adaptation and image-description prompts and their checkpoint identities are unchanged.
+
+The new look prompts, the contrast and anti-generic instructions, and persona creation against a real host are **not** verified here; see below.
+
+## Changes retained from 0.1.11
 
 Opening style is a validated optional field: Interactive setup retains the previous open-choice behavior, while Story excerpt explicitly permits preset source actions/dialogue/internal states inside stored scene openings. The latter still checks identity and narrator voice, preserves continuity prerequisites, and leaves new decisions during live chat to the human. The style reaches Import planning/scenes, Review, targeted repairs, card prompts, premise lore, and scene metadata. Existing drafts can switch without a model request or prose rewrite; only saving a revised card changes published guidance. There is no deterministic prerequisite tracker.
 
@@ -46,7 +56,7 @@ The description source panel now offers website loading with the existing linked
 
 ## Existing appearance and description behavior
 
-Manual approved appearance and starting-outfit fields are available in Review for every existing draft, including completed 0.1.5 drafts. Editing and saving them makes no model request and needs neither reimport nor original source text. The optional `StoryDraft.appearances` field is validated, saved, and included in draft JSON. Publishing includes the same guide in the card description and a dedicated always-on **Approved character appearances** world-book entry, with a matching narrator rule.
+Manual approved appearance and starting-outfit fields are available in Review for every existing draft, including completed 0.1.5 drafts. Editing and saving them makes no model request and needs neither reimport nor original source text. The optional `StoryDraft.appearances` field is validated, saved, and included in draft JSON. Since 0.1.12, publishing writes one world-book entry per described character with a matching narrator rule; see the top of this report.
 
 The approved guide takes priority over incidental conflicting prose. Physical traits require explicit human approval to change; starting clothes can change through an explicit story action. Blank supporting-character fields use established story and chat details first, then permit consistent invention of missing traits. Existing cast/lore entries and literal scene openings remain intact. **Scan appearance mentions** is a local keyword locator for manual review, not an exhaustive search or semantic conflict checker. It does not rewrite scenes, and Force inserts the existing opening literally. Model adherence is not guaranteed.
 
@@ -86,7 +96,11 @@ The 0.1.5 staged adaptation path and legacy checkpoint `FORMAT 1` recovery remai
 
 ## Current release verification
 
-The complete 0.1.11 suite passes: **397 tests, 2,186 assertions, 14 test files**. TypeScript checking passes. Bun 1.4.2 produced backend **599,365 bytes**, frontend **140,821 bytes**, and mocked preview **156,207 bytes**. The official Lumiverse 1.2.0 capability scanner reports no undeclared capabilities with the existing `base64_decode` declaration.
+The complete 0.1.12 suite passes: **454 tests, 2,495 assertions, 18 test files**. TypeScript checking passes. Bun 1.4.2 produced backend **644,227 bytes**, frontend **172,041 bytes**, and mocked preview **193,243 bytes**. The Lumiverse capability scanner was **not** rerun for this release; the new code adds no dynamic evaluation and `spindle.json` declares the additional `personas` permission.
+
+New 0.1.12 coverage: clue quoting and timing, label lowering, uncited stated clues kept for review, the single format repair, grouped design for large casts, rerolls and their rejected-look history, look-pack validation, job resume after a failed design or reroll without repeating finished steps, cancellation, restart recovery, damaged saved looks set aside without harming the draft, and exclusion from other model work. Persona coverage: composition from starting facts only, following and ceasing to follow edits, draft validation, create/reuse/update/keep-edited behavior, lost-reply recovery, missing permission before any write, persona-only edits reusing the card, and retry after a card was saved. Publisher coverage: per-character entries, constant versus keyword activation, outfit-only and blank approvals, and interrupted publication. Review coverage runs through DOM tests: persona choices, look labels, filling only blank characters, rerolls that replace or leave approved text, and control locking. The mocked preview was opened in headless Chromium and the new panels inspected in screenshots.
+
+One existing scene-repair test raced its own cancellation and failed intermittently before these changes; it now waits for the request to be dispatched.
 
 Earlier 0.1.10 checks cover role binding, source/player separation, supporting-character narration, declaration validation, legacy draft shape, free flag focus, manual acknowledgment/invalidation, blocked publication before resource creation, retained extension metadata, per-scene repair isolation, wrong-role rejection, no automatic semantic retries, partial recovery across restart/settings changes, explicit uncertain retry, preservation of newer edits, competing-operation exclusion, damaged optional-state recovery, and role guards with progression off/on. Fixtures are original neutral text, not user exports.
 
@@ -94,14 +108,15 @@ Earlier 0.1.9 checks cover published guidance with absent, blank, or partial app
 
 Publisher tests cover always-on approved guidance, identical card/world-book prose, JSON roundtrip, unchanged legacy entries, changed-guide receipts, double-click/restart deduplication, and interrupted publication. Backend coverage includes adding and saving approved appearances to a completed 0.1.5 draft with zero model calls and unchanged saved import inputs. Frontend checks cover manual approval, source-only copying, the appearance locator, approved-caption differences, explicit source selection, source/result/request revision binding, separate packs, preservation of edits, cancellation/resume, unknown outcomes, visible JSON backup, paste restoration, and clipboard failure.
 
-No live provider scene-repair or appearance run, successful live story adaptation, or image-generation quality check is claimed. The interface was tested through DOM tests; no live Lumiverse screenshot review is claimed. Neutral fixtures and mocked requests do not establish source-extraction accuracy, provider acceptance of the selected settings, or compatibility with every live host configuration. No new dependency audit is claimed.
+No live provider scene-repair, appearance, or look-design run, successful live story adaptation, or image-generation quality check is claimed. In particular, whether designed looks come out distinct and specific with a given model, and whether per-character entries hold a narrator to them in play, have only been reasoned about, not observed. Persona create, update, list, and switch were tested against a mock of the published Spindle types, not a running Lumiverse. The interface was tested through DOM tests; no live Lumiverse screenshot review is claimed. Neutral fixtures and mocked requests do not establish source-extraction accuracy, provider acceptance of the selected settings, or compatibility with every live host configuration. No new dependency audit is claimed.
 
 ## Previous release verification references
 
-These historical results do not verify 0.1.11:
+These historical results do not verify 0.1.12:
 
 | Version | Tests | Assertions | Test files |
 | --- | ---: | ---: | ---: |
+| 0.1.11 | 397 | 2,186 | 14 |
 | 0.1.8 | 348 | 1,933 | 13 |
 | 0.1.7 | 341 | 1,876 | 13 |
 | 0.1.6 | 326 | 1,827 | 13 |
@@ -120,6 +135,8 @@ Version 0.1.5 passed TypeScript and Bun 1.4.2 builds: backend 526,701 bytes, fro
 3. Publish a reviewed draft and use the newly saved card. Confirm a first publication after the guidance update creates a new card while repeat saves reuse it. Check supporting-character missing-look guidance with no guide, blank fields, and partial approvals; check the approved guide in both its card and always-on world-book entry. Check possible conflicts in existing lore and literal scene openings.
 4. If wanted, open optional Image descriptions. Verify the source is matched or explicitly read linked website pages or paste/copy the correct story before starting a normally charged request. Review facts, unknowns, outfits, and suggestions; confirm later changes have not become starting defaults.
 5. Save the separate descriptions. Deliberately approve source prose with **Use these appearances in story**, or keep manual choices. Copy the approved caption or reviewed tags into Lumi Studio manually and choose model and preset settings there.
-6. For a saved grounding or coverage failure, use **Resume saved descriptions** without entering the story again. If generation stops, check its retained phase and error category. Resume completed matching work, or explicitly authorize an uncertain retry after reading its charge warning. Download diagnostics if further troubleshooting is needed.
+6. Grant `personas`, set **Your persona** to make one for a story character, and save. Confirm the persona appears in Lumiverse with the expected text, that saving again updates it, and that **Switch to this persona now** changes the active persona.
+7. On a story with no physical descriptions, run **Design character looks**. Check that the cast differ from each other, that stated details are labeled and kept, and that a reroll gives a clearly different look. Use the looks, save, and play: check that each **· appearance** entry is in the world book and that the narrator keeps to it across a long chat, including for a minor character whose entry is keyword-activated.
+8. For a saved grounding or coverage failure, use **Resume saved descriptions** without entering the story again. If generation stops, check its retained phase and error category. Resume completed matching work, or explicitly authorize an uncertain retry after reading its charge warning. Download diagnostics if further troubleshooting is needed.
 
 Repository installation target: [fidgetycarrot/lumiverse-set-points](https://github.com/fidgetycarrot/lumiverse-set-points).

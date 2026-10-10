@@ -1,11 +1,13 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
-import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type ReasoningMode, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
+import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type PersonaMode, type ReasoningMode, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
 import { styles } from './styles';
 import { defaultRoles, roleIssues, roleReviewFingerprint, requireRoleReview } from './roles';
 import { repairSignature } from './scene-repair';
 import { appearanceMentions } from './appearance-review';
 import { visualCaption, visualDraftSignature, visualTagPrompt, emptyVisualText, incompleteVisualText, type VisualPack } from './visuals';
 import { collectStoryPages, type WebCollection, type WebCollectionProgress } from './web-import';
+import { BASIS_LABELS, LOOK_LABELS, LOOK_LIMITS, lookAppearance, lookDraftSignature, lookInUse, lookOutfit, useLooks, type CharacterLook, type LookPack } from './looks';
+import { personaDraft, personaIsAutomatic, playerCharacter } from './persona';
 
 const MAX_SOURCE = 500_000;
 const MAX_DRAFT = 192_000;
@@ -81,6 +83,7 @@ export function setup(ctx: SpindleFrontendContext) {
   let adaptationStarting = false;
   let connectionChecking = false;
   let visualsStarting = false;
+  let looksStarting = false;
   let repairStarting = false;
   let renderRepairStatus = () => {};
   const repairBusy = () => repairStarting || snapshot?.repairs?.job?.status === 'running';
@@ -254,7 +257,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
   function syncImportControls(){
-    const busy=repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||snapshot?.job?.status==='running';
+    const busy=repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||looksBusy()||snapshot?.job?.status==='running';
     checkConnectionButton.disabled=!!busy||!connection.value;connection.disabled=connectionChecking;
     resumeButton.disabled=!!busy||!snapshot?.resume?.available;
     outputAllowance.input.disabled=!!busy;reasoningChoice.input.disabled=!!busy;resumeAllowance.input.disabled=!!busy;resumeReasoning.input.disabled=!!busy;
@@ -264,7 +267,7 @@ export function setup(ctx: SpindleFrontendContext) {
   linkSection.body.append(paragraph('Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.','sp-hint'),url.wrap,otherUrls.wrap,row(fetchButton,fetchLinkedButton),paragraph('Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.','sp-hint'),collectionBox);
   sourceCard.append(sourceTools,fileInput,title.wrap,source.wrap,sourceBottom,linkSection.root);panels.import.append(sourceCard);
   const options=node('div','sp-card sp-stack'); options.append(node('h3','','Make a place for yourself'));
-  const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'The narrator leaves this character’s dialogue and choices to you.'});
+  const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'The narrator leaves this character’s dialogue and choices to you. In Review you can make a persona for them or use one of your own.'});
   const narrationMode=selectField('Narration style',[['neutral','External narrator'],['character','Supporting character in first person']],'neutral',()=>{narratorName.wrap.hidden=narrationMode.input.value!=='character';});
   const narratorName=field('Who narrates?','',undefined,{placeholder:'Exact supporting-character name or alias',hint:'Choose someone other than the character you play.'});narratorName.wrap.hidden=true;
   const sourceViewpoint=field('Original story viewpoint · optional','',undefined,{placeholder:'For example: Lina tells the story in first person',hint:'Source context only. It does not assign your player role.'});
@@ -342,7 +345,7 @@ export function setup(ctx: SpindleFrontendContext) {
     resumeHint.textContent='Uses the saved story and import settings, not the edits in the current form. Completed steps are reused even when you change the response settings below; remaining requests use normal model charges.'+(snapshot?.resume?.retryUncertain?' Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.':'');
     syncImportControls();
     if(job) { progressText.textContent=job.status==='failed'&&job.phase?`Stopped during ${job.phase}. ${job.error||job.label}`:job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
-    const anyRunning=repairBusy()||running||snapshot?.visuals?.job?.status==='running';
+    const anyRunning=repairBusy()||running||snapshot?.visuals?.job?.status==='running'||snapshot?.looks?.job?.status==='running';
     if(anyRunning&&!polling) polling=setInterval(()=>{void refresh();},2500);
     if(!anyRunning&&polling) {clearInterval(polling);polling=undefined;}
     tab.setBadge(anyRunning?'…':null);
@@ -443,7 +446,7 @@ export function setup(ctx: SpindleFrontendContext) {
   });loadVisualResult.hidden=true;
   visualBody.append(visualInfo,visualSourceNotice,replaceVisualSource,visualSourceBox,visualConnection.wrap,visualSettings.root,visualCreate,visualProgress,visualResultNotice,loadVisualResult,visualResults);
   function visualsBusy(){return visualsStarting||snapshot?.visuals?.job?.status==='running';}
-  function otherWorkBusy(){return repairBusy()||loadingPages||adaptationStarting||connectionChecking||snapshot?.job?.status==='running';}
+  function otherWorkBusy(){return repairBusy()||loadingPages||adaptationStarting||connectionChecking||looksBusy()||snapshot?.job?.status==='running';}
   function syncVisualControls(){
     const busy=!!(otherWorkBusy()||visualsBusy());
     visualCreate.disabled=busy||!draft||!visualConnection.input.value;
@@ -451,6 +454,7 @@ export function setup(ctx: SpindleFrontendContext) {
     visualConnection.input.disabled=busy;visualAllowance.input.disabled=busy;visualReasoning.input.disabled=busy;
     visualSource.input.disabled=busy;replaceVisualSource.disabled=busy;copyImportSource.disabled=busy||!source.input.value.trim();
     visualWebsiteRead.disabled=busy;visualWebsiteUse.disabled=busy;visualWebsiteUrl.input.disabled=busy;visualWebsitePages.input.disabled=busy;
+    syncLookControls();
   }
   async function copyVisualText(value:string,field:HTMLInputElement|HTMLTextAreaElement,label:string){
     if(!value.trim())throw new Error(`There is no ${label.toLowerCase()} to copy yet.`);
@@ -507,6 +511,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
     visualResults.append(button('Use these appearances in story',()=>{
       if(!draft||visualDraftSignature(draft)!==signature)throw new Error('These descriptions belong to an earlier version of the draft.');
+      const personaFollows=personaIsAutomatic(draft);
       for(const profile of pack.profiles){
         if(!draft.cast.some(person=>person.id===profile.characterId))continue;
         const existing=draft.appearances?.find(item=>item.characterId===profile.characterId);
@@ -515,6 +520,7 @@ export function setup(ctx: SpindleFrontendContext) {
         const index=draft.appearances?.findIndex(item=>item.characterId===profile.characterId)??-1;
         if(index>=0)draft.appearances![index]=approved;else(draft.appearances??=[]).push(approved);
       }
+      if(personaFollows&&draft.persona)Object.assign(draft.persona,personaDraft(draft));
       draftDirty=true;renderReview();notify('Source appearances copied into the approved story fields. Review them, then Save draft or Save to Lumiverse. Suggestions were not copied. Retained source facts stay separate; incomplete fields keep your earlier approved choice.');
     }),paragraph('Replaces the approved appearance and starting outfit fields with the source prose shown here. Unspecified details stay blank; incomplete fields keep your earlier approved choice. Retained source facts and suggested details are not copied. Review and edit the prose before approving it.','sp-hint'));
     visualResults.append(row(button('Save descriptions',async()=>{
@@ -563,7 +569,163 @@ export function setup(ctx: SpindleFrontendContext) {
     if(!matching)editor=undefined;
     visualResultNotice.textContent=newer?'New descriptions are ready. Loading them replaces your unsaved description edits.':'Descriptions for a different version of the draft are hidden. Your story edits and saved descriptions are preserved.';
     if(visualEditorKey!==signature||visualEditorRef!==editor){visualEditorKey=signature;visualEditorRef=editor;if(editor)renderVisualEditor(editor,signature);else visualResults.replaceChildren();}
-    for(const update of approvedControls.values())update();syncVisualControls();
+    for(const update of approvedControls.values())update();renderLooks();syncVisualControls();
+  }
+
+  // Designed looks. Mounted once, like image descriptions, so a running job
+  // never replaces story edits. Looks are read-only here: a person rerolls a
+  // look or uses it, and edits the wording in the approved fields above.
+  const lookPanel=details('Design character looks · optional');
+  const lookSourceNotice=paragraph('','sp-notice');
+  const lookSource=field('Story text for this draft','',undefined,{area:true,rows:4,hint:'Paste the story this draft was made from. Only needed when Set Points has no saved copy.'});lookSource.input.maxLength=MAX_SOURCE;
+  const lookSources=new Map<string,string>();let lookSourceKey='';
+  lookSource.input.addEventListener('input',()=>{lookSources.set(lookSourceKey,lookSource.input.value);syncLookControls();});
+  const lookCopySource=button('Copy story text from Import',()=>{lookSource.input.value=source.input.value;lookSources.set(lookSourceKey,source.input.value);notify('Story text copied from Import. Check that it is the story for this draft.');syncLookControls();});
+  const lookSourceBox=group(lookSource.wrap,lookCopySource);
+  const lookConnection=selectField('Look design connection',[],'');
+  const lookSettings=details('Response settings');
+  let lookSettingsDirty=false;let lookSettingsJobId:string|null|undefined;
+  const lookAllowance=selectField('Look design response allowance',responseAllowances,'16000',()=>{lookSettingsDirty=true;});
+  const lookReasoning=selectField('Look design reasoning mode',reasoningModes,'inherit',()=>{lookSettingsDirty=true;});
+  const lookSettingsGrid=node('div','sp-grid');lookSettingsGrid.append(lookAllowance.wrap,lookReasoning.wrap);lookSettings.body.append(lookSettingsGrid,paragraph(responseSettingsHint,'sp-hint'));
+  const lookProgress=node('div','sp-progress');lookProgress.hidden=true;
+  const lookProgressText=paragraph('','sp-small');lookProgressText.setAttribute('role','status');lookProgressText.setAttribute('aria-live','polite');
+  const lookProgressBar=node('progress');lookProgressBar.max=1;lookProgressBar.value=0;lookProgressBar.setAttribute('aria-label','Look design progress');
+  const lookCancel=button('Cancel look design',async()=>{await rpc.request('cancel-looks');notify('Cancelling. Finished steps are kept.');await refresh();});
+  const lookResumeHint=paragraph('','sp-hint');
+  const lookResume=button('Resume look design',async()=>{
+    if(lookBlocked())throw new Error('Wait for the current work to finish first.');
+    if(!snapshot?.looks?.resumeAvailable||!draft||snapshot.looks.requestSignature!==lookDraftSignature(draft))throw new Error('The saved look design belongs to a different draft.');
+    looksStarting=true;syncImportControls();
+    try{await rpc.request('resume-looks',{...readResponseSettings(lookAllowance.input,lookReasoning.input),...(snapshot.looks.retryUncertain?{retryUncertain:true}:{})});lookSettingsDirty=false;notify('Picking up where look design stopped. Finished steps are reused.');await refresh();}
+    finally{looksStarting=false;if(!destroyed)syncImportControls();}
+  });
+  lookProgress.append(lookProgressText,lookProgressBar,lookCancel,lookResumeHint,lookResume);
+  const lookCreate=button('Design looks',async()=>{
+    if(lookBlocked())throw new Error('Wait for the current work to finish first.');
+    if(!draft)throw new Error('Create or open a story draft first.');
+    if(!lookConnection.input.value)throw new Error('Choose a connection for look design.');
+    const requested=clone(draft),sourceBound=snapshot?.visuals?.sourceSignature===visualDraftSignature(requested);
+    const sourceText=lookSource.input.value;
+    if(!sourceBound&&(sourceText.trim().length<100||sourceText.length>MAX_SOURCE))throw new Error('Add between 100 and 500,000 characters of the story for this draft.');
+    pendingReroll=null;looksStarting=true;syncImportControls();
+    try{await rpc.request('start-looks',{draft:requested,connectionId:lookConnection.input.value,...readResponseSettings(lookAllowance.input,lookReasoning.input),...(!sourceBound?{sourceText}:{})});lookSettingsDirty=false;notify('Designing looks. Your story draft stays as it is until you choose a look.');await refresh();}
+    finally{looksStarting=false;if(!destroyed)syncImportControls();}
+  },true);
+  const lookOtherVersion=paragraph('The saved looks are for a different draft, so they are hidden here. Design looks for this one.','sp-notice');lookOtherVersion.hidden=true;
+  const lookResults=node('div','sp-stack');
+  const lookNotes=new Map<string,string>();
+  // A reroll replaces a look everywhere: if the old one was in the story, the new one takes its place.
+  let pendingReroll:{characterId:string;signature:string;before:string;wasInUse:boolean}|null=null;
+  let lookRenderKey='',lookPackKey='';
+  lookPanel.body.append(paragraph('Works out how each character looks. It keeps what the story says, follows the story’s hints, and makes up the rest so the cast are easy to tell apart. Every trait shows where it came from.','sp-small'),paragraph('Reads the story once more, then designs the whole cast together. Normal model charges apply. Nothing in your story changes until you choose a look. No images are made.','sp-hint'),lookSourceNotice,lookSourceBox,lookConnection.wrap,lookSettings.root,lookCreate,lookProgress,lookOtherVersion,lookResults);
+  function looksBusy(){return looksStarting||snapshot?.looks?.job?.status==='running';}
+  function lookBlocked(){return !!(repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||looksBusy()||snapshot?.job?.status==='running');}
+  function syncLookControls(){
+    const busy=lookBlocked();
+    lookCreate.disabled=busy||!draft||!lookConnection.input.value;
+    lookResume.disabled=busy||!snapshot?.looks?.resumeAvailable||!draft||snapshot.looks.requestSignature!==lookDraftSignature(draft);
+    lookConnection.input.disabled=busy;lookAllowance.input.disabled=busy;lookReasoning.input.disabled=busy;lookSource.input.disabled=busy;lookCopySource.disabled=busy||!source.input.value.trim();
+    for(const control of lookResults.querySelectorAll<HTMLButtonElement|HTMLInputElement>('[data-look-action]'))control.disabled=busy||'lookUsed' in control.dataset;
+  }
+  /** Put looks into the approved fields and keep an untouched persona in step with them. */
+  function putLooksInStory(looks:CharacterLook[]){
+    if(!draft)return;
+    const personaFollows=personaIsAutomatic(draft);
+    useLooks(draft,looks);
+    if(personaFollows&&draft.persona)Object.assign(draft.persona,personaDraft(draft));
+    draftDirty=true;renderReview();
+  }
+  function lookCard(look:CharacterLook,name:string,signature:string){
+    const current=draft!,approved=current.appearances?.find(item=>item.characterId===look.characterId);
+    const inUse=lookInUse(current,look),hasOwnText=!!approved&&!!(approved.description.trim()||approved.startingOutfit.trim())&&!inUse;
+    // A small cast is shown open; a large one stays folded so the list is easy to scan.
+    const card=details(name);card.root.open=current.cast.length<=6||look.traits.some(trait=>trait.check?.length);card.root.dataset.look=look.characterId;
+    card.body.append(node('span','sp-tag',inUse?'In your story':hasOwnText?'Your story has different text':'Not in your story yet'));
+    const table=node('dl','sp-look');
+    for(const trait of look.traits){
+      const term=node('dt','sp-label',LOOK_LABELS[trait.field]),value=node('dd');
+      const basis=node('span','sp-basis',BASIS_LABELS[trait.basis]);basis.dataset.basis=trait.basis;
+      value.append(node('span','',trait.value),basis);
+      const notes=trait.clueIds.map(id=>look.clues.find(clue=>clue.id===id)?.text).filter(Boolean);
+      const reason=[trait.why,notes.length?`Story: ${notes.join(' · ')}`:''].filter(Boolean).join(' · ');
+      if(reason)value.append(paragraph(reason,'sp-hint'));
+      if(trait.check?.length)value.append(paragraph(`The story says: ${trait.check.join(' · ')}. Check this trait against it.`,'sp-notice'));
+      table.append(term,value);
+    }
+    card.body.append(table);
+    const note=field(`${name}: what to change · optional`,lookNotes.get(look.characterId)??'',value=>lookNotes.set(look.characterId,value),{placeholder:'For example: older, heavier build, keep the scar'});note.input.maxLength=LOOK_LIMITS.note;note.input.dataset.lookAction='';
+    const reroll=button(`Reroll ${name}`,async()=>{
+      if(lookBlocked())throw new Error('Wait for the current work to finish first.');
+      if(!draft||lookDraftSignature(draft)!==signature)throw new Error('These looks belong to a different draft.');
+      if(!lookConnection.input.value)throw new Error('Choose a connection for look design.');
+      pendingReroll={characterId:look.characterId,signature,before:JSON.stringify(look),wasInUse:lookInUse(draft,look)};
+      looksStarting=true;syncImportControls();
+      try{await rpc.request('reroll-look',{draft:clone(draft),connectionId:lookConnection.input.value,characterId:look.characterId,note:note.input.value.trim(),...readResponseSettings(lookAllowance.input,lookReasoning.input)});notify(`Designing a new look for ${name}. One model request.`);await refresh();}
+      catch(error){pendingReroll=null;throw error;}
+      finally{looksStarting=false;if(!destroyed){syncImportControls();renderLooks();}}
+    });reroll.dataset.lookAction='';
+    const use=button(inUse?'In your story':`Use ${name}’s look`,()=>{
+      if(!draft||lookDraftSignature(draft)!==signature)throw new Error('These looks belong to a different draft.');
+      putLooksInStory([look]);notify(`${name}’s look is in your story. Save draft or Save to Lumiverse to keep it.`);
+    },!inUse);use.dataset.lookAction='';if(inUse)use.dataset.lookUsed='';
+    const copyText=field(`${name}: fields to copy`,[lookAppearance(look),`Outfit at the start: ${lookOutfit(look)}`].join('\n'),undefined,{area:true,rows:5});copyText.input.readOnly=true;
+    const copy=details('Copy for Lumi Studio');copy.body.append(copyText.wrap,button(`Copy ${name}’s fields`,()=>copyVisualText(copyText.input.value,copyText.input,'Fields')));
+    card.body.append(note.wrap,row(reroll,use),...(hasOwnText?[paragraph('Using this look replaces the appearance and outfit text you have for this character now.','sp-hint')]:[]),...(look.rerolls?[paragraph(`Rerolled ${look.rerolls} time${look.rerolls===1?'':'s'}. Story details stay the same on a reroll; made-up ones change.`,'sp-hint')]:[]),copy.root);
+    return card.root;
+  }
+  function renderLookResults(pack:LookPack,signature:string){
+    lookResults.replaceChildren();
+    if(pack.warnings.length){const notes=details(`${pack.warnings.length} note${pack.warnings.length===1?'':'s'} from look design`);for(const warning of pack.warnings)notes.body.append(paragraph(warning,'sp-notice'));lookResults.append(notes.root);}
+    const key=node('p','sp-hint');
+    for(const basis of ['story','implied','invented'] as const){const tag=node('span','sp-basis',BASIS_LABELS[basis]);tag.dataset.basis=basis;key.append(tag);}
+    key.append(document.createTextNode(' Each trait is marked with where it came from.'));lookResults.append(key);
+    for(const look of pack.looks)lookResults.append(lookCard(look,draft!.cast.find(person=>person.id===look.characterId)?.name??look.characterId,signature));
+    lookResults.append(button('Use all looks in the story',()=>{
+      if(!draft||lookDraftSignature(draft)!==signature)throw new Error('These looks belong to a different draft.');
+      const current=draft,blank=(id:string)=>{const approved=current.appearances?.find(item=>item.characterId===id);return !approved||!(approved.description.trim()||approved.startingOutfit.trim());};
+      const fill=pack.looks.filter(look=>blank(look.characterId)),kept=pack.looks.filter(look=>!blank(look.characterId)&&!lookInUse(current,look)).map(look=>current.cast.find(person=>person.id===look.characterId)?.name).filter(Boolean);
+      if(fill.length)putLooksInStory(fill);
+      notify(`${fill.length} look${fill.length===1?'':'s'} put in your story.${kept.length?` Kept the text you already had for ${kept.join(', ')}; use the button on that character to replace it.`:''} Save draft or Save to Lumiverse to keep them.`);
+    },true),paragraph('Fills the appearance and outfit for every character who has none yet. Characters you already described are left alone. When you save to Lumiverse, each look becomes its own short lorebook entry.','sp-hint'));
+  }
+  function renderLooks(){
+    if(!draft)return;
+    const signature=lookDraftSignature(draft),sourceKey=visualDraftSignature(draft),looks=snapshot?.looks;
+    if(lookSourceKey!==sourceKey){lookSourceKey=sourceKey;lookSource.input.value=lookSources.get(sourceKey)??'';}
+    const sourceBound=snapshot?.visuals?.sourceSignature===sourceKey;lookSourceBox.hidden=sourceBound;
+    lookSourceNotice.textContent=sourceBound?'The story text is saved with this draft.':'This draft has no saved story text. Paste the story below, or copy it from Import.';
+    const connectionsSignature=JSON.stringify(snapshot?.connections??[]);
+    if(lookConnection.input.dataset.signature!==connectionsSignature){
+      const previous=lookConnection.input.value;lookConnection.input.replaceChildren();lookConnection.input.dataset.signature=connectionsSignature;
+      for(const item of snapshot?.connections??[])lookConnection.input.append(option(`${item.name}${item.model?` · ${item.model}`:''}`,item.id));
+      if(!lookConnection.input.options.length)lookConnection.input.append(option('Add a model connection in Settings',''));
+      const preferred=[previous,looks?.connectionId,connection.value].find(id=>id&&(snapshot?.connections??[]).some(item=>item.id===id));if(preferred)lookConnection.input.value=preferred;
+    }
+    const job=looks?.job,running=job?.status==='running',requestMatches=looks?.requestSignature===signature,canResume=!!looks?.resumeAvailable&&!running&&requestMatches;
+    if(!lookSettingsDirty||lookSettingsJobId!==(job?.id??null)){lookSettingsJobId=job?.id??null;lookSettingsDirty=false;lookAllowance.input.value=String(looks?.maxOutputTokens??16000);lookReasoning.input.value=looks?.reasoningMode??'inherit';}
+    lookProgress.hidden=!job&&!canResume;lookCancel.hidden=!running;lookResume.hidden=!canResume;lookResumeHint.hidden=!canResume;
+    if(job){lookProgressText.textContent=(!requestMatches?'For another draft. ':'')+(job.status==='failed'&&job.phase?`Stopped during ${job.phase}. ${job.error||job.label}`:job.error||job.label);lookProgressBar.max=Math.max(1,job.total);lookProgressBar.value=Math.min(job.completed,lookProgressBar.max);}
+    lookResume.textContent=looks?.retryUncertain?'Retry unfinished look request':'Resume look design';
+    lookResumeHint.textContent='Uses the saved draft and story text. Finished steps are reused; the rest use normal model charges.'+(looks?.retryUncertain?' The last request may already have been charged, and retrying can charge it again.':'');
+    const pack=looks?.pack&&looks.resultSignature===signature?looks.pack:null;
+    lookOtherVersion.hidden=!(looks?.pack&&!pack);
+    lookCreate.textContent=pack?'Design all looks again':'Design looks';
+    if(pack&&pendingReroll&&!running&&!looksStarting){
+      const waiting=pendingReroll,next=pack.looks.find(look=>look.characterId===waiting.characterId);
+      if(job?.status!=='complete'||waiting.signature!==signature)pendingReroll=null;
+      else if(next&&JSON.stringify(next)!==waiting.before){
+        pendingReroll=null;lookNotes.delete(next.characterId);
+        const name=draft.cast.find(person=>person.id===next.characterId)?.name??'this character',previous=JSON.parse(waiting.before) as CharacterLook;
+        if(waiting.wasInUse&&lookInUse(draft,previous)){putLooksInStory([next]);notify(`New look for ${name} is in your story, in place of the old one.`);}
+        else notify(`New look for ${name} is ready. Choose Use ${name}’s look to put it in your story.`);
+      }
+    }
+    const key=pack?JSON.stringify([signature,pack,draft.appearances??[],draft.cast.map(person=>person.name)]):'';
+    if(key!==lookRenderKey){lookRenderKey=key;if(pack)renderLookResults(pack,signature);else lookResults.replaceChildren();}
+    // Open the panel when new looks arrive, not every time the story is edited.
+    const packKey=pack?JSON.stringify(pack):'';if(packKey!==lookPackKey){lookPackKey=packKey;if(pack)lookPanel.root.open=true;}
+    syncLookControls();
   }
 
   const draftFileInput=node('input');draftFileInput.type='file';draftFileInput.accept='.json,application/json';draftFileInput.hidden=true;draftFileInput.setAttribute('aria-label','Open saved Set Points draft');app.append(draftFileInput);
@@ -607,22 +769,52 @@ export function setup(ctx: SpindleFrontendContext) {
     let updateRoleReview=()=>{};
     const markDirty=()=> { draftDirty=true;dirtyTag.textContent='Unsaved edits';renderVisuals();updateRoleReview();renderRepairStatus(); };
     const reviewFields=new Map<string,HTMLElement>();
-    const edit=(label:string,value:string,change:(value:string)=>void,area=false,hint?:string,key?:string)=>{const item=field(label,value,v=>{change(v);markDirty();},{area,hint});if(key)reviewFields.set(key,item.input);return item.wrap;};
+    let showPersona=()=>{};
+    // A persona nobody has reworded follows the draft: change the character and it changes too.
+    const keepPersona=(change:()=>void)=>{const follows=personaIsAutomatic(current);change();if(follows&&current.persona){Object.assign(current.persona,personaDraft(current));showPersona();}};
+    const edit=(label:string,value:string,change:(value:string)=>void,area=false,hint?:string,key?:string)=>{const item=field(label,value,v=>{keepPersona(()=>change(v));markDirty();},{area,hint});if(key)reviewFields.set(key,item.input);return item.wrap;};
     const summary=node('div','sp-card sp-stack');summary.append(edit('Title',current.title,v=>current.title=v,false,undefined,'title'),edit('Premise',current.premise,v=>current.premise=v,true,undefined,'premise'));
     const choices=node('div','sp-grid');choices.append(edit('Your role',current.playerRole,v=>{current.playerRole=v;if(current.roles)current.roles.playerCharacterId=defaultRoles(current).playerCharacterId;},false,undefined,'playerRole'),edit('Starting point',current.startingPoint,v=>current.startingPoint=v,false,undefined,'startingPoint'));summary.append(choices);
     const counts=node('div','sp-counts');for(const [number,label] of [[current.cast.length,'characters'],[current.lore.length,'lore entries'],[current.scenes.length,'scenes']] as const){ const item=node('div');item.append(node('strong','',String(number)),node('span','',label));counts.append(item);}summary.append(counts);panel.append(summary);
     if(current.warnings.length) { const warnings=details(`${current.warnings.length} adaptation note${current.warnings.length===1?'':'s'}`);for(const warning of current.warnings)warnings.body.append(paragraph(warning,'sp-notice'));panel.append(warnings.root); }
     const roleSettings=details('Player and narrator roles');roleSettings.root.open=true;
     const activeRoles=()=>current.roles??defaultRoles(current);
-    const playerIdentity=selectField('Player cast identity',[['','Custom or unbound role'],...current.cast.map(person=>[person.id,person.name] as [string,string])],activeRoles().playerCharacterId??'',()=>{const value=playerIdentity.input.value;current.roles??=defaultRoles(current);current.roles.playerCharacterId=value||null;if(value){current.playerRole=current.cast.find(person=>person.id===value)!.name;}markDirty();renderReview();});
+    const playerIdentity=selectField('Player cast identity',[['','Custom or unbound role'],...current.cast.map(person=>[person.id,person.name] as [string,string])],activeRoles().playerCharacterId??'',()=>{const value=playerIdentity.input.value;keepPersona(()=>{current.roles??=defaultRoles(current);current.roles.playerCharacterId=value||null;if(value){current.playerRole=current.cast.find(person=>person.id===value)!.name;}});markDirty();renderReview();});
     const viewMode=selectField('Story narration',[['neutral','External narrator'],['character','Supporting character in first person']],activeRoles().narration,()=>{const value=viewMode.input.value;current.roles??=defaultRoles(current);current.roles.narration=value as 'neutral'|'character';current.roles.viewpointCharacterId=value==='character'?(current.cast.find(person=>person.id!==current.roles!.playerCharacterId)?.id??null):null;markDirty();renderReview();});
     const viewPerson=selectField('Narrating cast member',[['','Choose a supporting character'],...current.cast.filter(person=>person.id!==activeRoles().playerCharacterId).map(person=>[person.id,person.name] as [string,string])],activeRoles().viewpointCharacterId??'',()=>{const value=viewPerson.input.value;current.roles??=defaultRoles(current);current.roles.viewpointCharacterId=value||null;markDirty();});viewPerson.wrap.hidden=activeRoles().narration!=='character';
     const openingStyle=selectField('Opening style',[['interactive','Interactive setup · open choices'],['story','Story excerpt · preset actions']],current.openingStyle??'interactive',()=>{current.openingStyle=openingStyle.input.value as 'interactive'|'story';markDirty();});
     roleSettings.body.append(openingStyle.wrap,paragraph('Story excerpt accepts preset player actions and dialogue in stored openings. They still need the correct player identity and narrator voice, and must fit previous chat choices. This setting does not rewrite your openings or send a model request. During live play, the narrator leaves new decisions to you.','sp-hint'));
     roleSettings.body.append(paragraph('Your player identity stays fixed even when the source changes viewpoint. External narration is the default. A supporting character may narrate in first person while your character stays under your control. These settings do not rewrite saved scenes.','sp-hint'),playerIdentity.wrap,viewMode.wrap,viewPerson.wrap,edit('Source viewpoint · optional',activeRoles().sourceViewpoint,value=>{current.roles??=defaultRoles(current);current.roles.sourceViewpoint=value;},false,'A note about the original story, not a player assignment.'));panel.append(roleSettings.root);
+    const personaSection=details('Your persona');personaSection.root.open=true;
+    const played=playerCharacter(current),personas=snapshot?.personas??[],canUsePersonas=!!snapshot?.permissions.includes('personas');
+    const personaMode=selectField('Who you play as in Lumiverse',[['none','I’ll pick a persona myself'],['create',played?`Make a persona for ${played.name}`:'Make a persona for my character'],['existing','Use one of my personas']],current.persona?.mode??'none',()=>{
+      const mode=personaMode.input.value as PersonaMode,kept=current.persona,fresh=personaDraft(current);
+      if(mode===(kept?.mode??'none'))return;
+      if(mode==='existing'&&!personas.length){personaMode.input.value=kept?.mode??'none';notify(canUsePersonas?'You have no personas in Lumiverse yet. Make one here instead, or add one in Lumiverse first.':'Grant personas in Lumiverse’s Extensions panel so Set Points can list your personas.','error');return;}
+      const text={name:kept?.name||fresh.name,title:kept?.title||fresh.title,description:kept?.description||fresh.description};
+      if(mode==='create')current.persona={mode,...text};
+      else if(mode==='existing')current.persona={mode,...text,personaId:kept?.personaId&&personas.some(item=>item.id===kept.personaId)?kept.personaId:(personas.find(item=>item.name.trim().toLocaleLowerCase()===fresh.name.toLocaleLowerCase())??personas[0]).id};
+      else if(kept)current.persona={mode:'none',name:kept.name,title:kept.title,description:kept.description};
+      markDirty();renderReview();
+    });
+    personaSection.body.append(paragraph('A persona is who the narrator sees you as. Make one for this story, use one you already have, or leave it and pick one yourself when you start the chat.','sp-hint'),personaMode.wrap);
+    if(current.persona&&current.persona.mode!=='none'&&!canUsePersonas)personaSection.body.append(paragraph('Grant personas in Lumiverse’s Extensions panel so Set Points can do this. Until then, Save to Lumiverse will stop and tell you.','sp-notice'));
+    if(current.persona?.mode==='create'){
+      const plan=current.persona;
+      const personaField=(label:string,key:'name'|'title'|'description',options:{area?:boolean;rows?:number;hint?:string}={})=>{const item=field(label,plan[key],value=>{plan[key]=value;markDirty();},options);reviewFields.set(`persona:${key}`,item.input);return item;};
+      const name=personaField('Persona name','name'),title=personaField('Short label','title',{hint:'Shown next to the name in your persona list.'}),description=personaField('Persona description','description',{area:true,rows:10,hint:played?`Written from ${played.name}’s personality, voice, relationships, what they know at the start, and their appearance. It holds nothing from later in the story. It follows your edits to ${played.name} until you change the wording here.`:'Add who your character is to the cast, and how they look.'});
+      showPersona=()=>{name.input.value=plan.name;title.input.value=plan.title;description.input.value=plan.description;};
+      personaSection.body.append(name.wrap,title.wrap,description.wrap,button(played?`Write it again from ${played.name}`:'Write it again from my role',()=>{Object.assign(plan,personaDraft(current));showPersona();markDirty();notify('Persona rewritten from the draft.');}),paragraph('Save to Lumiverse makes this persona. Saving again updates it, unless you have changed it in Lumiverse since.','sp-hint'));
+    }else if(current.persona?.mode==='existing'){
+      const plan=current.persona,choices=personas.map(item=>[item.id,item.title?`${item.name} · ${item.title}`:item.name] as [string,string]);
+      if(plan.personaId&&!personas.some(item=>item.id===plan.personaId))choices.unshift([plan.personaId,'A persona that is no longer listed']);
+      const pick=selectField('Your persona',choices,plan.personaId??'',()=>{plan.personaId=pick.input.value;markDirty();});
+      personaSection.body.append(pick.wrap,paragraph(played?`Your persona is left as it is. The narrator still treats you as ${played.name}, so pick a persona that fits, or set Player cast identity to “Custom or unbound role” to join the story as someone new.`:'Your persona is left as it is. Set Points only remembers the choice, and can switch to it for you after saving.','sp-hint'));
+    }
+    panel.append(personaSection.root);
     const narration=details('Narrator direction');narration.body.append(edit('Instructions',current.narratorInstructions,v=>current.narratorInstructions=v,true,'Describe the narrator’s scope and how it should leave your choices open.','narratorInstructions'));panel.append(narration.root);
     const cast=node('div','sp-review-group');cast.append(node('div','sp-section-label','The people'));
-    const appearanceGuide=group(node('h3','','Appearance guide'),paragraph('Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields let the narrator fill missing supporting-character details, using existing story facts first and keeping introduced looks consistent. You can start playing without describing everyone. These choices become lorebook guidance when saved to Lumiverse; editing them uses no model.','sp-small'),paragraph('Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections. Your own character’s unspecified appearance stays yours to choose.','sp-hint'));appearanceGuide.classList.add('sp-card');cast.append(appearanceGuide);
+    const appearanceGuide=group(node('h3','','Appearance guide'),paragraph('Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields let the narrator fill missing supporting-character details, using existing story facts first and keeping introduced looks consistent. You can start playing without describing everyone. Editing them uses no model.','sp-small'),paragraph('When you save to Lumiverse, each described character gets a short lorebook entry of their own, found by their name. Your character and the three who appear in the most scenes stay in view all the time. Short, plain facts hold best. To have the looks worked out for you, open Design character looks below.','sp-hint'),paragraph('Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections. Your own character’s unspecified appearance stays yours to choose.','sp-hint'));appearanceGuide.classList.add('sp-card');cast.append(appearanceGuide);
     for(const person of current.cast) {
       const entry=details(person.name);entry.body.append(edit('Name',person.name,v=>{person.name=v;entry.summary.textContent=v;},false,undefined,`cast:${person.id}:name`),edit('Also known as',person.aliases.join(', '),v=>person.aliases=v.split(',').map(x=>x.trim()).filter(Boolean),false,undefined,`cast:${person.id}:aliases`),edit('Personality',person.personality,v=>person.personality=v,true,undefined,`cast:${person.id}:personality`),edit('Voice & manner',person.voice,v=>person.voice=v,true,undefined,`cast:${person.id}:voice`),edit('Relationships at the start',person.relationships,v=>person.relationships=v,true,undefined,`cast:${person.id}:relationships`),edit('Knowledge at the start',person.knowledge,v=>person.knowledge=v,true,undefined,`cast:${person.id}:knowledge`));
       const approved=()=>current.appearances?.find(item=>item.characterId===person.id);
@@ -641,7 +833,7 @@ export function setup(ctx: SpindleFrontendContext) {
       approvedControls.set(person.id,updateApproved);updateApproved();
       entry.body.append(edit(`${person.name}: approved appearance`,approved()?.description??'',v=>setApproved('description',v),true,'Your chosen physical details stay fixed. For supporting characters, leave missing traits for the narrator to fill. This is independent of generated source facts.'),edit(`${person.name}: approved starting outfit`,approved()?.startingOutfit??'',v=>setApproved('startingOutfit',v),true,'Your chosen outfit at the start. For supporting characters, leave blank for the narrator. Edit conflicting lore or scene openings separately.'),appearanceMismatch,approvedCaption.wrap,approvedCopy);
       if(person.sourceRefs.length)entry.body.append(paragraph(`Source: ${person.sourceRefs.join(' · ')}`,'sp-hint'));cast.append(entry.root);
-    }panel.append(cast);
+    }cast.append(lookPanel.root);panel.append(cast);
     const mentions=details('Check for conflicting looks · optional');const mentionResults=group(),mentionStatus=paragraph('','sp-hint');mentionStatus.setAttribute('role','status');
     let foundMentions:ReturnType<typeof appearanceMentions>=[],shownMentions=0;
     const showMoreMentions=button('Show more excerpts',()=>showMentions());showMoreMentions.hidden=true;
@@ -741,10 +933,17 @@ export function setup(ctx: SpindleFrontendContext) {
       const request=clone(current);notify('Saving the narrator and world book to Lumiverse…');const result=await rpc.request<SavedStory>('create-card',{draft:request},120_000);
       if(snapshot)snapshot.saved=result;
       if(nonce===panelNonce&&JSON.stringify(current)===JSON.stringify(request)){draftDirty=false;draftRevision++;draftVersion=JSON.stringify(current);}
-      notify(`“${result.title}” is saved. Open it from Characters and start a chat, then return to Play.`);renderReview();
-    },true);create.classList.add('sp-wide');panel.append(actions,create,paragraph('Saves a narrator character card with its world book and ordered scenes. Start a chat with that card to use the scene controls.','sp-footnote'));
+      notify(`“${result.title}” is saved${result.personaName?`, with the persona ${result.personaName}`:''}. Open it from Characters and start a chat, then return to Play.`);renderReview();
+    },true);create.classList.add('sp-wide');panel.append(actions,create,paragraph(current.persona?.mode==='create'?'Saves a narrator character card with its world book and ordered scenes, and your persona. Start a chat with that card to use the scene controls.':'Saves a narrator character card with its world book and ordered scenes. Start a chat with that card to use the scene controls.','sp-footnote'));
     if(snapshot?.saved?.draftId===current.id) {
-      const saved=node('div','sp-saved sp-stack');saved.append(node('h3','',`Saved: ${snapshot.saved.title}`),paragraph('Open Characters in Lumiverse, select this story, and start a new chat.','sp-small'),paragraph(`Character: ${snapshot.saved.characterId}`,'sp-inline-code'),paragraph(`World book: ${snapshot.saved.worldBookId}`,'sp-inline-code'));panel.append(saved);
+      const saved=node('div','sp-saved sp-stack');saved.append(node('h3','',`Saved: ${snapshot.saved.title}`),paragraph('Open Characters in Lumiverse, select this story, and start a new chat.','sp-small'),paragraph(`Character: ${snapshot.saved.characterId}`,'sp-inline-code'),paragraph(`World book: ${snapshot.saved.worldBookId}`,'sp-inline-code'));
+      const madePersona=snapshot.saved;
+      if(madePersona.personaId){
+        saved.append(paragraph(`Persona: ${madePersona.personaName??madePersona.personaId}`,'sp-small'));
+        if(madePersona.personaNote)saved.append(paragraph(madePersona.personaNote,'sp-notice'));
+        saved.append(button('Switch to this persona now',async()=>{const result=await rpc.request<{name:string}>('switch-persona',{personaId:madePersona.personaId});notify(`You are now playing as ${result.name}.`);}),paragraph('Changes your active persona in Lumiverse. You can switch back there at any time.','sp-hint'));
+      }
+      panel.append(saved);
     }
   }
 

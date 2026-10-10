@@ -4,9 +4,9 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.11** adds **Story excerpt** opening style for intentional preset source actions and dialogue. It keeps the chosen player identity and narrator voice fixed while leaving new decisions during live chat to the human. Existing completed drafts can switch styles without another model request or any prose rewrite. **Interactive setup** keeps the earlier open-choice behavior. Local checks now recognize common conditional choices and questions, show a short triggering excerpt, and select the matching words in the editor. Repair previews distinguish current-draft checks from repaired-candidate checks. New optional repairs receive the matched wording; unfinished 0.1.10 repairs retain their original prompts and paid progress.
+Version **0.1.12** adds three things to Review. **Your persona** lets you make a Lumiverse persona for the character you play, written from the draft for you to check, or use one you already have. **Design character looks** works out what each character looks like when the story does not say: it keeps what the story states, follows its hints, and makes up the rest so the cast are easy to tell apart, with every trait marked by where it came from and a **Reroll** button per character. And saving to Lumiverse now writes one short appearance entry per character in the world book, so the narrator stops reinventing how people look.
 
-Missing supporting-character looks can still be invented consistently, using established story/chat details first and respecting your approved traits. You do not need to describe every character before playing.
+Nothing here runs unless you ask for it, and you still do not need to describe every character before playing: blank looks are filled in by the narrator as before. Existing drafts open as before. The first **Save to Lumiverse** after updating makes a new card and world book in the new format; older cards and chats are left alone.
 
 ## What it does
 
@@ -15,7 +15,9 @@ Missing supporting-character looks can still be invented consistently, using est
 - Reads long sources in sections, merges character identities and chronology, then creates an editable adaptation. Saves model responses before format and size validation so completed matching requests can be reused after an interruption or validation failure.
 - Produces a narrator card, attached world book, initial greeting, and ordered alternate greetings, with a shared player/narrator role contract and retained scene-control metadata.
 - Offers free player/viewpoint checks and optional repairs of selected completed scenes, with preview, explicit application, cancellation, and saved-step recovery.
-- Lets you approve appearance and starting-outfit details directly in Review, including on existing 0.1.5 drafts. Publishes those details as a shared reference in the narrator card and an always-on world-book entry.
+- Lets you make a persona for the character you play, or use one of your own. The persona is written from the draft with no model request.
+- Lets you approve appearance and starting-outfit details directly in Review, including on existing 0.1.5 drafts. Publishes each described character as a short world-book entry of their own.
+- Optionally designs looks for the whole cast together when the story leaves them out, labels every trait as from the story, hinted by it, or made up, and rerolls one character at a time.
 - Optionally creates separate character image descriptions with source facts, starting outfits, unknowns, and clearly labeled suggestions. Provides appearance/outfit tag copy buttons, combined Anima tags, captions, and a separate JSON export.
 - Includes its own scene controls: **Follow the story**, **Choose next scene**, **Force next scene**, and **Undo last scene insertion**.
 - Keeps independent progression in each chat, with recovery after interrupted writes and protection against duplicate handoffs.
@@ -33,7 +35,7 @@ Repository installation URL: [fidgetycarrot/lumiverse-set-points](https://github
 
 1. Open Lumiverse's **Extensions** panel and choose its repository installation option.
 2. Paste `https://github.com/fidgetycarrot/lumiverse-set-points` and install.
-3. Enable **Set Points**, grant its requested permissions, and open the **Set Points** drawer tab. Web-page access is optional; pasted text works without it.
+3. Enable **Set Points**, grant its requested permissions, and open the **Set Points** drawer tab. Web-page access and persona access are optional; pasted text and everything else work without them.
 
 **Updating after a failed 0.1.3 or 0.1.4 import:** update the existing extension in place and choose **Resume saved import**. Keep its private storage intact; do not uninstall the extension or clear its stored data before resuming.
 
@@ -42,6 +44,7 @@ Repository installation URL: [fidgetycarrot/lumiverse-set-points](https://github
 | `generation` | Adaptation, optional image descriptions and scene repairs, connection choices, and generation lifecycle tracking |
 | `characters` | Creating narrator cards and reading their scene data |
 | `world_books` | Creating and attaching starting cast and lore |
+| `personas` | Optional. Listing your personas, making or updating the one for a story, and switching to it when you ask |
 | `chats` | Finding and validating the selected chat |
 | `chat_mutation` | Inserting, cleaning, and undoing scene messages |
 | `interceptor` | Adding current/next scene direction before a normal reply |
@@ -54,8 +57,8 @@ The declared `base64_decode` backend capability is needed by a bundled DOM-parse
 1. In **Import**, paste a story, open a text file, or choose **Try a sample**. For a multi-page story, open **Import from a link**, enter the first page, and choose **Read linked pages**. Review the collected pages, then choose **Use collected text**. **Read page** loads just the selected page.
 2. Enter the story title, who you will play, and where play begins. Choose an adaptation connection with a model configured in Lumiverse. Set Points sends that connection’s provider and model with each adaptation request. The role may be an existing character or a new one. Choose **External narrator** (default), or select supporting-character narration and name that character. **Original story viewpoint** is an optional source note; it never assigns your player role. If you need to test the connection first, choose **Check connection**; this sends a small neutral request without your story and uses normal provider charges.
 3. Choose **Create adaptation**. New section-reading, merge, plan, cast/lore batch, scene batch, and format-repair requests use that connection and normal provider charges. Matching saved requests are reused. You can cancel while keeping your previous completed draft; **Resume saved import** uses the source and settings saved for the last attempt.
-4. In **Review**, edit the premise, cast, approved appearances, starting knowledge, world lore, narrator instructions, and scenes. Confirm **Player and narrator roles**, use **Player and viewpoint checks**, and read adaptation notes and each scene's continuity assumptions. Export the draft if you want a backup.
-5. Choose **Save to Lumiverse**. Set Points creates one narrator card and attaches its world book. It does not activate the world book globally or overwrite existing cards. Repeating the identical save recovers the existing card rather than duplicating it.
+4. In **Review**, edit the premise, cast, approved appearances, starting knowledge, world lore, narrator instructions, and scenes. Confirm **Player and narrator roles**, choose **Your persona**, use **Player and viewpoint checks**, and read adaptation notes and each scene's continuity assumptions. If the story does not describe its characters, open **Design character looks**. Export the draft if you want a backup.
+5. Choose **Save to Lumiverse**. Set Points creates one narrator card and attaches its world book, and makes your persona if you asked for one. It does not activate the world book globally or overwrite existing cards. Repeating the identical save recovers the existing card rather than duplicating it.
 6. Open the new character from Lumiverse's **Characters** browser and start a chat with its initial greeting. Return to Set Points' **Play** tab.
 
 The examples folder includes a short original sample story and a validated sample draft. Use **Open draft** in Review to try saving a card without making an adaptation-model request.
@@ -79,6 +82,22 @@ New imports supply the same role contract to planning, cast/lore writing, and sc
 
 The role contract is published in the card system prompt, description, always-on premise lore, and scene metadata. For newly published cards, it also accompanies normal replies when **Follow the story** is off, without preparing a scene handoff. It guides the model but cannot prevent every mistake or rewrite a literal opening inserted by Force. Conflicting prose still benefits from editing or repair.
 
+## Your persona
+
+**Review → Your persona** comes right after the role settings. Pick one of three:
+
+- **I’ll pick a persona myself** (the default). Set Points does nothing with personas.
+- **Make a persona for [character]**. Set Points writes a name, a short label, and a description for you to check. When you play a story character, the description is built from that character’s personality, voice, relationships, what they know at the start, and their approved appearance and outfit. It uses only starting-point facts, the same ones the narrator gets, so it holds nothing from later in the story. When you play someone new, it starts as a short note for you to fill in.
+- **Use one of my personas**. Pick from your list. Your persona is left exactly as it is; Set Points only remembers the choice.
+
+Writing the persona uses no model request. Until you change its wording, it follows your edits: change the character’s voice or approve a new look and the persona text updates with it. Once you reword it yourself, it stays as you wrote it; **Write it again from [character]** rebuilds it from the draft.
+
+**Save to Lumiverse** makes the persona along with the card. Saving again updates that same persona instead of making another, and changing only the persona never makes a second card. If you have edited the persona inside Lumiverse since, Set Points leaves it alone and tells you. After saving, **Switch to this persona now** makes it your active persona; Set Points never switches personas on its own.
+
+If you play a story character but use your own persona, the narrator still treats you as that character. Pick a persona that fits, or set **Player cast identity** to **Custom or unbound role** to join the story as someone new. The played character stays in the narrator’s cast notes either way, so the other characters know who they are talking to.
+
+This needs the `personas` permission. Without it, the other two choices stop **Save to Lumiverse** with a message before anything is saved.
+
 ### Repair selected completed scenes
 
 Open **Repair scene openings · optional**. Flagged scenes are selected initially; choose any scene explicitly or use **Select flagged scenes**. Select the repair connection and response settings, then click **Repair selected scenes**. Each selected scene uses one normally charged request, with at most one format-repair attempt. This uses the completed draft rather than rereading the original story; it cannot check source fidelity or recover details omitted during adaptation. It preserves the cast, lore, approved appearances, scene IDs, titles, order, and source references. Original continuity assumptions are retained as conditional prerequisites; inspect them if prior player choices differ.
@@ -93,7 +112,7 @@ Update the existing extension in place and preserve its storage. For an existing
 
 In **Review → The people**, each character has **approved appearance** and **approved starting outfit** fields. Enter your chosen details directly, then **Save draft**. These fields are available on existing 0.1.5 drafts immediately; editing and saving them require neither the original source nor a model request. Blank fields leave supporting-character looks open: the narrator uses established story and chat details first, then invents missing details as characters appear. Partial descriptions lock only the traits you supply. Your own character’s unspecified appearance stays yours to choose.
 
-Approved details are part of the story-draft JSON. **Save to Lumiverse** includes the same guide in the narrator card and a dedicated always-on **Approved character appearances** world-book entry. The narrator is instructed to prefer approved details over conflicting incidental descriptions, preserve physical traits until you explicitly approve a change, and keep the starting outfit until an explicit action changes it. The narrator is also instructed to keep newly introduced supporting-character looks consistent. Cast, lore, and literal scene openings remain intact. This is model guidance; invented looks are not automatically written back to the appearance guide or world book, and the model can still make mistakes.
+Approved details are part of the story-draft JSON. **Save to Lumiverse** writes one world-book entry per described character, named **[Character] · appearance** and found by that character’s name and aliases. Each entry holds the appearance as you wrote it, with the starting outfit on its own line because clothes change and bodies do not. Entries for your own character and the three characters named in the most scenes stay in context all the time; everyone else’s loads when their name comes up, which keeps a large cast from crowding the prompt. An always-on **Appearance rule** entry and the card’s system prompt tell the narrator to treat these entries as fixed: never change age, height, build, skin, hair, eyes, face, or lasting marks, and describe clothing, expression, and condition freely. The looks are no longer repeated in the card description. Short, plain facts hold better than flowing prose. The narrator is instructed to prefer approved details over conflicting incidental descriptions, preserve physical traits until you explicitly approve a change, and keep the starting outfit until an explicit action changes it. The narrator is also instructed to keep newly introduced supporting-character looks consistent. Cast, lore, and literal scene openings remain intact. This is model guidance; invented looks are not automatically written back to the appearance guide or world book, and the model can still make mistakes.
 
 Use **Check for conflicting looks · optional → Scan appearance mentions** when you want to compare existing prose with your approved look. It shows short excerpts, eight at a time, with their locations. **Open location** opens and focuses the corresponding editor; **Show more excerpts** reveals the next batch. You do not need to read whole passages. These are possible mentions, not confirmed conflicts: a glance or an outfit changing during the story can be harmless. This local keyword search costs nothing, makes no edits, and is not exhaustive. Saved scene openings, including **Force next scene** insertions, are literal text and are not automatically rewritten to match approved appearances.
 
@@ -101,7 +120,32 @@ After using optional Image descriptions, **Use these appearances in story** copi
 
 **Copy [character] approved caption** copies only the approved appearance and outfit. When those fields differ from the matching source-analysis prose, a notice warns that its separate tag and caption buttons still use the source-analysis version. Free-text edits are not automatically converted into image tags. Use the approved caption, or deliberately update the relevant image-description fields before copying their prompts.
 
-Publishing an edited appearance guide creates a new card and attached world book under the existing save behavior; it does not update a previously published card or an ongoing chat. Within the current publication format, repeating an unchanged save reuses its existing card. After updating from 0.1.9 or earlier, choose **Save to Lumiverse** again on the completed draft and use the newly saved card for a new chat. This first save creates a new card and attached world book with the revised appearance guidance, without a model request. Existing cards and ongoing chats are not updated.
+Publishing an edited appearance guide creates a new card and attached world book under the existing save behavior; it does not update a previously published card or an ongoing chat. Within the current publication format, repeating an unchanged save reuses its existing card. After updating from 0.1.11 or earlier, choose **Save to Lumiverse** again on the completed draft and use the newly saved card for a new chat. This first save creates a new card and attached world book with the revised appearance guidance, without a model request. Existing cards and ongoing chats are not updated.
+
+## Design character looks
+
+Some stories never say what anyone looks like. Open **Review → The people → Design character looks · optional**, choose a connection, and click **Design looks**. This is a separate step with normal text-model charges. It makes no images and changes nothing in your story until you choose a look.
+
+It works in two passes:
+
+1. **Clues.** The story is read again in sections for anything that bears on how each character looks at your starting point. A clue is either *stated* (a hair color, a scar, what someone is wearing) or *implied* (a job, a physical feat, how others react to them, the era and weather they dress for). Each clue must quote the story; one that cannot be found in the story’s own words is dropped. Clues about later moments, such as a new injury or a disguise, are left out of the starting look.
+2. **Design.** The whole cast is designed in one request (groups of eight for a large cast, each group told about the ones before it) so people who share scenes differ in age, height, build, coloring, and outline. The model is told to tie each made-up trait to the character’s work, history, or temperament, to give everyone at least one lived-in or uneven detail, and to avoid stock phrases. With no sign of someone’s age, they are designed as an adult.
+
+Every character gets the same nine fields: age, height, build, skin, hair, eyes, face, marks, and outfit at the start. Each one is marked:
+
+- **From the story**: the text says it. The clue is shown beneath.
+- **Hinted by the story**: the text points to it, with a few words on why.
+- **Made up to fit**: nothing in the story covers it.
+
+A label is only ever lowered, never raised: a trait that claims the story but points to no saved clue is shown as made up. If the story describes a trait and the design does not point to that description, the story’s own note is shown under the trait for you to compare. These are checks on references, not proof that the model read the story correctly, so glance over the result.
+
+**Reroll [character]** asks for a clearly different look for one character with a single request and no second reading of the story. Details from the story stay; made-up ones change, and the model is told what you turned down so it does not hand the same look back. **What to change** is optional, for example “older, heavier build, keep the scar”.
+
+**Use [character]’s look** puts a look into that character’s approved appearance and starting outfit, as short labeled lines. **Use all looks in the story** fills every character who has none and leaves alone anyone you already described. Rerolling a look that is already in your story replaces it there too, so there is never a second version in play; text you typed by hand is never overwritten by a reroll. You can still edit the approved fields freely afterward. A persona you have not reworded picks up the look as well.
+
+**Copy for Lumi Studio** gives the same fields as plain text. Tag lists remain in **Image descriptions**; this step does not make tags.
+
+Looks belong to the draft and cast they were designed for. Ordinary edits in Review keep them, and a reroll sees your newer wording; looks saved for a different draft are hidden. **Cancel look design** keeps finished steps, **Resume look design** reuses them, and a request with an unknown outcome needs the separately warned retry, the same as the other model steps. The story text is taken from the copy saved with the draft; older or reopened drafts ask for it once.
 
 ## Optional image descriptions
 
@@ -112,6 +156,8 @@ Newly completed drafts retain a verified link to their original source. Existing
 Use **Use different story text** to correct an already matched source; review the replacement before deliberately creating descriptions again. The extension never assumes the latest Import text belongs to the current draft. The source, description result, and resumable request are checked against the draft fields used for appearance analysis; descriptions for a different draft version are hidden instead of replacing edits. Once a description attempt has saved its source, **Resume saved descriptions** uses that source without another paste or website fetch.
 
 When a generated profile does not cite every extracted starting fact, Set Points completes the profile with a review notice instead of requesting a paid format repair for coverage alone. **Source facts to review** opens with the affected character and shows retained facts eight at a time, with their source sections. Some may already appear in the prose in different words. Compare them with the editable description, outfit, or caption subject and add missing details you want to use. The retained facts are saved and exported with the separate description pack; they are excluded from copied prompts and approved story appearances, even when suggestions are enabled. If an entire appearance or outfit was omitted, its field says **Source facts available; description needs review.** That notice is not copied into captions and does not replace an earlier approved choice. This check verifies references and structure, not factual completeness or semantic consistency.
+
+Image descriptions and designed looks do different jobs. Image descriptions record only what the story states, with tags for an image tool. Designed looks fill what the story leaves out. You can use either or both.
 
 Each character has editable **appearance from the story**, **starting outfit from the story**, corresponding tags, and a caption subject. Source references and unknown traits help you review the evidence. Later or uncertain appearance changes are kept out of starting defaults. **Suggested details** and suggested tags are separate from source facts. They are excluded from combined copied prompts by default; explicitly check **Include suggested details in copied prompts** to include them. Model extraction can still be mistaken, so review the facts and suggestions before using them.
 
@@ -151,7 +197,7 @@ Your current story text and title remain in place while pages load. Review the c
 
 Automatic progression only runs on normal completed replies. Regenerate, swipe, continue, impersonation, stopped generations, edits, and history rendering do not advance. Force and selection changes wait until an active generation ends. Edited/deleted scene messages or changes to the card's scene data pause progression for review.
 
-Version 0.1 supports a single narrator character per chat. Group chats, strict prerequisite gates, automatic world-book stage switching, and automatic rewriting of later scenes after a divergent choice are outside this version.
+Version 0.1 supports a single narrator character per chat. Group chats, strict prerequisite gates, automatic world-book stage switching, and automatic rewriting of later scenes after a divergent choice are outside this version. Appearance entries describe the starting point; a look that changes during the story is yours to update.
 
 ## Story length and adaptation quality
 
@@ -187,7 +233,7 @@ Responses are saved before format and size validation. Completed compatible step
 
 If a request’s outcome is unknown, Set Points never automatically repeats it. **Retry unfinished request** warns that the earlier request may already have been charged and that retrying can charge it again. Choosing that button explicitly authorizes repeating the uncertain request. This differs from reusing a completed response already saved locally.
 
-Saved progress starts with imports run under 0.1.3. Versions 0.1.5–0.1.11 can reuse those saved responses after a compaction or output-limit failure, provided the extension storage remains intact. Complete legacy final-card results can be reused, but partial or truncated final-card output is not converted into new batches. Resuming still incurs normal charges for remaining uncached merge, plan, or batch requests; it does not make the entire import free. Earlier failed runs from 0.1.2 did not save their responses and cannot be recovered by this update.
+Saved progress starts with imports run under 0.1.3. Versions 0.1.5–0.1.12 can reuse those saved responses after a compaction or output-limit failure, provided the extension storage remains intact. Complete legacy final-card results can be reused, but partial or truncated final-card output is not converted into new batches. Resuming still incurs normal charges for remaining uncached merge, plan, or batch requests; it does not make the entire import free. Earlier failed runs from 0.1.2 did not save their responses and cannot be recovered by this update.
 
 ## Content and data
 
@@ -208,7 +254,7 @@ Only `{{user}}` and `{{char}}` display placeholders are accepted in generated/re
 - **Only part of a web story loads:** use **Read linked pages** from the first page. Check the collected-page list and stopping message. Supply explicit URLs in **Other page links** if automatic navigation cannot identify the next page.
 - **No adaptation connection:** add a model connection in Lumiverse and grant `generation`, then refresh Set Points.
 - **Connection has no model:** select and save a model in that Lumiverse connection before trying again. Set Points validates the model before requesting an adaptation.
-- **An adaptation fails at the first request:** update to 0.1.11, choose the intended connection, and click **Check connection**. Record its displayed result, then try your adaptation separately if appropriate. If it fails, record the new error code and use **Download diagnostics**. The neutral check sends no story text, makes a small billable request, and preserves your current work.
+- **An adaptation fails at the first request:** update to 0.1.12, choose the intended connection, and click **Check connection**. Record its displayed result, then try your adaptation separately if appropriate. If it fails, record the new error code and use **Download diagnostics**. The neutral check sends no story text, makes a small billable request, and preserves your current work.
 - **Resume says the connection changed:** restore the connection settings used for the saved attempt, or deliberately choose **Create adaptation** with the new settings and normal model charges. Resume stops before dispatching a request when the saved profile no longer matches.
 - **HTTP 403:** `REQUEST_DENIED` means the provider denied the request without enough evidence to establish why. It is not automatically labeled invalid credentials or content moderation. `DECLINED` is used when explicit provider refusal or policy indicators are present.
 - **An output limit stops adaptation:** check the failed stage shown in the progress area. You may explicitly choose a larger **Unfinished response allowance** or a supported reasoning override before **Resume saved import**. Completed matching steps are reused; remaining calls still incur normal charges. The provider may reject larger allowances or overrides.
@@ -220,6 +266,11 @@ Only `{{user}}` and `{{char}}` display placeholders are accepted in generated/re
 - **Refused, incomplete, or malformed output:** inspect the displayed error. Check the connection, shorten the source, reduce scenes, or reduce section size as appropriate. A refusal and a broken response are different outcomes.
 - **Image descriptions need the original source:** read its linked pages in the description panel, paste the matching story, or explicitly copy it from Import and review it. Older drafts may need this once. Resume uses the source already saved for its attempt.
 - **I want to play before describing everyone:** leave supporting-character fields blank or fill only the traits you care about, then choose **Save to Lumiverse** and start with that card. The narrator can fill missing looks using existing story details first and is told to keep introduced traits consistent. Publishing after a pre-0.1.9 save creates a new card; use that new card for the revised behavior. This makes no adaptation or image-description request.
+- **The story never describes the characters:** open **Design character looks** in Review. Check the labels, reroll anyone who looks generic, then choose **Use all looks in the story** and save.
+- **A designed look is generic or wrong:** use **Reroll** on that character, with a note about what to change if you like. Details the story states will not change; if one of those is wrong, edit the approved appearance text instead.
+- **The narrator still changes how someone looks:** make sure the character has an approved appearance and that you are chatting with a card saved after this update. Check the character’s **· appearance** entry in the world book. A minor character’s entry loads when their name or an alias appears in recent messages; add the names people actually call them under **Also known as**.
+- **Save to Lumiverse says to grant personas:** grant `personas` in the Extensions panel, or set **Your persona** to **I’ll pick a persona myself**. Nothing is saved until one of those is done.
+- **My persona did not update:** you changed it inside Lumiverse, so Set Points left it alone. Edit it there, or delete it and save again to remake it from the draft.
 - **I only want to set a character’s appearance:** edit their approved appearance and starting outfit in Review and save the draft. Existing drafts need no reimport, source text, or paid analysis for this.
 - **Approved appearances conflict with a scene:** review possible matches with **Scan appearance mentions**, then edit the relevant lore or scene text. The guide influences narration; it does not rewrite literal scene openings.
 - **Image descriptions are hidden or Resume is unavailable:** the current draft fields differ from the saved description request/result. Return to that version or deliberately create descriptions for the current version; Set Points will not silently use another draft’s source.
@@ -246,7 +297,7 @@ The backend and frontend are bundled separately. Source/API compatibility was ch
 
 The local preview in `dev/preview.html` uses a mocked host and model. Build it with `bun build dev/preview.ts --outdir dev/build --target browser`, serve the repository with a static HTTP server, and open `/dev/preview.html`. It demonstrates the interface; it does not validate a real provider or installation.
 
-The test suite covers source extraction, long-source merging, schema/refusal/truncation errors, cancellation, draft isolation, partial-save recovery, permission changes, direct host-shaped generated replies, duplicate/stale handoffs, scene edits, Undo, and interface state preservation. Checkpoint tests cover reuse after restart and explicit authorization before repeating a request with an unknown paid outcome. Release-specific coverage includes large-ledger preservation, cache-only legacy response reuse, staged plan/batch generation, response-setting changes, failed-phase retention, and request-budget checks. Appearance tests cover manual approval on existing drafts without model calls, card/world-book consistency, changed-guide save receipts, source/result binding, canonical versus suggested fields, tag formatting, separate persistence, cancellation/resume, clipboard fallback, and preserving edits. See `BUILD-REPORT.md` for release-specific verification and outstanding live checks.
+The test suite covers source extraction, long-source merging, schema/refusal/truncation errors, cancellation, draft isolation, partial-save recovery, permission changes, direct host-shaped generated replies, duplicate/stale handoffs, scene edits, Undo, and interface state preservation. Checkpoint tests cover reuse after restart and explicit authorization before repeating a request with an unknown paid outcome. Release-specific coverage includes large-ledger preservation, cache-only legacy response reuse, staged plan/batch generation, response-setting changes, failed-phase retention, and request-budget checks. Appearance tests cover manual approval on existing drafts without model calls, card/world-book consistency, changed-guide save receipts, source/result binding, canonical versus suggested fields, tag formatting, separate persistence, cancellation/resume, clipboard fallback, and preserving edits. Look-design tests cover clue quoting, trait labels that cannot overstate their evidence, cast-wide design in groups, single-request rerolls, resume after failure, and replacing a look in the story without touching hand-written text. Persona tests cover drafting from starting-point facts only, following edits, one persona per draft, and leaving personas edited in Lumiverse alone. See `BUILD-REPORT.md` for release-specific verification and outstanding live checks.
 
 ## Credits
 

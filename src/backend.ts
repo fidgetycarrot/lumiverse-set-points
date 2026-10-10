@@ -6,10 +6,14 @@ import { repairSceneOpenings, repairSignature } from './scene-repair';
 import { SceneRuntime } from './runtime';
 import { extractPage, storyUrl } from './source';
 import { enrichVisuals, validateVisualPack, visualDraftSignature, type VisualPack } from './visuals';
+import { designLooks, lookDraftSignature, rerollLook, validateLookPack, LOOK_LIMITS, type LookPack } from './looks';
 import { VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
 
 const STATE_PATH = 'workspace.json';
 type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
+// A look job is either a full design (needs the story text) or a reroll of one
+// character (needs only the saved looks, which carry their own story notes).
+type LookInput = { draft: StoryDraft; sourceText?: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; reroll?: { characterId: string; note: string; pack: LookPack } };
 type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2 };
 type Workspace = {
   repairInput?: RepairInput; repairJob?: ImportJob; repairResult?: StoryDraft; repairConnectionFingerprint?: unknown;
@@ -19,6 +23,8 @@ type Workspace = {
   draftSource?: { signature: string; text: string };
   visualJob?: ImportJob; visualPack?: VisualPack; visualResultSignature?: string;
   visualInput?: VisualInput; visualConnectionFingerprint?: unknown;
+  lookJob?: ImportJob; lookPack?: LookPack; lookResultSignature?: string;
+  lookInput?: LookInput; lookConnectionFingerprint?: unknown;
 };
 function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function string(value: unknown, name: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required.`); return value; }
@@ -94,6 +100,10 @@ export class SetPointsController {
   private repairAbort?: AbortController;
   private repairTask?: Promise<void>;
   private repairCheckpoints: ResponseCheckpoints;
+  private lookCheckpoints: ResponseCheckpoints;
+  private lookStarting = false;
+  private lookAbort?: AbortController;
+  private lookTask?: Promise<void>;
   private entries: string[] = [];
   private persistence: Promise<void> = Promise.resolve();
   private starting = false;
@@ -106,6 +116,7 @@ export class SetPointsController {
     this.checkpoints = new ResponseCheckpoints(api, userId);
     this.visualCheckpoints = new ResponseCheckpoints(api, userId);
     this.repairCheckpoints = new ResponseCheckpoints(api, userId);
+    this.lookCheckpoints = new ResponseCheckpoints(api, userId);
     this.ready = this.restore();
   }
   private async restore() {
@@ -176,6 +187,28 @@ export class SetPointsController {
       this.workspace.visualJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved image descriptions need attention', error: 'Some saved image-description data could not be opened. A recovery copy was retained. Your story draft and paid responses are preserved.' };
       this.note('Invalid image-description data backed up for recovery.');
     }
+    // Designed looks are optional too: bad saved data is set aside, never fatal.
+    try {
+      if (saved.lookPack) {
+        if (typeof saved.lookResultSignature !== 'string' || !saved.lookResultSignature || saved.lookResultSignature.length > 192_000) throw new Error('Invalid look binding');
+        this.workspace.lookPack = validateLookPack(saved.lookPack);
+        this.workspace.lookResultSignature = saved.lookResultSignature;
+      }
+      if (saved.lookInput) {
+        this.workspace.lookInput = this.validateLookInput(saved.lookInput);
+        this.workspace.lookConnectionFingerprint = saved.lookConnectionFingerprint;
+      }
+      if (saved.lookJob) {
+        const job = saved.lookJob;
+        if (!['running', 'complete', 'failed', 'cancelled'].includes(job.status) || typeof job.id !== 'string' || typeof job.label !== 'string' || !Number.isSafeInteger(job.completed) || !Number.isSafeInteger(job.total)) throw new Error('Invalid look job');
+        this.workspace.lookJob = job.status === 'running' ? { ...job, status: 'failed', label: 'Look design interrupted', error: 'Lumiverse restarted while designing looks. Resume to reuse completed steps. A request with an unknown outcome needs an explicit retry.' } : job;
+      }
+    } catch {
+      await this.api.userStorage.setJson(`recovery/looks-${Date.now()}.json`, { lookPack: saved.lookPack, lookInput: saved.lookInput, lookJob: saved.lookJob, lookResultSignature: saved.lookResultSignature }, { userId: this.userId });
+      delete this.workspace.lookPack; delete this.workspace.lookResultSignature; delete this.workspace.lookInput;
+      this.workspace.lookJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved looks need attention', error: 'Some saved look data could not be opened. A recovery copy was kept. Your story draft and paid responses are preserved.' };
+      this.note('Invalid look data backed up for recovery.');
+    }
     if (this.workspace.visualJob?.status === 'running') {
       this.workspace.visualJob = { ...this.workspace.visualJob, status: 'failed', label: 'Image descriptions interrupted', error: 'Lumiverse restarted during image descriptions. Resume to reuse completed steps. A request with an unknown outcome needs an explicit retry.' };
       await this.persist();
@@ -205,6 +238,20 @@ export class SetPointsController {
     const settings = responseSettings(data as VisualInput);
     return { draft, sourceText: data.sourceText, connectionId: string(data.connectionId, 'Image-description model connection'), ...settings };
   }
+  private validateLookInput(value: unknown): LookInput {
+    const data = record(value), draft = validateDraft(data.draft);
+    if (!draft.cast.length) throw new Error('The draft needs at least one character before designing looks.');
+    const base = { draft, connectionId: string(data.connectionId, 'Look design model connection'), ...responseSettings(data as LookInput) };
+    if (data.reroll !== undefined) {
+      const reroll = record(data.reroll), characterId = string(reroll.characterId, 'Character to reroll');
+      if (!draft.cast.some(person => person.id === characterId)) throw new Error('Choose a character from this draft to reroll.');
+      if (typeof reroll.note !== 'string' || reroll.note.length > LOOK_LIMITS.note) throw new Error(`Keep the change note under ${LOOK_LIMITS.note} characters.`);
+      return { ...base, reroll: { characterId, note: reroll.note.trim(), pack: validateLookPack(reroll.pack, draft) } };
+    }
+    if (typeof data.sourceText !== 'string' || data.sourceText.trim().length < 100 || data.sourceText.length > 500_000) throw new Error('Provide between 100 and 500,000 characters of the original story to design looks from.');
+    return { ...base, sourceText: data.sourceText };
+  }
+  private looksBusy() { return this.lookStarting || !!this.lookAbort || this.workspace.lookJob?.status === 'running'; }
   private note(kind: string) { this.entries.push(`${new Date().toISOString()} ${kind}`); this.entries = this.entries.slice(-100); }
   private async selectedConnection(value: unknown) {
     const id = string(value, 'Adaptation model connection');
@@ -271,6 +318,7 @@ export class SetPointsController {
     if (this.checking) throw new Error('A connection check is already running.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before checking a connection.');
     if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish before checking a connection.');
+    if (this.looksBusy()) throw new Error('Wait for look design to finish before checking a connection.');
     this.checking = true;
     const controller = new AbortController();
     this.checkAbort = controller;
@@ -296,6 +344,12 @@ export class SetPointsController {
       try { connections = (await this.api.connections.list(this.userId)).map(({ id, name, provider, model }) => ({ id, name, provider, model })); }
       catch { this.note('Connection list unavailable.'); }
     }
+    let personas: AppSnapshot['personas'];
+    if (permissions.includes('personas')) {
+      try { personas = (await this.api.personas.list({ limit: 100, userId: this.userId })).data.map(({ id, name, title }) => ({ id, name, title })); }
+      catch { this.note('Persona list unavailable.'); }
+    }
+    const lookJob = structuredClone(this.workspace.lookJob ?? null);
     const play = chatId === null ? { chatId: null, characterId: null, title: '', enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice: 'Open a chat with a Set Points narrator to use scene controls.' } : await this.runtime.view(chatId);
     const { draft, saved, job } = structuredClone(this.workspace);
     const visualJob = structuredClone(this.workspace.visualJob ?? null);
@@ -304,7 +358,13 @@ export class SetPointsController {
       sourceSignature: this.workspace.draftSource?.signature, requestSignature: this.workspace.visualInput ? visualDraftSignature(this.workspace.visualInput.draft) : undefined,
       resumeAvailable: Boolean(this.workspace.visualInput && visualJob && ['failed', 'cancelled'].includes(visualJob.status)), retryUncertain: Boolean(visualJob?.retryUncertain),
       connectionId: this.workspace.visualInput?.connectionId, ...responseSettings(this.workspace.visualInput ?? {}),
-    }, repairs: {job:this.workspace.repairJob??null,result:this.workspace.repairResult??null,requestSignature:this.workspace.repairInput?repairSignature(this.workspace.repairInput.draft):undefined,resumeAvailable:!!this.workspace.repairInput&&['failed','cancelled'].includes(this.workspace.repairJob?.status??''),retryUncertain:!!this.workspace.repairJob?.retryUncertain,connectionId:this.workspace.repairInput?.connectionId}, play, diagnostics: [...this.entries] };
+    }, looks: {
+      job: lookJob, pack: structuredClone(this.workspace.lookPack ?? null), resultSignature: this.workspace.lookResultSignature,
+      requestSignature: this.workspace.lookInput ? lookDraftSignature(this.workspace.lookInput.draft) : undefined,
+      resumeAvailable: Boolean(this.workspace.lookInput && lookJob && ['failed', 'cancelled'].includes(lookJob.status)), retryUncertain: Boolean(lookJob?.retryUncertain),
+      ...(this.workspace.lookInput?.reroll && lookJob?.status === 'running' ? { rerolling: this.workspace.lookInput.reroll.characterId } : {}),
+      connectionId: this.workspace.lookInput?.connectionId, ...responseSettings(this.workspace.lookInput ?? {}),
+    }, ...(personas ? { personas } : {}), repairs: {job:this.workspace.repairJob??null,result:this.workspace.repairResult??null,requestSignature:this.workspace.repairInput?repairSignature(this.workspace.repairInput.draft):undefined,resumeAvailable:!!this.workspace.repairInput&&['failed','cancelled'].includes(this.workspace.repairJob?.status??''),retryUncertain:!!this.workspace.repairJob?.retryUncertain,connectionId:this.workspace.repairInput?.connectionId}, play, diagnostics: [...this.entries] };
   }
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
@@ -315,6 +375,7 @@ export class SetPointsController {
     if (this.saving) throw new Error('Wait for the card to finish saving before importing another story.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('An import is already running. Cancel it before starting another.');
     if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish or cancel them before starting an adaptation.');
+    if (this.looksBusy()) throw new Error('Wait for look design to finish or cancel it before starting an adaptation.');
     this.starting = true;
     try {
       if (typeof options.text !== 'string' || options.text.trim().length < 100 || options.text.length > 500_000) throw new Error('Paste between 100 and 500,000 characters of story text.');
@@ -410,7 +471,7 @@ export class SetPointsController {
   }
   private async startRepair(value: unknown, retryUncertain=false, resume=false): Promise<ImportJob> {
     await this.ready; this.require('generation');
-    if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running') throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
+    if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.looksBusy()) throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
     this.repairStarting=true;
     try {
       const options=this.validateRepairInput(value);if(!resume)options.promptVersion=2;
@@ -455,6 +516,7 @@ export class SetPointsController {
     if (this.saving) throw new Error('Wait for the card to finish saving before creating image descriptions.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before creating image descriptions.');
     if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Image descriptions are already running. Wait or cancel them first.');
+    if (this.looksBusy()) throw new Error('Wait for look design to finish or cancel it before creating image descriptions.');
     this.visualStarting = true;
     try {
       const data = record(value), draft = validateDraft(data.draft), signature = visualDraftSignature(draft);
@@ -524,6 +586,80 @@ export class SetPointsController {
       return structuredClone(job);
     } finally { this.visualStarting = false; }
   }
+  private async startLooks(value: unknown, retryUncertain = false, resume = false): Promise<ImportJob> {
+    await this.ready;
+    this.require('generation');
+    if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
+    if (this.checking) throw new Error('Wait for the connection check to finish before designing looks.');
+    if (this.saving) throw new Error('Wait for the card to finish saving before designing looks.');
+    if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before designing looks.');
+    if (this.visualStarting || this.visualAbort || this.workspace.visualJob?.status === 'running') throw new Error('Wait for image descriptions to finish or cancel them before designing looks.');
+    if (this.looksBusy()) throw new Error('Looks are already being designed. Wait or cancel first.');
+    this.lookStarting = true;
+    try {
+      const options = this.validateLookInput(value), settings = responseSettings(options), signature = lookDraftSignature(options.draft);
+      const connection = await this.selectedConnection(options.connectionId);
+      if (resume && !sameSettings(connection.fingerprint, this.workspace.lookConnectionFingerprint)) throw new Error('The saved look design connection settings have changed. Resume paused before making any model request. Restore those settings, or design looks again with the new connection and normal model charges.');
+      this.lookCheckpoints.beginRun({ retryUncertain });
+      const controller = new AbortController();
+      this.lookAbort = controller;
+      const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: options.reroll ? 'Preparing a new look' : 'Preparing to design looks' };
+      this.workspace.lookJob = job;
+      this.workspace.lookInput = structuredClone(options);
+      this.workspace.lookConnectionFingerprint = structuredClone(connection.fingerprint);
+      // Story text chosen for a design is remembered for this draft version,
+      // the same way image descriptions remember theirs.
+      if (options.sourceText !== undefined) this.workspace.draftSource = { signature: visualDraftSignature(options.draft), text: options.sourceText };
+      try { await this.persist(); }
+      catch {
+        this.lookAbort = undefined;
+        this.workspace.lookJob = { ...job, status: 'failed', label: 'Look design could not be saved', error: 'The request could not be saved for recovery. No model request was sent. Check extension storage before retrying.' };
+        this.changed();
+        throw new Error(this.workspace.lookJob.error);
+      }
+      this.note(options.reroll ? 'Look reroll started.' : 'Look design started.');
+      this.changed();
+      this.lookTask = (async () => {
+        let responseReturned = false;
+        try {
+          const fingerprint = requestFingerprint(connection.fingerprint, settings);
+          const reuseFingerprints = OUTPUT_ALLOWANCES.flatMap(maxOutputTokens => REASONING_MODES.map(reasoningMode => requestFingerprint(connection.fingerprint, { maxOutputTokens, reasoningMode })));
+          const generate: Generate = async (messages, signal) => {
+            responseReturned = false;
+            controller.signal.throwIfAborted();
+            const reusedBefore = this.lookCheckpoints.reused;
+            const result = await this.lookCheckpoints.request(messages, fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal, settings.maxOutputTokens, 600_000, settings.reasoningMode), { reuseFingerprints });
+            responseReturned = true;
+            if (this.lookCheckpoints.reused > reusedBefore) this.note('Reused a saved look design response.');
+            return this.readModelResponse(result);
+          };
+          const progress = (completed: number, total: number, label: string) => { this.workspace.lookJob = { ...job, completed, total, label, phase: label }; this.changed(); };
+          const pack = options.reroll
+            ? await rerollLook({ draft: options.draft, pack: options.reroll.pack, characterId: options.reroll.characterId, note: options.reroll.note }, generate, progress, controller.signal)
+            : await designLooks({ draft: options.draft, sourceText: options.sourceText! }, generate, progress, controller.signal);
+          controller.signal.throwIfAborted();
+          this.workspace.lookPack = validateLookPack(pack, options.draft);
+          this.workspace.lookResultSignature = signature;
+          this.workspace.lookJob = { ...this.workspace.lookJob!, status: 'complete', label: options.reroll ? 'New look ready to review' : 'Looks ready to review', completed: this.workspace.lookJob!.total };
+          await this.persist();
+          this.note(options.reroll ? 'Look reroll completed.' : 'Look design completed.');
+        } catch (error) {
+          const cancelled = controller.signal.aborted;
+          let message = error instanceof ImportError || error instanceof ModelRequestError || error instanceof CheckpointError ? error.message : 'Looks could not be designed. Your story draft and earlier looks are preserved.';
+          if (!cancelled && responseReturned && (error instanceof ImportError && !['LOOK_SIZE_LIMIT', 'REQUEST_SIZE_LIMIT'].includes(error.code) || error instanceof ModelRequestError)) {
+            try { await this.lookCheckpoints.invalidateLast(); }
+            catch { message = 'The failed step could not be marked for retry. Saved responses were retained; check extension storage before retrying.'; }
+          }
+          const retryUncertain = error instanceof CheckpointError && error.code === 'UNCERTAIN_REQUEST';
+          if (this.workspace.lookJob?.phase) this.note(`Look design stopped during: ${this.workspace.lookJob.phase}.`);
+          this.workspace.lookJob = { ...this.workspace.lookJob!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Look design cancelled; saved steps kept' : 'Look design needs attention', retryUncertain, error: cancelled ? undefined : `${message} Saved steps are kept. Resume reuses them; remaining model requests use normal charges.` };
+          this.note(cancelled ? 'Look design cancelled.' : 'Look design failed; story draft preserved.');
+          await this.persist().catch(() => this.note('Could not persist look design status.'));
+        } finally { if (this.lookAbort === controller) this.lookAbort = undefined; this.changed(); }
+      })();
+      return structuredClone(job);
+    } finally { this.lookStarting = false; }
+  }
   async handle(action: string, input: unknown): Promise<unknown> {
     await this.ready;
     const data = record(input);
@@ -569,6 +705,33 @@ export class SetPointsController {
         this.workspace.visualPack = pack;
         await this.persist(); this.changed(); return structuredClone(pack);
       }
+      case 'start-looks': {
+        const draft = validateDraft(data.draft), bound = this.workspace.draftSource;
+        const sourceText = data.sourceText === undefined && bound?.signature === visualDraftSignature(draft) ? bound.text : data.sourceText;
+        if (sourceText === undefined) throw new Error('Add the original story for this draft first. Set Points has no saved copy that matches it.');
+        return this.startLooks({ ...data, draft, sourceText, reroll: undefined });
+      }
+      case 'reroll-look': {
+        const draft = validateDraft(data.draft);
+        if (!this.workspace.lookPack || this.workspace.lookResultSignature !== lookDraftSignature(draft)) throw new Error('The saved looks belong to a different draft or cast. Design looks for the current draft first.');
+        return this.startLooks({ ...data, draft, sourceText: undefined, reroll: { characterId: data.characterId, note: data.note ?? '', pack: this.workspace.lookPack } });
+      }
+      case 'resume-looks': {
+        if (!this.workspace.lookInput) throw new Error('There is no saved look design to resume.');
+        const options = structuredClone(this.workspace.lookInput);
+        if (data.maxOutputTokens !== undefined) options.maxOutputTokens = data.maxOutputTokens as number;
+        if (data.reasoningMode !== undefined) options.reasoningMode = data.reasoningMode as ImportOptions['reasoningMode'];
+        return this.startLooks(options, data.retryUncertain === true, true);
+      }
+      case 'cancel-looks': this.lookAbort?.abort(); return { cancelled: Boolean(this.lookAbort) };
+      case 'switch-persona': {
+        this.require('personas');
+        const persona = await this.api.personas.get(string(data.personaId, 'Persona'), this.userId);
+        if (!persona) throw new Error('That persona is no longer in Lumiverse.');
+        await this.api.personas.switchActive(persona.id, this.userId);
+        this.note('Active persona switched on request.');
+        return { personaId: persona.id, name: persona.name };
+      }
       case 'start-scene-repair': return this.startRepair(data);
       case 'resume-scene-repair': {
         if (!this.workspace.repairInput) throw new Error('No saved scene repair is available.');
@@ -578,7 +741,7 @@ export class SetPointsController {
       case 'cancel-scene-repair': this.repairAbort?.abort(); return {cancelled:true};
       case 'apply-scene-repair': {
         const current=validateDraft(data.draft);
-        if (this.starting||this.visualStarting||this.repairStarting||this.repairAbort||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.saving) throw new Error('Wait for the current operation to finish.');
+        if (this.starting||this.visualStarting||this.repairStarting||this.repairAbort||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.looksBusy()||this.saving) throw new Error('Wait for the current operation to finish.');
         if (!this.workspace.repairResult||!this.workspace.repairInput||this.workspace.repairJob?.status!=='complete'||repairSignature(current)!==repairSignature(this.workspace.repairInput.draft)) throw new Error('The repaired scenes belong to a different draft version. Your edits are preserved.');
         const result=validateDraft(this.workspace.repairResult);this.workspace.draft=result;this.workspace.saved=null;await this.persist();this.changed();return result;
       }
@@ -617,15 +780,16 @@ export class SetPointsController {
       }
       case 'diagnostics': {
         const view = await this.runtime.view();
-        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, repairJob:this.workspace.repairJob&&{status:this.workspace.repairJob.status,completed:this.workspace.repairJob.completed,total:this.workspace.repairJob.total}, entries: [...this.entries] };
+        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, lookJob: this.workspace.lookJob && { id: this.workspace.lookJob.id, status: this.workspace.lookJob.status, completed: this.workspace.lookJob.completed, total: this.workspace.lookJob.total }, reusedLookResponses: this.lookCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, repairJob:this.workspace.repairJob&&{status:this.workspace.repairJob.status,completed:this.workspace.repairJob.completed,total:this.workspace.repairJob.total}, entries: [...this.entries] };
       }
       default: throw new Error('Unknown Set Points action. Reload the extension.');
     }
   }
-  dispose() { this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); this.repairAbort?.abort(); }
+  dispose() { this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); this.repairAbort?.abort(); this.lookAbort?.abort(); }
   async waitForImport() { await this.jobTask; }
   async waitForRepair() { await this.repairTask; }
   async waitForVisuals() { await this.visualTask; }
+  async waitForLooks() { await this.lookTask; }
 }
 
 export function setupBackend(api: SpindleAPI): () => void {

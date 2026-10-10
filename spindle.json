@@ -1,7 +1,7 @@
 {
   "name": "Set Points",
   "identifier": "lumiverse_set_points",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "author": "fidgetycarrot",
   "github": "https://github.com/fidgetycarrot/lumiverse-set-points",
   "homepage": "https://github.com/fidgetycarrot/lumiverse-set-points#readme",
@@ -9,6 +9,7 @@
   "permissions": [
     "characters",
     "world_books",
+    "personas",
     "generation",
     "chats",
     "chat_mutation",
