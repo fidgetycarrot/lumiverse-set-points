@@ -83,6 +83,8 @@ describe('completed-draft scene repair',()=>{
     await app.handle('start-scene-repair',{draft:story,sceneIds:['harbor'],connectionId:'model'});
     await expect(app.handle('start-import',{options})).rejects.toThrow('scene repair');await expect(app.handle('test-connection',{connectionId:'model'})).rejects.toThrow('scene repair');
     const edited={...story,premise:'Keep this newer review edit.'};await app.handle('save-draft',{draft:edited});
+    // The repair runs in the background: wait until its request is out before cancelling it.
+    for(let i=0;i<500&&!h.calls.length;i++)await new Promise(resolve=>setTimeout(resolve,2));
     await app.handle('cancel-scene-repair',{});await app.waitForRepair();expect((await app.snapshot(null)).draft).toEqual(edited);expect((await app.snapshot(null)).repairs?.resumeAvailable).toBe(true);
     expect(h.calls).toHaveLength(1);expect(h.calls[0].signal.aborted).toBe(true);
   });

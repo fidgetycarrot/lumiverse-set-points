@@ -1,5 +1,5 @@
 import { defaultRoles, roleInstruction, rolesForImport, validateRoles } from './roles';
-import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type StoryDraft, type LoreEntry, type StoryScene } from './types';
+import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type PersonaPlan, type StoryDraft, type LoreEntry, type StoryScene } from './types';
 
 export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
 export type GenerationMessage = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -119,10 +119,23 @@ export function validateDraft(value: unknown): StoryDraft {
   const playerRole=safeText(draft.playerRole,'playerRole',2000);
   const namedPlayer=defaultRoles({cast,playerRole}).playerCharacterId;
   if(roles?.playerCharacterId&&namedPlayer&&roles.playerCharacterId!==namedPlayer)fail('INVALID_SCHEMA','The player role names a different cast identity. Align Your role and Player cast identity in Review.');
+  // The persona is the human's own text. It is validated like any other field
+  // that reaches Lumiverse, and kept even when its mode is switched off.
+  let persona: PersonaPlan | undefined;
+  if (draft.persona !== undefined) {
+    const plan = object(draft.persona, 'persona'), mode = plan.mode;
+    if (mode !== 'create' && mode !== 'existing' && mode !== 'none') fail('INVALID_SCHEMA', 'Choose whether to make a persona, use one of yours, or pick one yourself.');
+    persona = { mode, name: safeText(plan.name, 'persona.name', 200, mode !== 'create'), title: safeText(plan.title, 'persona.title', 200, true), description: safeText(plan.description, 'persona.description', 24_000, true) };
+    if (mode === 'existing') {
+      const personaId = safeText(plan.personaId, 'persona.personaId', 120);
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_:.-]*$/.test(personaId)) fail('INVALID_SCHEMA', 'Pick one of your personas again; the saved choice is not valid.');
+      persona.personaId = personaId;
+    }
+  }
   const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, 'roleReview', 80);
   if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview)) fail('INVALID_SCHEMA', 'Invalid player/viewpoint review acknowledgment.');
   return {
-    ...(draft.openingStyle!==undefined?{openingStyle:draft.openingStyle as StoryDraft['openingStyle']}:{}), ...(roles ? { roles } : {}), ...(roleReview ? { roleReview } : {}),
+    ...(draft.openingStyle!==undefined?{openingStyle:draft.openingStyle as StoryDraft['openingStyle']}:{}), ...(roles ? { roles } : {}), ...(roleReview ? { roleReview } : {}), ...(persona ? { persona } : {}),
     version: 1, id: identifier(draft.id, 'id'), title: safeText(draft.title, 'title', 200), premise: safeText(draft.premise, 'premise', 6000), playerRole, startingPoint: safeText(draft.startingPoint, 'startingPoint', 2000),
     narratorInstructions: safeText(draft.narratorInstructions, 'narratorInstructions', 8000), cast, ...(appearances !== undefined ? { appearances } : {}), lore, scenes, warnings: texts(draft.warnings, 'warnings', 96, 2000),
     source: { title: safeText(source.title, 'source.title', 200), ...(sourceUrl(source.url) ? { url: sourceUrl(source.url) } : {}), characters: number(source.characters, 'source.characters', 1, IMPORT_LIMITS.sourceCharacters), chunks }, createdAt: number(draft.createdAt, 'createdAt', 0, Number.MAX_SAFE_INTEGER),
@@ -348,7 +361,7 @@ function legacyDraftMessages(preferences: Preferences, ledger: Ledger): Generati
 function validateAdaptation(value: unknown, metadata: DraftMetadata, sceneCount: number): StoryDraft {
   // An unsolicited model field is not a user approval, including in old cached
   // answers. Only the review/imported-draft path may preserve approved looks.
-  const { appearances: _unapprovedAppearances, ...output } = object(value, 'adaptation');
+  const { appearances: _unapprovedAppearances, persona: _unchosenPersona, ...output } = object(value, 'adaptation');
   const draft = validateDraft({ ...output, ...metadata });
   if (draft.scenes.length > sceneCount) fail('INVALID_SCHEMA', `scenes must contain no more than the requested ${sceneCount} scenes.`);
   return draft;
@@ -580,27 +593,49 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
 export const APPEARANCE_CONTINUITY_RULE = 'For supporting characters, use established story and chat appearance details first, respecting any approved appearance guide. Invent missing visual details as characters become relevant, without contradicting established or approved traits. Once introduced, keep those physical details consistent across later replies; do not casually change hair color, eye color, or other traits. Clothing can change through an explicit action in the story. Leave unspecified details of the human\'s character for the human to choose.';
 export const APPEARANCE_RULE = 'The approved appearance guide is authoritative for character appearance. Its approved details take priority over conflicting incidental descriptions in cast profiles, lore, scene guidance, and narration. Preserve approved physical traits unless the human explicitly approves a change. Starting outfits remain as approved until an explicit action in the story changes them; incidental conflicting prose does not change clothing. Only explicitly approved traits are locked by the guide. Blank fields, omitted characters, and traits not mentioned in a partial description remain open for supporting characters: use established story and chat details first, then invent missing details consistently. Respect the human\'s control of their character.';
 
-/** Contains only explicitly approved prose; generated design suggestions stay separate. */
-export function appearanceGuide(value: StoryDraft): string {
-  const draft = validateDraft(value);
-  if (!draft.appearances?.length) return '';
-  const names = new Map(draft.cast.map(person => [person.id, person.name]));
-  return `Approved appearance guide\n\n${draft.appearances.map(entry => `### ${names.get(entry.characterId)}\nAppearance: ${entry.description || 'Unspecified.'}\nStarting outfit: ${entry.startingOutfit || 'Unspecified.'}`).join('\n\n')}`;
+export const APPEARANCE_FIXED_RULE = 'The guide is kept as one appearance entry per character. Treat each entry as fixed fact: never change a character\'s age, height, build, skin, hair, eyes, face, or lasting marks. Describe clothing, expression, posture, and condition freely as the story moves.';
+
+/** Appearances with something actually written in them. Blank fields approve nothing. */
+export function approvedLooks(draft: Pick<StoryDraft, 'appearances' | 'cast'>): Array<ApprovedAppearance & { name: string; aliases: string[] }> {
+  return (draft.appearances ?? []).flatMap(entry => {
+    const person = draft.cast.find(item => item.id === entry.characterId);
+    return person && (entry.description.trim() || entry.startingOutfit.trim()) ? [{ ...entry, name: person.name, aliases: person.aliases }] : [];
+  });
+}
+
+/** One short, factual lorebook entry. The outfit sits on its own line because clothes change and bodies do not. */
+export function appearanceEntryText(name: string, entry: Pick<ApprovedAppearance, 'description' | 'startingOutfit'>): string {
+  const description = entry.description.trim(), outfit = entry.startingOutfit.trim();
+  return [`${name} — appearance (fixed)`, ...(description ? [description] : ['Body, hair, and face are not set. Keep whatever the story and chat have already shown.']), ...(outfit ? [`Outfit at the start: ${outfit}`] : [])].join('\n');
+}
+
+/**
+ * The characters whose looks stay in context all the time: the human's own
+ * character and the three who appear in the most scenes. Everyone else's entry
+ * loads when their name comes up, which keeps a large cast from crowding the prompt.
+ */
+export function mainCharacterIds(draft: Pick<StoryDraft, 'cast' | 'scenes' | 'playerRole' | 'roles'>): Set<string> {
+  const player = (draft.roles ?? defaultRoles(draft)).playerCharacterId;
+  const scenes = draft.scenes.map(scene => `${scene.title}\n${scene.greeting}\n${scene.direction}`);
+  const named = (name: string, text: string) => name.trim().length >= 2 && new RegExp(`(?<![\\p{L}\\p{N}])${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu').test(text);
+  const ranked = draft.cast.map((person, order) => ({ id: person.id, order, scenes: scenes.filter(text => [person.name, ...person.aliases].some(name => named(name, text))).length }))
+    .filter(person => person.id !== player).sort((a, b) => b.scenes - a.scenes || a.order - b.order);
+  return new Set([...(player ? [player] : []), ...ranked.slice(0, 3).map(person => person.id)]);
 }
 
 /** Native character payload. The host adapter attaches world_book_ids after creating the book. */
 export function cardPayload(value: StoryDraft) {
   const draft = validateDraft(value);
   const cast = draft.cast.map(person => `### ${person.name}${person.aliases.length ? ` (${person.aliases.join(', ')})` : ''}\nPersonality: ${person.personality}\nVoice: ${person.voice}\nRelationships at the start: ${person.relationships}\nKnowledge at the start: ${person.knowledge}`).join('\n\n');
-  const approvedAppearances = appearanceGuide(draft);
+  const approvedAppearances = approvedLooks(draft).length > 0;
   return {
     name: draft.title,
-    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${roleInstruction(draft)}\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}${approvedAppearances ? `\n\n${approvedAppearances}` : ''}`,
+    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${roleInstruction(draft)}\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}`,
     personality: 'A responsive narrator who keeps supporting characters distinct and leaves the player character under the human’s control.',
     scenario: `${draft.premise}\n\nPlayer role: ${draft.playerRole}\nStarting point: ${draft.startingPoint}`,
     first_mes: draft.scenes[0].greeting,
     alternate_greetings: draft.scenes.slice(1).map(scene => scene.greeting),
-    system_prompt: `${draft.narratorInstructions}\n\n${roleInstruction(draft)}\n\n${draft.openingStyle==='story'?'During live chat after the stored scene opening, the':'The'} human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}${approvedAppearances ? `\n\n${APPEARANCE_RULE}` : ''}`,
+    system_prompt: `${draft.narratorInstructions}\n\n${roleInstruction(draft)}\n\n${draft.openingStyle==='story'?'During live chat after the stored scene opening, the':'The'} human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}${approvedAppearances ? `\n\n${APPEARANCE_RULE}\n\n${APPEARANCE_FIXED_RULE}` : ''}`,
     mes_example: '',
     creator_notes: `Adapted with Set Points from ${draft.source.title}${draft.source.url ? ` (${draft.source.url})` : ''}.\n${draft.warnings.join('\n')}`,
     tags: ['Set Points', 'Narrator', 'Story adaptation'],

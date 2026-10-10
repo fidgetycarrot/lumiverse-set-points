@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, adaptStory, appearanceGuide, cardPayload, validateDraft, type Generate, type GenerationMessage } from '../src/importer';
+import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_FIXED_RULE, APPEARANCE_RULE, adaptStory, appearanceEntryText, approvedLooks, cardPayload, validateDraft, type Generate, type GenerationMessage } from '../src/importer';
+import { worldEntries } from '../src/publisher';
 import type { StoryDraft } from '../src/types';
 import { roleInstruction } from '../src/roles';
 import { enrichVisuals, INCOMPLETE_APPEARANCE, UNSPECIFIED_APPEARANCE, validateVisualPack, visualCaption, visualDraftSignature, visualTagPrompt, type VisualPack, type VisualProfile } from '../src/visuals';
@@ -33,7 +34,8 @@ describe('approved appearances in the playable draft',()=>{
       {characterId:'cast-2',description:'',startingOutfit:''},
     ]);
     expect(validateDraft(JSON.parse(JSON.stringify(checked)))).toEqual(checked);
-    expect(appearanceGuide(checked)).toContain('### Rowan\nAppearance: Unspecified.\nStarting outfit: Unspecified.');
+    // Blank fields approve nothing, so only Mira gets a lorebook entry.
+    expect(approvedLooks(checked).map(look=>look.name)).toEqual(['Mira']);
     expect(original.appearances[0].description).toBe('  Dark hair and green eyes.  ');
   });
   test('requires unique existing cast IDs and bounded safe prose',()=>{
@@ -49,17 +51,20 @@ describe('approved appearances in the playable draft',()=>{
     expect(JSON.stringify(checked)).toBe(JSON.stringify(original));
     expect('appearances' in checked).toBe(false);
     expect(cardPayload({...original,appearances:[]})).toEqual(card);
-    expect(appearanceGuide(original)).toBe('');
-    expect(card.description).not.toContain('Approved appearance guide');
+    expect(approvedLooks(original)).toEqual([]);
+    expect(card.system_prompt).not.toContain(APPEARANCE_RULE);
     expect(card.system_prompt).toBe(`${original.narratorInstructions}\n\n${roleInstruction(original)}\n\nThe human alone decides their character's speech, actions, thoughts, emotions, and consent. Describe situations and supporting characters, then leave the human space to respond. Honor established choices and do not retroactively assign actions to the player. Future scene guidance is conditional; surface revelations only as that scene becomes relevant.\n\n${APPEARANCE_CONTINUITY_RULE}`);
   });
   test('publishes only approved descriptions with the authority rule and no scene rewrites',()=>{
     const original=draft(),generated=profile();
     const approved={...original,appearances:[{characterId:generated.characterId,description:generated.description,startingOutfit:generated.startingOutfit}]};
-    const card=cardPayload(approved),guide=appearanceGuide(approved);
-    expect(card.description).toContain(guide);
-    expect(guide).toContain(generated.description);
-    expect(guide).toContain(generated.startingOutfit);
+    const card=cardPayload(approved),guide=worldEntries(approved).find(entry=>entry.comment==='Mira · appearance')!;
+    // The look lives in one lorebook entry, not repeated in the card description.
+    expect(card.description).toBe(cardPayload(original).description);
+    expect(guide.content).toBe(appearanceEntryText('Mira',approved.appearances[0]));
+    expect(guide.content).toContain(generated.description);
+    expect(guide.content).toContain(`Outfit at the start: ${generated.startingOutfit}`);
+    expect(card.system_prompt).toContain(APPEARANCE_FIXED_RULE);
     expect(JSON.stringify(card)).not.toContain('silver hairpin');
     expect(card.system_prompt).toContain(APPEARANCE_RULE);
     expect(card.system_prompt).toContain('human explicitly approves a change');

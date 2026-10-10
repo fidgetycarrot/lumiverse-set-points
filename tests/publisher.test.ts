@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
-import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_RULE, appearanceGuide, cardPayload, validateDraft } from '../src/importer';
+import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_FIXED_RULE, APPEARANCE_RULE, appearanceEntryText, cardPayload, mainCharacterIds, validateDraft } from '../src/importer';
 import { CardPublisher, draftKey, worldEntries } from '../src/publisher';
 import { EXTENSION_ID } from '../src/types';
 import { draft } from './fixtures';
@@ -71,13 +71,34 @@ describe('saving cards and lore', () => {
     expect(worldEntries({...story,appearances:[]})).toEqual(entries);
     expect(JSON.stringify(entries)).not.toContain(APPEARANCE_RULE);
   });
-  test('adds an always-active authoritative appearance guide without changing cast or lore', () => {
+  test('adds an always-active rule and one short appearance entry per character without changing cast or lore', () => {
     const story=draft(), previous=worldEntries(story);
     story.appearances=[{characterId:'iona',description:'Brown hair and a scar on her chin.',startingOutfit:'A green coat.'}];
-    const [guide,...unchanged]=worldEntries(story);
-    expect(guide).toMatchObject({comment:'Approved character appearances',key:[],constant:true,disabled:false,probability:100,use_probability:false,priority:100,use_regex:false,vectorized:false});
-    expect(guide.content).toBe(`${APPEARANCE_RULE}\n\n${appearanceGuide(story)}`);
-    expect(unchanged).toEqual(previous);
+    const entries=worldEntries(story), [rule]=entries, look=entries.find(entry=>entry.comment==='Iona · appearance')!;
+    expect(rule).toMatchObject({comment:'Appearance rule',key:[],constant:true,disabled:false,probability:100,use_probability:false,priority:100,use_regex:false,vectorized:false});
+    expect(rule.content).toBe(`${APPEARANCE_RULE}\n\n${APPEARANCE_FIXED_RULE}`);
+    expect(look).toMatchObject({key:['Iona','Captain Iona'],constant:true,disabled:false,priority:100,use_regex:false,vectorized:false});
+    expect(look.content).toBe('Iona — appearance (fixed)\nBrown hair and a scar on her chin.\nOutfit at the start: A green coat.');
+    expect(entries.filter(entry=>entry!==rule&&entry!==look)).toEqual(previous);
+  });
+  test('keeps main characters always on and finds everyone else by name', () => {
+    const story=draft(), extra=(id:string,name:string)=>({...story.cast[0],id,name,aliases:[]});
+    story.cast.push(extra('elias','Elias'),extra('bram','Bram'),extra('odile','Odile'),extra('tam','Tam'));
+    story.playerRole='Tam';
+    story.scenes[1].direction='Elias and Bram argue over the letter while Iona watches.';
+    story.scenes[0].direction='Iona and Elias wait. Leave the choice to the player.';
+    story.appearances=story.cast.map(person=>({characterId:person.id,description:`${person.name} has a look.`,startingOutfit:''}));
+    // The human's own character, then the three named in the most scenes.
+    expect([...mainCharacterIds(story)]).toEqual(['tam','iona','elias','bram']);
+    const looks=worldEntries(story).filter(entry=>entry.comment?.endsWith('· appearance'));
+    expect(looks.map(entry=>[entry.comment,entry.constant])).toEqual([['Iona · appearance',true],['Elias · appearance',true],['Bram · appearance',true],['Odile · appearance',false],['Tam · appearance',true]]);
+    expect(looks.find(entry=>entry.comment==='Odile · appearance')!.key).toEqual(['Odile']);
+    // An outfit alone still gets an entry; a wholly blank one does not.
+    story.appearances=[{characterId:'odile',description:'',startingOutfit:'A grey shawl.'},{characterId:'bram',description:' ',startingOutfit:''}];
+    const partial=worldEntries(story).filter(entry=>entry.comment?.endsWith('· appearance'));
+    expect(partial).toHaveLength(1);
+    expect(partial[0].content).toBe(appearanceEntryText('Odile',story.appearances[0]));
+    expect(partial[0].content).toContain('Outfit at the start: A grey shawl.');
   });
   test.each(['absent','blank','partial'] as const)('permits consistent supporting-character invention with %s approvals', async mode => {
     const h=host(),story=draft();
@@ -90,8 +111,10 @@ describe('saving cards and lore', () => {
     expect(h.cards[0].system_prompt).toContain('Leave unspecified details of the human');
     expect(h.entries.find(entry=>entry.comment==='Premise and player role')).toMatchObject({constant:true,disabled:false,content:expect.stringContaining(APPEARANCE_CONTINUITY_RULE)});
     expect(JSON.stringify(h.cards)).not.toContain('Unspecified fields remain unknown');
-    if(mode!=='absent')expect(h.entries.find(entry=>entry.comment==='Approved character appearances').content).toContain('Only explicitly approved traits are locked');
-    if(mode==='partial')expect(h.cards[0].description).toContain('Appearance: Green eyes.');
+    // Blank approvals lock nothing: no rule and no entry. A partial one locks only what it says.
+    expect(h.entries.some(entry=>entry.comment==='Appearance rule')).toBe(mode==='partial');
+    if(mode==='partial'){expect(h.entries.find(entry=>entry.comment==='Appearance rule').content).toContain('Only explicitly approved traits are locked');expect(h.entries.find(entry=>entry.comment==='Iona · appearance').content).toBe('Iona — appearance (fixed)\nGreen eyes.');}
+    expect(h.cards[0].description).not.toContain('Green eyes.');
     expect(story).toEqual(before);
     expect(h.cards[0].first_mes).toBe(story.scenes[0].greeting);
     expect(h.cards[0].alternate_greetings).toEqual(story.scenes.slice(1).map(scene=>scene.greeting));
@@ -119,10 +142,10 @@ describe('saving cards and lore', () => {
     const restored=validateDraft(JSON.parse(JSON.stringify(story)));
     expect(restored.appearances).toEqual(story.appearances);
     const saved=await new CardPublisher(h.api,'user-a').publish(restored);
-    const guide=h.entries.find(entry=>entry.comment==='Approved character appearances');
+    const guide=h.entries.find(entry=>entry.comment==='Iona · appearance');
     expect(guide.world_book_id).toBe(saved.worldBookId);
-    expect(guide.content).toContain(appearanceGuide(restored));
-    expect(h.cards[0].description).toContain(appearanceGuide(restored));
+    expect(guide.content).toBe(appearanceEntryText('Iona',restored.appearances![0]));
+    expect(h.cards[0].system_prompt).toContain(APPEARANCE_FIXED_RULE);
     expect(h.cards[0].system_prompt).toContain(APPEARANCE_RULE);
     expect(guide.content).toContain(story.appearances[0].description);
     expect(guide.content).toContain(story.appearances[0].startingOutfit);
@@ -142,7 +165,7 @@ describe('saving cards and lore', () => {
     expect(h.cards).toHaveLength(2);expect(h.books).toHaveLength(2);
     expect(h.cards[0]).toEqual(beforeCard);
     expect(h.entries.filter(entry=>entry.world_book_id===first.worldBookId)).toEqual(beforeEntries);
-    expect(h.entries.find(entry=>entry.world_book_id===second.worldBookId && entry.comment==='Approved character appearances').content).toContain('Silver hair.');
+    expect(h.entries.find(entry=>entry.world_book_id===second.worldBookId && entry.comment==='Iona · appearance').content).toContain('Silver hair.');
   });
   test('double clicks and restarted publishing reuse the same approved guide', async () => {
     const h=host(), publisher=new CardPublisher(h.api,'user-a'), story=draft();
@@ -150,15 +173,15 @@ describe('saving cards and lore', () => {
     const [first,second]=await Promise.all([publisher.publish(story),publisher.publish(structuredClone(story))]);
     expect(second).toEqual(first);
     expect(await new CardPublisher(h.api,'user-a').publish(story)).toEqual(first);
-    expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);expect(h.entries).toHaveLength(4);
-    expect(h.entries.filter(entry=>entry.comment==='Approved character appearances')).toHaveLength(1);
+    expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);expect(h.entries).toHaveLength(5);
+    expect(h.entries.filter(entry=>entry.comment==='Iona · appearance')).toHaveLength(1);
   });
   test('recovers an interrupted guide publication without duplicating the always-active entry', async () => {
     const h=host(), story=draft();story.appearances=[{characterId:'iona',description:'Brown hair.',startingOutfit:'A green coat.'}];
     h.failEntry();await expect(new CardPublisher(h.api,'user-a').publish(story)).rejects.toThrow('Entry unavailable');
-    expect(h.entries).toHaveLength(1);expect(h.entries[0].comment).toBe('Approved character appearances');
+    expect(h.entries).toHaveLength(1);expect(h.entries[0].comment).toBe('Appearance rule');
     await new CardPublisher(h.api,'user-a').publish(story);
-    expect(h.entries).toHaveLength(4);expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);
-    expect(h.entries.filter(entry=>entry.comment==='Approved character appearances')).toHaveLength(1);
+    expect(h.entries).toHaveLength(5);expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);
+    expect(h.entries.filter(entry=>entry.comment==='Appearance rule')).toHaveLength(1);expect(h.entries.filter(entry=>entry.comment==='Iona · appearance')).toHaveLength(1);
   });
 });
