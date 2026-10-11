@@ -1,3 +1,5 @@
+import { characterPolishSignature } from './character-polish';
+import { type CharacterIssue } from './character-review';
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import { DEMO_STORY, VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type PersonaMode, type ReasoningMode, type ResponseMessage, type SavedStory, type SceneView, type StoryDraft, type WebStoryPage } from './types';
 import { styles } from './styles';
@@ -84,6 +86,9 @@ export function setup(ctx: SpindleFrontendContext) {
   let connectionChecking = false;
   let visualsStarting = false;
   let looksStarting = false;
+  let characterPolishStarting = false;
+  let renderCharacterPolishStatus = () => {};
+  const characterPolishBusy = () => characterPolishStarting || snapshot?.characterPolish?.job?.status === 'running';
   let repairStarting = false;
   let renderRepairStatus = () => {};
   const repairBusy = () => repairStarting || snapshot?.repairs?.job?.status === 'running';
@@ -134,7 +139,7 @@ export function setup(ctx: SpindleFrontendContext) {
     if(control) control.disabled=true;
     try { await action(); }
     catch(error) { notify(errorText(error),'error'); }
-    finally { if(control && !destroyed) { control.disabled=false; syncImportControls(); } }
+    finally { if(control && !destroyed) { control.disabled=false; syncImportControls(); renderCharacterPolishStatus(); renderRepairStatus(); } }
   }
   function selectTab(key:typeof selected) {
     selected=key;
@@ -257,7 +262,7 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
   function syncImportControls(){
-    const busy=repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||looksBusy()||snapshot?.job?.status==='running';
+    const busy=characterPolishBusy()||repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||looksBusy()||snapshot?.job?.status==='running';
     checkConnectionButton.disabled=!!busy||!connection.value;connection.disabled=connectionChecking;
     resumeButton.disabled=!!busy||!snapshot?.resume?.available;
     outputAllowance.input.disabled=!!busy;reasoningChoice.input.disabled=!!busy;resumeAllowance.input.disabled=!!busy;resumeReasoning.input.disabled=!!busy;
@@ -345,7 +350,7 @@ export function setup(ctx: SpindleFrontendContext) {
     resumeHint.textContent='Uses the saved story and import settings, not the edits in the current form. Completed steps are reused even when you change the response settings below; remaining requests use normal model charges.'+(snapshot?.resume?.retryUncertain?' Its previous outcome is unknown and it may already have been charged. Retrying can charge that request again.':'');
     syncImportControls();
     if(job) { progressText.textContent=job.status==='failed'&&job.phase?`Stopped during ${job.phase}. ${job.error||job.label}`:job.error||job.label;progress.max=Math.max(1,job.total);progress.value=Math.min(job.completed,progress.max); }
-    const anyRunning=repairBusy()||running||snapshot?.visuals?.job?.status==='running'||snapshot?.looks?.job?.status==='running';
+    const anyRunning=characterPolishBusy()||repairBusy()||running||snapshot?.visuals?.job?.status==='running'||snapshot?.looks?.job?.status==='running';
     if(anyRunning&&!polling) polling=setInterval(()=>{void refresh();},2500);
     if(!anyRunning&&polling) {clearInterval(polling);polling=undefined;}
     tab.setBadge(anyRunning?'…':null);
@@ -446,7 +451,7 @@ export function setup(ctx: SpindleFrontendContext) {
   });loadVisualResult.hidden=true;
   visualBody.append(visualInfo,visualSourceNotice,replaceVisualSource,visualSourceBox,visualConnection.wrap,visualSettings.root,visualCreate,visualProgress,visualResultNotice,loadVisualResult,visualResults);
   function visualsBusy(){return visualsStarting||snapshot?.visuals?.job?.status==='running';}
-  function otherWorkBusy(){return repairBusy()||loadingPages||adaptationStarting||connectionChecking||looksBusy()||snapshot?.job?.status==='running';}
+  function otherWorkBusy(){return characterPolishBusy()||repairBusy()||loadingPages||adaptationStarting||connectionChecking||looksBusy()||snapshot?.job?.status==='running';}
   function syncVisualControls(){
     const busy=!!(otherWorkBusy()||visualsBusy());
     visualCreate.disabled=busy||!draft||!visualConnection.input.value;
@@ -620,7 +625,7 @@ export function setup(ctx: SpindleFrontendContext) {
   let lookRenderKey='',lookPackKey='';
   lookPanel.body.append(paragraph('Works out how each character looks. It keeps what the story says, follows the story’s hints, and makes up the rest so the cast are easy to tell apart. Every trait shows where it came from.','sp-small'),paragraph('Reads the story once more, then designs the whole cast together. Normal model charges apply. Nothing in your story changes until you choose a look. No images are made.','sp-hint'),lookSourceNotice,lookSourceBox,lookConnection.wrap,lookSettings.root,lookCreate,lookProgress,lookOtherVersion,lookResults);
   function looksBusy(){return looksStarting||snapshot?.looks?.job?.status==='running';}
-  function lookBlocked(){return !!(repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||looksBusy()||snapshot?.job?.status==='running');}
+  function lookBlocked(){return !!(characterPolishBusy()||repairBusy()||loadingPages||adaptationStarting||connectionChecking||visualsBusy()||looksBusy()||snapshot?.job?.status==='running');}
   function syncLookControls(){
     const busy=lookBlocked();
     lookCreate.disabled=busy||!draft||!lookConnection.input.value;
@@ -759,7 +764,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }));
 
   function renderReview() {
-    const panel=panels.review;panel.replaceChildren();panelNonce++;approvedControls.clear();renderRepairStatus=()=>{};
+    const panel=panels.review;panel.replaceChildren();panelNonce++;approvedControls.clear();renderRepairStatus=()=>{};renderCharacterPolishStatus=()=>{};
     if(!draft) {
       const top=intro('Meet your adaptation','A little preparation makes room for a better story.');top.append(row(openDraftButton,pasteDraftButton));panel.append(top);
       const empty=node('div','sp-empty');empty.append(node('span','sp-tag','Your draft belongs here'),paragraph('Import a story to review its cast, lore, and scene openings.'),button('Bring in a story',()=>selectTab('import'),true));panel.append(empty);return;
@@ -767,7 +772,8 @@ export function setup(ctx: SpindleFrontendContext) {
     const current=draft;const nonce=panelNonce;
     const top=intro('Make it yours','Edit the cast, the world, and the moments you want to reach.');const dirtyTag=node('span','sp-tag',draftDirty?'Unsaved edits':'Draft ready');top.append(group(dirtyTag,row(openDraftButton,pasteDraftButton)));panel.append(top);
     let updateRoleReview=()=>{};
-    const markDirty=()=> { draftDirty=true;dirtyTag.textContent='Unsaved edits';renderVisuals();updateRoleReview();renderRepairStatus(); };
+    let invalidateCharacterChecks=()=>{};
+    const markDirty=()=> { draftDirty=true;dirtyTag.textContent='Unsaved edits';renderVisuals();updateRoleReview();renderRepairStatus();renderCharacterPolishStatus();invalidateCharacterChecks(); };
     const reviewFields=new Map<string,HTMLElement>();
     let showPersona=()=>{};
     // A persona nobody has reworded follows the draft: change the character and it changes too.
@@ -817,6 +823,14 @@ export function setup(ctx: SpindleFrontendContext) {
     const appearanceGuide=group(node('h3','','Appearance guide'),paragraph('Your approved appearance and starting outfit are the story’s reference, ahead of conflicting incidental descriptions. Blank fields let the narrator fill missing supporting-character details, using existing story facts first and keeping introduced looks consistent. You can start playing without describing everyone. Editing them uses no model.','sp-small'),paragraph('When you save to Lumiverse, each described character gets a short lorebook entry of their own, found by their name. Your character and the three who appear in the most scenes stay in view all the time. Short, plain facts hold best. To have the looks worked out for you, open Design character looks below.','sp-hint'),paragraph('Review existing lore and scene openings for conflicting details. Saved or forced scene openings are literal text and are not automatically rewritten. The narrator may still need corrections. Your own character’s unspecified appearance stays yours to choose.','sp-hint'));appearanceGuide.classList.add('sp-card');cast.append(appearanceGuide);
     for(const person of current.cast) {
       const entry=details(person.name);entry.body.append(edit('Name',person.name,v=>{person.name=v;entry.summary.textContent=v;},false,undefined,`cast:${person.id}:name`),edit('Also known as',person.aliases.join(', '),v=>person.aliases=v.split(',').map(x=>x.trim()).filter(Boolean),false,undefined,`cast:${person.id}:aliases`),edit('Personality',person.personality,v=>person.personality=v,true,undefined,`cast:${person.id}:personality`),edit('Voice & manner',person.voice,v=>person.voice=v,true,undefined,`cast:${person.id}:voice`),edit('Relationships at the start',person.relationships,v=>person.relationships=v,true,undefined,`cast:${person.id}:relationships`),edit('Knowledge at the start',person.knowledge,v=>person.knowledge=v,true,undefined,`cast:${person.id}:knowledge`));
+      const note = (key: 'motivations'|'reactions'|'voiceExamples', value: string) => { person.notes ??= { motivations: '', reactions: '', voiceExamples: [], cautions: [] }; if (key === 'voiceExamples') person.notes.voiceExamples = value.split('\n').map(line => line.trim()).filter(Boolean); else person.notes[key] = value; };
+      entry.body.append(
+        edit('Motivations at the start · optional',person.notes?.motivations??'',value=>note('motivations',value),true,'Why this person behaves this way. Leave unknown motives blank; add only source facts or deliberate choices of your own.',`cast:${person.id}:motivations`),
+        edit('Behavior & reactions · optional',person.notes?.reactions??'',value=>note('reactions',value),true,'Concrete tendencies under pressure, with friends, or in conflict. These may change during play.',`cast:${person.id}:reactions`),
+        edit('Speech examples · optional',person.notes?.voiceExamples.join('\n')??'',value=>note('voiceExamples',value),true,'Up to three short lines, one per line, at most 240 characters each. Style references, not past dialogue, future events, or permission to speak for your persona.',`cast:${person.id}:voiceExamples`),
+      );
+      if(person.notes?.cautions.length)for(const caution of person.notes.cautions)entry.body.append(paragraph(caution,'sp-notice'));
+      if(person.notes?.evidence?.length){const evidence=details('Starting notes used for these suggestions');for(const quote of person.notes.evidence)evidence.body.append(paragraph(quote,'sp-small'));entry.body.append(evidence.root);}
       const approved=()=>current.appearances?.find(item=>item.characterId===person.id);
       const setApproved=(key:'description'|'startingOutfit',value:string)=>{
         let appearance=approved();if(!appearance){appearance={characterId:person.id,description:'',startingOutfit:''};(current.appearances??=[]).push(appearance);}appearance[key]=value;updateApproved();
@@ -831,9 +845,52 @@ export function setup(ctx: SpindleFrontendContext) {
         appearanceMismatch.hidden=!(choice&&profile&&(normalized(choice.description)!==normalized(profile.description)||normalized(choice.startingOutfit)!==normalized(profile.startingOutfit)));
       }
       approvedControls.set(person.id,updateApproved);updateApproved();
-      entry.body.append(edit(`${person.name}: approved appearance`,approved()?.description??'',v=>setApproved('description',v),true,'Your chosen physical details stay fixed. For supporting characters, leave missing traits for the narrator to fill. This is independent of generated source facts.'),edit(`${person.name}: approved starting outfit`,approved()?.startingOutfit??'',v=>setApproved('startingOutfit',v),true,'Your chosen outfit at the start. For supporting characters, leave blank for the narrator. Edit conflicting lore or scene openings separately.'),appearanceMismatch,approvedCaption.wrap,approvedCopy);
+      entry.body.append(edit(`${person.name}: approved appearance`,approved()?.description??'',v=>setApproved('description',v),true,'Your chosen physical details stay fixed. For supporting characters, leave missing traits for the narrator to fill. This is independent of generated source facts.',`appearance:${person.id}:description`),edit(`${person.name}: approved starting outfit`,approved()?.startingOutfit??'',v=>setApproved('startingOutfit',v),true,'Your chosen outfit at the start. For supporting characters, leave blank for the narrator. Edit conflicting lore or scene openings separately.',`appearance:${person.id}:startingOutfit`),appearanceMismatch,approvedCaption.wrap,approvedCopy);
       if(person.sourceRefs.length)entry.body.append(paragraph(`Source: ${person.sourceRefs.join(' · ')}`,'sp-hint'));cast.append(entry.root);
     }cast.append(lookPanel.root);panel.append(cast);
+    const characterChecks=details('Character consistency · free');
+    const characterCheckStatus=paragraph('Checks identities, ambiguous character placeholders, differing labeled persona notes, and possible hair or eye conflicts. These are review aids, not confirmed errors.','sp-hint'),characterCheckResults=group();
+    const openField=(key:string)=>{const target=reviewFields.get(key);if(!target){notify('Open Your persona in Lumiverse to review this existing persona.');return;}for(let parent:HTMLElement|null=target;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')(parent as HTMLDetailsElement).open=true;target.scrollIntoView?.({block:'center'});target.focus();};
+    invalidateCharacterChecks=()=>{characterCheckResults.replaceChildren();characterCheckStatus.textContent='The draft changed. Run the free checks again to review the current version.';};
+    characterChecks.body.append(characterCheckStatus,button('Check character consistency',async()=>{
+      const before=JSON.stringify(current),issues=await rpc.request<CharacterIssue[]>('check-character-consistency',{draft:clone(current)});
+      if(nonce!==panelNonce||JSON.stringify(current)!==before)return;
+      characterCheckResults.replaceChildren();characterCheckStatus.textContent=issues.length?`${issues.length} possible differences to review. Nothing was changed and no model request was made.`:'No matches in these limited checks. This does not prove that the prose is consistent. No model request was made.';
+      for(const issue of issues){const item=group(node('h4','',issue.location),paragraph(issue.message,'sp-small'));if(issue.excerpt)item.append(paragraph(`Current: ${issue.excerpt}`,'sp-notice'));if(issue.reference)item.append(paragraph(`Compare with: ${issue.reference}`,'sp-small'));item.append(button('Open character issue',()=>openField(issue.fieldKey)));characterCheckResults.append(item);}
+    }),paragraph('For a selected existing persona, this reads its current description from Lumiverse. Edit it there; Set Points does not overwrite it.','sp-hint'),characterCheckResults);panel.append(characterChecks.root);
+    const polish=details('Polish character prompting · optional'),polishChoices=new Map<string,HTMLInputElement>();
+    polish.body.append(paragraph('Uses the starting cast notes in this completed draft. No story text or new import is needed. It adds concise motivations, reactions, and up to three illustrative speech examples without replacing your existing profiles, relationships, knowledge, looks, or scenes. Unsupported details should stay blank and be explained in the preview.','sp-hint'));
+    for(const person of current.cast){const check=node('input');check.type='checkbox';check.checked=false;check.id=`sp-${suffix}-polish-${person.id}`;polishChoices.set(person.id,check);const label=node('label','sp-check',person.name);label.htmlFor=check.id;polish.body.append(row(check,label));}
+    const polishConnection=selectField('Character polish connection',snapshot?.connections.map(item=>[item.id,item.name] as [string,string])??[],snapshot?.characterPolish?.connectionId??connection.value);
+    const polishAllowance=selectField('Character polish response allowance',responseAllowances,String(snapshot?.characterPolish?.maxOutputTokens??8000)),polishReasoning=selectField('Character polish reasoning',reasoningModes,snapshot?.characterPolish?.reasoningMode??'inherit');
+    const polishStatus=paragraph('','sp-hint'),polishPreview=details('Preview character notes');polishPreview.root.hidden=true;
+    const startPolish=button('Polish selected characters',async()=>{
+      if(otherWorkBusy()||visualsBusy())throw new Error('Wait for the current operation to finish.');
+      const characterIds=[...polishChoices].filter(([,check])=>check.checked).map(([id])=>id);if(!characterIds.length)throw new Error('Select the characters to polish.');
+      const requested=clone(current),basis=characterPolishSignature(requested);characterPolishStarting=true;syncImportControls();
+      try{const job=await rpc.request<ImportJob>('start-character-polish',{draft:requested,characterIds,connectionId:polishConnection.input.value,...readResponseSettings(polishAllowance.input,polishReasoning.input)});if(snapshot)snapshot.characterPolish={job,result:null,requestSignature:basis,resumeAvailable:false,retryUncertain:false};await refresh();notify('Character polish started. Your current draft stays in place until you review and apply the notes.');}finally{characterPolishStarting=false;syncImportControls();renderCharacterPolishStatus();}
+    },true);
+    const resumePolish=button('Resume character polish',async()=>{
+      if(otherWorkBusy()||visualsBusy())throw new Error('Wait for the current operation to finish.');
+      characterPolishStarting=true;syncImportControls();try{const job=await rpc.request<ImportJob>('resume-character-polish',{draft:clone(current),retryUncertain:snapshot?.characterPolish?.retryUncertain===true,...readResponseSettings(polishAllowance.input,polishReasoning.input)});if(snapshot?.characterPolish)snapshot.characterPolish.job=job;await refresh();}finally{characterPolishStarting=false;syncImportControls();renderCharacterPolishStatus();}
+    });
+    const cancelPolish=button('Cancel character polish',async()=>{await rpc.request('cancel-character-polish');notify('Cancellation requested. Completed character responses are retained.');await refresh();});
+    const applyPolish=button('Apply character notes',async()=>{
+      const before=JSON.stringify(current),result=await rpc.request<StoryDraft>('apply-character-polish',{draft:clone(current)});
+      if(nonce===panelNonce&&JSON.stringify(current)===before){draft=clone(result);draftDirty=false;draftRevision++;draftVersion=JSON.stringify(result);renderReview();notify('Character notes applied and saved to your existing draft. Review them, then save a new card to Lumiverse.');}
+      else{pendingReplacement=result;newDraftNotice.hidden=false;notify('Upgraded draft saved. Your newer review edits remain visible; choose Load new draft to replace them deliberately.');}
+    });
+    renderCharacterPolishStatus=()=>{
+      const state=snapshot?.characterPolish;let matching=false;try{matching=!!state?.requestSignature&&characterPolishSignature(current)===state.requestSignature;}catch{}
+      polishStatus.textContent=state?.job?`${state.job.label} · ${state.job.completed}/${state.job.total}${state.job.error?' · '+state.job.error:''}${!matching?' · This saved request belongs to a different draft version.':''}`:'No character polish requested. You can also fill the optional character fields yourself for free.';
+      startPolish.disabled=otherWorkBusy()||visualsBusy();resumePolish.disabled=startPolish.disabled;applyPolish.disabled=startPolish.disabled;
+      resumePolish.hidden=!matching||!state?.resumeAvailable;resumePolish.textContent=state?.retryUncertain?'Retry unfinished character request':'Resume character polish';cancelPolish.hidden=state?.job?.status!=='running';
+      applyPolish.hidden=!matching||state?.job?.status!=='complete'||!state.result;polishPreview.root.hidden=applyPolish.hidden;polishPreview.body.replaceChildren();
+      if(!applyPolish.hidden&&state?.result)for(const person of state.result.cast){const original=current.cast.find(item=>item.id===person.id);if(!person.notes||JSON.stringify(original?.notes)===JSON.stringify(person.notes))continue;const preview=group(node('h4','',person.name));for(const [label,text]of [['Motivations',person.notes.motivations||'Not established in the draft.'],['Behavior & reactions',person.notes.reactions||'Not established in the draft.'],['Illustrative speech examples',person.notes.voiceExamples.join('\n')||'No examples suggested.'],['Review notes',person.notes.cautions.join('\n')||'Review the suggestions against your intended character.'],['Evidence from starting notes',person.notes.evidence?.join('\n')||'No additional evidence.']]){const field=paragraph(`${label}: ${text}`,'sp-small');preview.append(field);}if(original?.notes)preview.prepend(paragraph(`Existing notes: ${[original.notes.motivations,original.notes.reactions,...original.notes.voiceExamples].filter(Boolean).join(' · ')}`,'sp-notice'));polishPreview.body.append(preview);}
+      if(state?.retryUncertain)polishStatus.textContent+=' The earlier request may already have been charged; this explicit retry can charge again.';
+    };
+    polish.body.append(button('Select all characters',()=>{for(const check of polishChoices.values())check.checked=true;}),polishConnection.wrap,polishAllowance.wrap,polishReasoning.wrap,paragraph('Each selected character uses one normally charged model request, with at most one additional format repair. Completed requests are cached for resume. Suggestions use your draft, not a fresh check of the original story.','sp-hint'),startPolish,polishStatus,resumePolish,cancelPolish,polishPreview.root,applyPolish);panel.append(polish.root);renderCharacterPolishStatus();
+    panel.append(paragraph('Clear character sections and the smaller card layout apply automatically when you next Save to Lumiverse, including for old drafts. Each full cast profile appears once in the narrator card, so basic voices do not depend on lorebook activation. This saves a new card; existing cards and chats keep their previous version.','sp-hint'));
     const mentions=details('Check for conflicting looks · optional');const mentionResults=group(),mentionStatus=paragraph('','sp-hint');mentionStatus.setAttribute('role','status');
     let foundMentions:ReturnType<typeof appearanceMentions>=[],shownMentions=0;
     const showMoreMentions=button('Show more excerpts',()=>showMentions());showMoreMentions.hidden=true;
@@ -910,7 +967,7 @@ export function setup(ctx: SpindleFrontendContext) {
     renderRepairStatus=()=>{
       const state=snapshot?.repairs;let matching=false;try{matching=!!state?.requestSignature&&repairSignature(current)===state.requestSignature;}catch{}
       repairStatus.textContent=state?.job?`${state.job.label} · ${state.job.completed}/${state.job.total}${state.job.error?' · '+state.job.error:''}${!matching?' · This result or saved request belongs to a different draft version.':''}`:'No scene repair requested.';
-      startRepair.disabled=!!repairBusy()||otherWorkBusy()||visualsBusy();resumeRepair.hidden=!matching||!state?.resumeAvailable;resumeRepair.textContent=state?.retryUncertain?'Retry unfinished scene request':'Resume scene repair';
+      startRepair.disabled=!!characterPolishBusy()||repairBusy()||otherWorkBusy()||visualsBusy();resumeRepair.hidden=!matching||!state?.resumeAvailable;resumeRepair.textContent=state?.retryUncertain?'Retry unfinished scene request':'Resume scene repair';
       resumeRepair.disabled=startRepair.disabled;applyRepair.disabled=startRepair.disabled;
       cancelRepair.hidden=state?.job?.status!=='running';applyRepair.hidden=!matching||state?.job?.status!=='complete'||!state.result;
       repairPreview.root.hidden=applyRepair.hidden;repairPreview.body.replaceChildren();
@@ -984,7 +1041,7 @@ export function setup(ctx: SpindleFrontendContext) {
         const readRevision=draftRevision;const next=await rpc.request<AppSnapshot>('snapshot',ctx.getActiveChat());if(destroyed)return;
         const completed=snapshot?.job?.status==='running'&&next.job?.status==='complete';
         snapshot=next;updateConnections(next);renderJob(next.job);
-        renderRepairStatus();
+        renderRepairStatus();renderCharacterPolishStatus();
         newDraftNotice.hidden=!(pendingReplacement||(draftDirty&&draft&&next.draft&&draft.id!==next.draft.id));
         const nextVersion=JSON.stringify(next.draft);
         if(!openingDraft&&!draftDirty&&readRevision===draftRevision&&nextVersion!==draftVersion){draft=next.draft?clone(next.draft):null;draftVersion=nextVersion;renderReview();}

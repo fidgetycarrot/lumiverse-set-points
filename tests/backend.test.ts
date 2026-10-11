@@ -1,8 +1,9 @@
+import { characterPolishSignature } from '../src/character-polish';
 import { describe, expect, spyOn, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { SetPointsController, setupBackend } from '../src/backend';
 import { draft } from './fixtures';
-import { DEMO_STORY, type ImportOptions, type ImportJob, type WebStoryPage } from '../src/types';
+import { DEMO_STORY, type StoryDraft, type ImportOptions, type ImportJob, type WebStoryPage } from '../src/types';
 import { repairSignature } from '../src/scene-repair';
 
 const options:ImportOptions={text:DEMO_STORY,sourceTitle:'The Lighthouse Letter',playerRole:'Mara',startingPoint:'The harbor',sceneCount:4,chunkSize:12000,connectionId:'model'};
@@ -444,5 +445,71 @@ describe('import jobs and draft storage',()=>{
     Object.assign(h.api.permissions,{has:()=>true});
     await expect(app.handle('fetch-url',{url:'http://127.0.0.1/story'})).rejects.toThrow('public');
     expect(calls).toBe(0);
+  });
+});
+
+function polishReply(input: any) {
+  const person = JSON.parse(input.messages[1].content).character;
+  return { content: JSON.stringify({ id: person.id, notes: { motivations: '', reactions: 'Keeps responses direct and practical.', voiceExamples: ['“Tell me what you need.”'], cautions: ['Deeper motivations are not established.'] }, basis: { motivations: [], reactions: [person.personality], voiceExamples: [person.voice] } }), finish_reason: 'stop' };
+}
+describe('completed-draft character upgrades', () => {
+  test('keeps the saved import intact through preview, applies explicitly, and protects newer edits', async () => {
+    const h = harness(async input => polishReply(input)), app = new SetPointsController(h.api, 'alice'), story = draft();
+    await app.handle('save-draft', { draft: story });
+    await app.handle('start-character-polish', { draft: story, characterIds: ['iona'], connectionId: 'model', maxOutputTokens: 8000 }); await app.waitForCharacterPolish();
+    const view = await app.snapshot(null); expect(view.characterPolish?.job?.status).toBe('complete'); expect(view.draft).toEqual(story);
+    expect(view.characterPolish?.result?.cast[0].notes?.voiceExamples).toHaveLength(1); expect(view.characterPolish?.requestSignature).toBe(characterPolishSignature(story));
+    await expect(app.handle('apply-character-polish', { draft: { ...story, premise: 'Keep my newer edit.' } })).rejects.toThrow('different draft version');
+    const applied = await app.handle('apply-character-polish', { draft: story }) as StoryDraft;
+    expect((await app.snapshot(null)).draft).toEqual(applied); expect(applied.scenes).toEqual(story.scenes); expect(applied.source).toEqual(story.source); expect(applied.id).toBe(story.id);
+    expect(h.calls).toHaveLength(1); const diagnostics = JSON.stringify(await app.handle('diagnostics', {}));
+    expect(diagnostics).not.toContain('Iona'); expect(diagnostics).not.toContain('Deeper motivations'); expect(diagnostics).not.toContain('Tell me what');
+    app.dispose();
+  });
+  test('resumes only the failed character after restart and different response settings', async () => {
+    let fail = true; const h = harness(async input => { if (JSON.parse(input.messages[1].content).character.id === 'elias' && fail) throw new Error('HTTP 503'); return polishReply(input); });
+    const story = draft(); story.cast.push({ ...story.cast[0], id: 'elias', name: 'Elias' });
+    const first = new SetPointsController(h.api, 'alice'); await first.handle('save-draft', { draft: story });
+    await first.handle('start-character-polish', { draft: story, characterIds: ['iona', 'elias'], connectionId: 'model', maxOutputTokens: 8000 }); await first.waitForCharacterPolish();
+    expect((await first.snapshot(null)).characterPolish?.resumeAvailable).toBe(true); expect(h.calls).toHaveLength(2); fail = false;
+    const second = new SetPointsController(h.api, 'alice'); await second.handle('resume-character-polish', { draft: story, maxOutputTokens: 32000, reasoningMode: 'off' }); await second.waitForCharacterPolish();
+    expect((await second.snapshot(null)).characterPolish?.job?.status).toBe('complete'); expect(h.calls).toHaveLength(3);
+    expect(h.calls.filter(input => JSON.parse(input.messages[1].content).character.id === 'iona')).toHaveLength(1); expect(h.calls.at(-1).parameters.max_tokens).toBe(32000);
+    expect((await second.snapshot(null)).draft).toEqual(story); first.dispose(); second.dispose();
+  });
+  test('rejects changed connections, changed drafts, and missing selections before charging', async () => {
+    const h = harness(async () => { throw new Error('HTTP 503'); }), app = new SetPointsController(h.api, 'alice'), story = draft();
+    await expect(app.handle('start-character-polish', { draft: story, characterIds: [], connectionId: 'model' })).rejects.toThrow('Select'); expect(h.calls).toHaveLength(0);
+    await app.handle('start-character-polish', { draft: story, characterIds: ['iona'], connectionId: 'model' }); await app.waitForCharacterPolish();
+    await expect(app.handle('resume-character-polish', { draft: { ...story, premise: 'Changed' } })).rejects.toThrow('different draft version');
+    Object.assign(h.api.connections, { get: async () => ({ id: 'model', model: 'changed', provider: 'test' }) });
+    await expect(app.handle('resume-character-polish', { draft: story })).rejects.toThrow('connection changed'); expect(h.calls).toHaveLength(1); app.dispose();
+  });
+  test('allows saving edits while a polish runs, blocks competing work, and cancels', async () => {
+    const h = harness(async () => new Promise(() => {})), app = new SetPointsController(h.api, 'alice'), story = draft();
+    await app.handle('start-character-polish', { draft: story, characterIds: ['iona'], connectionId: 'model' });
+    for (let i = 0; i < 500 && !h.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 2));
+    expect((await app.snapshot(null)).characterPolish?.job?.status).toBe('running');
+    await expect(app.handle('start-import', { options })).rejects.toThrow('character polish');
+    await expect(app.handle('start-scene-repair', { draft: story, sceneIds: ['harbor'], connectionId: 'model' })).rejects.toThrow('character polish');
+    await expect(app.handle('test-connection', { connectionId: 'model' })).rejects.toThrow('character polish');
+    await expect(app.handle('create-card', { draft: story })).rejects.toThrow('character polish');
+    const edited = { ...story, premise: 'My newer changes stay.' }; await app.handle('save-draft', { draft: edited });
+    await app.handle('cancel-character-polish', {}); await app.waitForCharacterPolish();
+    expect((await app.snapshot(null)).draft).toEqual(edited); expect((await app.snapshot(null)).characterPolish?.resumeAvailable).toBe(true);
+    expect(h.calls).toHaveLength(1); expect(h.calls[0].signal.aborted).toBe(true); app.dispose();
+  });
+  test('reads an existing persona only for the free check and never changes it', async () => {
+    const h = harness(), app = new SetPointsController(h.api, 'alice'), story = draft(); story.playerRole = 'Iona';
+    story.persona = { mode: 'existing', name: '', title: '', description: '', personaId: 'mine' }; const reads: string[] = [];
+    Object.assign(h.api.permissions, { has: () => true }); Object.assign(h.api, { personas: { get: async (id: string, user: string) => { reads.push(user); return { id, name: 'Eric', description: 'Voice: Elaborate.' }; } } });
+    const issues = await app.handle('check-character-consistency', { draft: story }) as any[];
+    expect(issues).toHaveLength(2); expect(reads).toEqual(['alice']); expect(h.calls).toHaveLength(0); app.dispose();
+  });
+  test('bad optional upgrade data cannot prevent opening the original completed draft', async () => {
+    const h = harness(), story = draft(); h.stored.set('alice:workspace.json', JSON.stringify({ draft: story, saved: null, job: null, characterPolishResult: 'broken' }));
+    const app = new SetPointsController(h.api, 'alice'); expect((await app.snapshot(null)).draft).toEqual(story);
+    expect((await app.snapshot(null)).characterPolish?.job?.status).toBe('failed'); expect([...h.stored.keys()].some(key => key.includes('recovery/character-polish'))).toBe(true);
+    expect(h.calls).toHaveLength(0); app.dispose();
   });
 });

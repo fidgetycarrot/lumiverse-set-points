@@ -38,7 +38,7 @@ describe('saving cards and lore', () => {
   });
   test('saves one narrator with attached, non-global lore and ordered greetings', async () => {
     const h=host(), p=new CardPublisher(h.api,'user-a'), story=draft(); const saved=await p.publish(story);
-    expect(h.cards).toHaveLength(1); expect(h.books).toHaveLength(1); expect(h.entries).toHaveLength(3);
+    expect(h.cards).toHaveLength(1); expect(h.books).toHaveLength(1); expect(h.entries).toHaveLength(2);
     expect(h.cards[0].world_book_ids).toEqual([saved.worldBookId]); expect(h.cards[0].first_mes).toBe(story.scenes[0].greeting);
     expect(h.cards[0].alternate_greetings).toEqual([story.scenes[1].greeting]); expect(h.cards[0].extensions[EXTENSION_ID].scenes).toHaveLength(2);
     expect(h.users.every(user=>user==='user-a')).toBe(true);
@@ -55,7 +55,7 @@ describe('saving cards and lore', () => {
   });
   test('retries a partial world book without duplicating existing entries', async () => {
     const h=host();h.failEntry();await expect(new CardPublisher(h.api,'user-a').publish(draft())).rejects.toThrow();
-    await new CardPublisher(h.api,'user-a').publish(draft());expect(h.books).toHaveLength(1);expect(h.entries).toHaveLength(3);expect(h.cards).toHaveLength(1);
+    await new CardPublisher(h.api,'user-a').publish(draft());expect(h.books).toHaveLength(1);expect(h.entries).toHaveLength(2);expect(h.cards).toHaveLength(1);
   });
   test('does not report a successful retry when the saved lore was detached', async () => {
     const h=host(),p=new CardPublisher(h.api,'user-a');await p.publish(draft());h.cards[0].world_book_ids=[];
@@ -63,11 +63,10 @@ describe('saving cards and lore', () => {
   });
   test('adds narrator continuity to the premise while preserving cast and lore without an approved guide', () => {
     const story=draft(), entries=worldEntries(story);
-    expect(entries).toHaveLength(3);
-    expect(entries.map(entry=>entry.comment)).toEqual(['Premise and player role','Iona','Greyhaven']);
+    expect(entries).toHaveLength(2);
+    expect(entries.map(entry=>entry.comment)).toEqual(['Premise and player role','Greyhaven']);
     expect(entries[0].content).toBe(`${story.premise}\n\nPlayer: ${story.playerRole}\nStarting point: ${story.startingPoint}\n\n${roleInstruction(story)}\nThese are starting facts. Later events in the chat take precedence. Leave the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}`);
-    expect(entries[1].content).toBe('Iona\nPersonality: Blunt and dependable.\nVoice: Short, direct sentences.\nRelationships at the start: She knows Elias and is wary of Mara.\nKnowledge at the start: Elias left a letter in the chart room.\nUse subsequent chat events for changes to these starting facts.');
-    expect(entries[2].content).toBe(story.lore[0].content);
+    expect(entries[1].content).toBe(story.lore[0].content);
     expect(worldEntries({...story,appearances:[]})).toEqual(entries);
     expect(JSON.stringify(entries)).not.toContain(APPEARANCE_RULE);
   });
@@ -173,7 +172,7 @@ describe('saving cards and lore', () => {
     const [first,second]=await Promise.all([publisher.publish(story),publisher.publish(structuredClone(story))]);
     expect(second).toEqual(first);
     expect(await new CardPublisher(h.api,'user-a').publish(story)).toEqual(first);
-    expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);expect(h.entries).toHaveLength(5);
+    expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);expect(h.entries).toHaveLength(4);
     expect(h.entries.filter(entry=>entry.comment==='Iona · appearance')).toHaveLength(1);
   });
   test('recovers an interrupted guide publication without duplicating the always-active entry', async () => {
@@ -181,7 +180,7 @@ describe('saving cards and lore', () => {
     h.failEntry();await expect(new CardPublisher(h.api,'user-a').publish(story)).rejects.toThrow('Entry unavailable');
     expect(h.entries).toHaveLength(1);expect(h.entries[0].comment).toBe('Appearance rule');
     await new CardPublisher(h.api,'user-a').publish(story);
-    expect(h.entries).toHaveLength(5);expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);
+    expect(h.entries).toHaveLength(4);expect(h.cards).toHaveLength(1);expect(h.books).toHaveLength(1);
     expect(h.entries.filter(entry=>entry.comment==='Appearance rule')).toHaveLength(1);expect(h.entries.filter(entry=>entry.comment==='Iona · appearance')).toHaveLength(1);
   });
 });

@@ -4,7 +4,7 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.12** adds three things to Review. **Your persona** lets you make a Lumiverse persona for the character you play, written from the draft for you to check, or use one you already have. **Design character looks** works out what each character looks like when the story does not say: it keeps what the story states, follows its hints, and makes up the rest so the cast are easy to tell apart, with every trait marked by where it came from and a **Reroll** button per character. And saving to Lumiverse now writes one short appearance entry per character in the world book, so the narrator stops reinventing how people look.
+Version **0.1.13** improves character prompting on **existing drafts**. Each character has optional motivation, reaction, and speech-example notes you can edit for free. **Character consistency** checks possible persona, appearance, and narrator-name conflicts locally. **Polish character prompting** optionally asks your selected model to add notes for selected characters using their existing starting profiles, with evidence, a preview, and an explicit apply button. You do not need to import the story or generate appearances again.
 
 Nothing here runs unless you ask for it, and you still do not need to describe every character before playing: blank looks are filled in by the narrator as before. Existing drafts open as before. The first **Save to Lumiverse** after updating makes a new card and world book in the new format; older cards and chats are left alone.
 
@@ -15,6 +15,7 @@ Nothing here runs unless you ask for it, and you still do not need to describe e
 - Reads long sources in sections, merges character identities and chronology, then creates an editable adaptation. Saves model responses before format and size validation so completed matching requests can be reused after an interruption or validation failure.
 - Produces a narrator card, attached world book, initial greeting, and ordered alternate greetings, with a shared player/narrator role contract and retained scene-control metadata.
 - Offers free player/viewpoint checks and optional repairs of selected completed scenes, with preview, explicit application, cancellation, and saved-step recovery.
+- Adds editable portrayal notes, free character-consistency checks, and optional resumable character polish on completed drafts.
 - Lets you make a persona for the character you play, or use one of your own. The persona is written from the draft with no model request.
 - Lets you approve appearance and starting-outfit details directly in Review, including on existing 0.1.5 drafts. Publishes each described character as a short world-book entry of their own.
 - Optionally designs looks for the whole cast together when the story leaves them out, labels every trait as from the story, hinted by it, or made up, and rerolls one character at a time.
@@ -41,9 +42,9 @@ Repository installation URL: [fidgetycarrot/lumiverse-set-points](https://github
 
 | Permission | Used for |
 | --- | --- |
-| `generation` | Adaptation, optional image descriptions and scene repairs, connection choices, and generation lifecycle tracking |
+| `generation` | Adaptation, optional looks, image descriptions, scene repairs and character polish, connection choices, and generation lifecycle tracking |
 | `characters` | Creating narrator cards and reading their scene data |
-| `world_books` | Creating and attaching starting cast and lore |
+| `world_books` | Creating and attaching starting lore and approved appearance entries |
 | `personas` | Optional. Listing your personas, making or updating the one for a story, and switching to it when you ask |
 | `chats` | Finding and validating the selected chat |
 | `chat_mutation` | Inserting, cleaning, and undoing scene messages |
@@ -97,6 +98,18 @@ Writing the persona uses no model request. Until you change its wording, it foll
 If you play a story character but use your own persona, the narrator still treats you as that character. Pick a persona that fits, or set **Player cast identity** to **Custom or unbound role** to join the story as someone new. The played character stays in the narrator’s cast notes either way, so the other characters know who they are talking to.
 
 This needs the `personas` permission. Without it, the other two choices stop **Save to Lumiverse** with a message before anything is saved.
+
+## Improving characters in an existing draft
+
+Update Set Points in place, keep its stored data, and open your completed draft in **Review**. Do not start another import. Existing draft JSON remains compatible.
+
+**Free edits and checks:** expand a character to edit **Motivations at the start**, **Behavior & reactions**, and up to three short **Speech examples**. Leave unsupported details blank. Examples describe speech style; they are not past dialogue or a script for future events. In **Character consistency · free**, click **Check character consistency** for possible conflicts and use **Open character issue** to reach the relevant field. The checks compare wording and simple appearance mentions, so harmless differences or intentional later changes can be flagged and some conflicts can be missed. An existing Lumiverse persona is read only when you ask to check it; it is never rewritten.
+
+**Optional model assistance:** open **Polish character prompting · optional**, select the characters you want to improve, choose a connection, and start the polish. Only the selected characters' existing starting profiles and the starting-point note are sent; the original story is not required. Each character normally uses one paid request, with at most one additional format-repair attempt. A supporting quote must match the supplied profile, but this does not prove that a proposed motive or reaction is a correct interpretation. Inspect the evidence and cautions in the preview. Unsupported fields should stay blank.
+
+Choose **Apply character notes** to load the preview into the same draft. Original personality, voice, relationships, knowledge, scenes, lore, source references, and approved appearances are preserved. An unmodified generated persona follows the added notes; a persona you customized remains as you wrote it. Edits made after a polish starts prevent an older preview from overwriting them. **Resume character polish** reuses completed matching responses after an interruption; remaining requests use normal provider charges. An unknown request outcome requires an explicit retry.
+
+**Save to Lumiverse** publishes the improved draft as a new card and world book the first time after this update. The narrator card holds one clearly named complete profile for each cast member, with a descriptive human-player profile and explicit player control. Duplicate full cast profiles are removed from the world book; its premise, role guidance, lore, and approved appearance entries remain. Earlier cards and chats are kept. These formatting changes need no model request, and blank optional character notes are fine.
 
 ### Repair selected completed scenes
 

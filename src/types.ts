@@ -1,10 +1,11 @@
 import type { VisualPack } from './visuals';
 import type { LookPack } from './looks';
 export const EXTENSION_ID = 'lumiverse_set_points';
-export const VERSION = '0.1.12';
+export const VERSION = '0.1.13';
 export type NarrationMode = 'neutral'|'character';
 export interface StoryRoles { narration: NarrationMode; playerCharacterId: string|null; viewpointCharacterId: string|null; sourceViewpoint: string }
-export interface CastMember { id: string; name: string; aliases: string[]; personality: string; voice: string; relationships: string; knowledge: string; sourceRefs: string[] }
+export interface CharacterNotes { motivations: string; reactions: string; voiceExamples: string[]; cautions: string[]; evidence?: string[] }
+export interface CastMember { id: string; name: string; aliases: string[]; personality: string; voice: string; relationships: string; knowledge: string; sourceRefs: string[]; notes?: CharacterNotes }
 export interface ApprovedAppearance { characterId: string; description: string; startingOutfit: string }
 /** Who the human plays as in Lumiverse. 'create' makes a persona on save; 'existing' points at one of theirs; 'none' leaves it alone. */
 export type PersonaMode = 'create'|'existing'|'none';
@@ -19,7 +20,7 @@ export interface StoryDraft {
   source: { title: string; url?: string; characters: number; chunks: number }; createdAt: number;
 }
 export type ReasoningMode = 'inherit'|'off'|'low';
-export interface ImportOptions { text: string; sourceTitle: string; sourceUrl?: string; playerRole: string; startingPoint: string; sceneCount: number; connectionId: string; chunkSize: number; maxOutputTokens?: number; reasoningMode?: ReasoningMode; narrationMode?: NarrationMode; narratorCharacter?: string; sourceViewpoint?: string; openingStyle?:StoryDraft['openingStyle'] }
+export interface ImportOptions { text: string; sourceTitle: string; sourceUrl?: string; playerRole: string; startingPoint: string; sceneCount: number; connectionId: string; chunkSize: number; maxOutputTokens?: number; reasoningMode?: ReasoningMode; narrationMode?: NarrationMode; narratorCharacter?: string; sourceViewpoint?: string; openingStyle?:StoryDraft['openingStyle']; profilePromptVersion?:1|2 }
 export interface WebPageLink { title: string; url: string }
 export interface WebStoryPage { title: string; text: string; url: string; nextPages: WebPageLink[] }
 export interface ImportJob { id: string; status: 'running'|'complete'|'cancelled'|'failed'; completed: number; total: number; label: string; error?: string; retryUncertain?: boolean; phase?: string }
@@ -29,7 +30,8 @@ export interface ConnectionChoice { id: string; name: string; provider: string; 
 export interface VisualSnapshot { job: ImportJob|null; pack: VisualPack|null; resultSignature?: string; requestSignature?: string; sourceSignature?: string; resumeAvailable: boolean; retryUncertain: boolean; connectionId?: string; maxOutputTokens?: number; reasoningMode?: ReasoningMode }
 export interface LookSnapshot { job: ImportJob|null; pack: LookPack|null; resultSignature?: string; requestSignature?: string; resumeAvailable: boolean; retryUncertain: boolean; rerolling?: string; connectionId?: string; maxOutputTokens?: number; reasoningMode?: ReasoningMode }
 export interface RepairSnapshot { job: ImportJob|null; result: StoryDraft|null; requestSignature?: string; resumeAvailable: boolean; retryUncertain: boolean; connectionId?: string }
-export interface AppSnapshot { version: string; permissions: string[]; connections: ConnectionChoice[]; job: ImportJob|null; draft: StoryDraft|null; saved: SavedStory|null; play: SceneView; resume?: { available: boolean; retryUncertain: boolean; maxOutputTokens?: number; reasoningMode?: ReasoningMode }; visuals?: VisualSnapshot; looks?: LookSnapshot; personas?: PersonaChoice[]; repairs?: RepairSnapshot; diagnostics: string[] }
+export interface CharacterPolishSnapshot extends RepairSnapshot { maxOutputTokens?: number; reasoningMode?: ReasoningMode }
+export interface AppSnapshot { version: string; permissions: string[]; connections: ConnectionChoice[]; job: ImportJob|null; draft: StoryDraft|null; saved: SavedStory|null; play: SceneView; resume?: { available: boolean; retryUncertain: boolean; maxOutputTokens?: number; reasoningMode?: ReasoningMode }; visuals?: VisualSnapshot; looks?: LookSnapshot; personas?: PersonaChoice[]; repairs?: RepairSnapshot; characterPolish?: CharacterPolishSnapshot; diagnostics: string[] }
 export interface RequestMessage { type: 'set-points:request'; id: string; action: string; input?: unknown }
 export interface ResponseMessage { type: 'set-points:response'; id: string; result?: unknown; error?: string }
 export interface ChangedMessage { type: 'set-points:changed' }

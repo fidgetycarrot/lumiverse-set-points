@@ -6,13 +6,13 @@ import { EXTENSION_ID, type SavedStory, type StoryDraft } from './types';
 
 type Receipt = { key: string; draftId: string; worldBookId?: string; characterId?: string; complete?: boolean };
 export async function draftKey(draft: StoryDraft): Promise<string> {
-  // Publication guidance changed in 0.1.10, and appearance entries in 0.1.12.
+  // Publication guidance changed in 0.1.10, appearance entries in 0.1.12, and cast layout in 0.1.13.
   // A new receipt creates a fresh card instead of returning a pre-update card
   // with the old rules. Draft identity and paid model-response checkpoints are
   // unaffected. The persona is saved on its own, so editing it never makes a
   // second card.
   const { persona: _persona, ...card } = draft;
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 4, draft: card })));
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 5, draft: card })));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
@@ -22,8 +22,7 @@ export function worldEntries(draft: StoryDraft): WorldBookEntryCreateDTO[] {
     ...(looks.length ? [{ comment: 'Appearance rule', key: [], constant: true,
       probability: 100, use_probability: false, priority: 100, content: `${APPEARANCE_RULE}\n\n${APPEARANCE_FIXED_RULE}` }] : []),
     { comment: 'Premise and player role', constant: true, content: `${draft.premise}\n\nPlayer: ${draft.playerRole}\nStarting point: ${draft.startingPoint}\n\n${roleInstruction(draft)}\nThese are starting facts. Later events in the chat take precedence. ${draft.openingStyle==='story'?'During live chat after the scripted opening, leave':'Leave'} the player’s actions, thoughts, and speech to them.\n\n${APPEARANCE_CONTINUITY_RULE}` },
-    ...draft.cast.map(member => ({ comment: member.name, key: [member.name, ...member.aliases], constant: false,
-      content: `${member.name}\nPersonality: ${member.personality}\nVoice: ${member.voice}\nRelationships at the start: ${member.relationships}\nKnowledge at the start: ${member.knowledge}\nUse subsequent chat events for changes to these starting facts.` })),
+    // Starting cast profiles are in the card once, outside keyword scans and lore budgets.
     // One entry per character, found by name. Main characters stay on so a few
     // turns of "she" cannot lose them.
     ...looks.map(look => ({ comment: `${look.name} · appearance`, key: [look.name, ...look.aliases], constant: main.has(look.characterId),

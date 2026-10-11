@@ -1,3 +1,5 @@
+import { characterPolishSignature } from '../src/character-polish';
+import { characterIssues } from '../src/character-review';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Window } from 'happy-dom';
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
@@ -53,6 +55,9 @@ function harness(options: { bound?: boolean; personas?: boolean } = {}) {
         else if (message.action === 'start-looks' || message.action === 'reroll-look') { state.looks = { ...state.looks!, job: { id: 'look-job', status: 'running', completed: 0, total: 1, label: 'Designing' }, requestSignature: lookDraftSignature(message.input.draft), ...(message.input.characterId ? { rerolling: message.input.characterId } : {}) }; result = state.looks.job; }
         else if (message.action === 'save-draft') { state.draft = validateDraft(message.input.draft); result = state.draft; }
         else if (message.action === 'create-card') { const persona = message.input.draft.persona; state.saved = { characterId: 'card', worldBookId: 'book', draftId: message.input.draft.id, title: message.input.draft.title, ...(persona?.mode === 'create' ? { personaId: 'made', personaName: persona.name } : {}) }; result = state.saved; }
+        else if (message.action === 'check-character-consistency') result = characterIssues(message.input.draft);
+        else if (message.action === 'start-character-polish') { state.characterPolish = { job: { id: 'polish-job', status: 'running', completed: 0, total: message.input.characterIds.length, label: 'Polishing' }, result: null, requestSignature: characterPolishSignature(message.input.draft), resumeAvailable: false, retryUncertain: false }; result = state.characterPolish.job; }
+        else if (message.action === 'apply-character-polish') { state.draft = state.characterPolish!.result; result = state.draft; }
         else if (message.action === 'switch-persona') result = { personaId: message.input.personaId, name: 'Iona' };
         receive({ type: 'set-points:response', id: message.id, result: structuredClone(result) });
       } catch (error) { receive({ type: 'set-points:response', id: message.id, error: error instanceof Error ? error.message : String(error) }); }
@@ -249,5 +254,33 @@ describe('designing looks in Review', () => {
     expect(app.button('Create image descriptions').disabled).toBe(true);
     await app.finish(pack());
     expect(app.button('Reroll Iona').disabled).toBe(false);
+  });
+});
+
+describe('upgrading an existing draft from Review', () => {
+  test('optional manual notes are free, saved on the old draft, and follow into its automatic persona', async () => {
+    const app = harness({ bound: false }); await tick(); app.choose('Who you play as in Lumiverse', 'create'); await tick();
+    app.input('Motivations at the start · optional', 'Keeps her promises.'); app.input('Behavior & reactions · optional', 'Answers bluntly when hurried.'); app.input('Speech examples · optional', '“Speak plainly.”');
+    expect(app.field('Persona description').value).toContain('Keeps her promises.'); app.button('Save draft').click(); await tick();
+    expect(app.sent('save-draft')[0].draft.cast[0].notes).toMatchObject({ motivations: 'Keeps her promises.', voiceExamples: ['“Speak plainly.”'] });
+    expect(app.sent('start-import')).toHaveLength(0); expect(app.sent('start-character-polish')).toHaveLength(0);
+  });
+  test('free checks locate conflicting fields and expire when the draft changes', async () => {
+    const app = harness(); await tick(); app.input('Voice & manner', '{{char}} speaks in orders.');
+    app.button('Check character consistency').click(); await tick(); expect(app.root.textContent).toContain('narrator card here');
+    app.button('Open character issue').click(); expect(app.field('Voice & manner').closest('details')!.open).toBe(true);
+    app.input('Voice & manner', 'Iona speaks in orders.'); expect(app.root.textContent).toContain('Run the free checks again'); expect(app.sent('start-character-polish')).toHaveLength(0);
+  });
+  test('requires selected characters, previews notes, preserves edits, and applies explicitly', async () => {
+    const app = harness({ bound: false }); await tick(); app.button('Polish selected characters').click(); await tick(); expect(app.status()).toContain('Select the characters'); expect(app.sent('start-character-polish')).toHaveLength(0);
+    const check = app.root.querySelector('input[id$="polish-captain"]') as unknown as HTMLInputElement; check.checked = true;
+    app.button('Polish selected characters').click(); await tick(); const requested = app.sent('start-character-polish')[0];
+    expect(requested.characterIds).toEqual(['captain']); expect(requested.sourceText).toBeUndefined(); expect(requested.maxOutputTokens).toBe(8000); expect(app.button('Polish selected characters').disabled).toBe(true);
+    const result = structuredClone(requested.draft) as StoryDraft; result.cast[0].notes = { motivations: 'Keeps promises.', reactions: '', voiceExamples: ['“Keep your word.”'], cautions: [] };
+    app.state.characterPolish = { ...app.state.characterPolish!, result, job: { ...app.state.characterPolish!.job!, status: 'complete', completed: 1 } }; await app.changed();
+    expect(app.field('Motivations at the start · optional').value).toBe(''); expect(app.root.textContent).toContain('Keep your word.'); expect(app.button('Apply character notes').hidden).toBe(false);
+    app.input('Premise', 'My newer premise.'); expect(app.button('Apply character notes').hidden).toBe(true); expect(app.sent('apply-character-polish')).toHaveLength(0);
+    app.input('Premise', requested.draft.premise); app.button('Apply character notes').click(); await tick();
+    expect(app.sent('apply-character-polish')).toHaveLength(1); expect(app.field('Motivations at the start · optional').value).toBe('Keeps promises.'); expect(app.sent('start-import')).toHaveLength(0);
   });
 });

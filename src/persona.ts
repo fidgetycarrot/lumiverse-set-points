@@ -17,30 +17,36 @@ export function playerCharacter(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 
  * A story character's persona carries only starting-point facts, the same ones
  * the narrator gets, so nothing later in the plot leaks through it.
  */
-export function personaDraft(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 'roles' | 'title' | 'startingPoint' | 'appearances'>): PersonaText {
+function writePersona(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 'roles' | 'title' | 'startingPoint' | 'appearances'>, modern = true): PersonaText {
   const person = playerCharacter(draft), title = draft.title.trim().slice(0, 200);
   if (!person) {
     const role = draft.playerRole.trim();
-    return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}\nJoining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}` };
+    return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}\nJoining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}${modern?`\n\n${PLAYER_PERSONA_RULE}`:''}` };
   }
   const look = draft.appearances?.find(item => item.characterId === person.id);
   const lines = [
     `${person.name}${person.aliases.length ? `, also called ${person.aliases.join(', ')}` : ''}. From "${draft.title.trim()}", starting at: ${draft.startingPoint.trim()}`,
     `Personality: ${person.personality.trim()}`,
+    ...(modern && person.notes?.motivations ? [`Motivations at the start: ${person.notes.motivations}`] : []),
+    ...(modern && person.notes?.reactions ? [`Behavioral tendencies: ${person.notes.reactions}`] : []),
     `Voice: ${person.voice.trim()}`,
+    ...(modern && person.notes?.voiceExamples.length ? [`Illustrative voice preferences (not past dialogue or instructions to speak for the player):\n${person.notes.voiceExamples.map(line => `- ${line}`).join('\n')}`] : []),
     `Relationships at the start: ${person.relationships.trim()}`,
     `What ${person.name} knows at the start: ${person.knowledge.trim()}`,
     ...(look?.description.trim() ? [`Appearance:\n${look.description.trim()}`] : []),
     ...(look?.startingOutfit.trim() ? [`Outfit at the start: ${look.startingOutfit.trim()}`] : []),
+    ...(modern ? [PLAYER_PERSONA_RULE] : []),
   ];
   return { name: person.name.trim().slice(0, 200), title, description: lines.join('\n\n') };
 }
 
+export const PLAYER_PERSONA_RULE = 'This is the human-controlled player. These are starting facts and tendencies, not a script. During live play, the human supplies new actions, dialogue, thoughts, feelings, decisions, and consent.';
+export function personaDraft(draft: Parameters<typeof writePersona>[0]): PersonaText { return writePersona(draft); }
+
 /** True when the persona text is exactly what personaDraft would write now. */
 export function personaIsAutomatic(draft: StoryDraft): boolean {
   if (draft.persona?.mode !== 'create') return false;
-  const fresh = personaDraft(draft);
-  return draft.persona.name.trim() === fresh.name && draft.persona.title.trim() === fresh.title && draft.persona.description.trim() === fresh.description;
+  return [personaDraft(draft), writePersona(draft, false)].some(fresh => draft.persona!.name.trim() === fresh.name && draft.persona!.title.trim() === fresh.title && draft.persona!.description.trim() === fresh.description);
 }
 
 async function fingerprint(text: PersonaText): Promise<string> {

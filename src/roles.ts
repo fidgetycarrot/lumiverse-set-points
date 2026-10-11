@@ -94,6 +94,7 @@ export function roleIssues(draft: StoryDraft): RoleIssue[] {
     ...draft.scenes.map(scene=>({fieldKey:`scene:${scene.id}:direction`,sceneId:scene.id,text:scene.direction})),
     ...draft.lore.map(entry=>({fieldKey:`lore:${entry.id}:content`,text:entry.content})),
     ...draft.cast.flatMap(person=>['personality','voice'].map(key=>({fieldKey:`cast:${person.id}:${key}`,text:person[key as 'personality'|'voice']}))),
+    ...draft.cast.flatMap(person=>person.notes?[{fieldKey:`cast:${person.id}:motivations`,text:person.notes.motivations},{fieldKey:`cast:${person.id}:reactions`,text:person.notes.reactions}]:[]),
   ];
   for (const entry of directions) if (roles.narration === 'neutral' && firstPersonRule.test(entry.text) && !forbidsFirst.test(entry.text) || roles.narration === 'character' && forbidsFirst.test(entry.text)) result.push({fieldKey:entry.fieldKey,sceneId:'sceneId' in entry?entry.sceneId:undefined,kind:'viewpoint',message:'This direction may contradict the selected narration style. Review the field and role settings together.'});
   return result;
@@ -101,7 +102,7 @@ export function roleIssues(draft: StoryDraft): RoleIssue[] {
 // A compact edit detector for review acknowledgment, not an authentication token.
 export function roleReviewFingerprint(draft: StoryDraft): string {
   const roles=draft.roles??defaultRoles(draft);
-  const value = JSON.stringify({checker:2,openingStyle:draft.openingStyle??'interactive',id:clean(draft.id),playerRole:clean(draft.playerRole),roles:{...roles,sourceViewpoint:clean(roles.sourceViewpoint)},narratorInstructions:clean(draft.narratorInstructions),cast:draft.cast.map(person=>({id:person.id,name:clean(person.name),aliases:person.aliases.map(clean),personality:clean(person.personality),voice:clean(person.voice)})),lore:draft.lore.map(entry=>({id:entry.id,content:clean(entry.content)})),scenes:draft.scenes.map(scene=>({id:scene.id,greeting:clean(scene.greeting),direction:clean(scene.direction),assumptions:scene.assumptions.map(clean)}))});
+  const value = JSON.stringify({checker:2,openingStyle:draft.openingStyle??'interactive',id:clean(draft.id),playerRole:clean(draft.playerRole),roles:{...roles,sourceViewpoint:clean(roles.sourceViewpoint)},narratorInstructions:clean(draft.narratorInstructions),cast:draft.cast.map(person=>({id:person.id,name:clean(person.name),aliases:person.aliases.map(clean),personality:clean(person.personality),voice:clean(person.voice),...(person.notes?{notes:person.notes}:{})})),lore:draft.lore.map(entry=>({id:entry.id,content:clean(entry.content)})),scenes:draft.scenes.map(scene=>({id:scene.id,greeting:clean(scene.greeting),direction:clean(scene.direction),assumptions:scene.assumptions.map(clean)}))});
   let hash = 14695981039346656037n;
   for (let i=0;i<value.length;i++) { hash ^= BigInt(value.charCodeAt(i)); hash = BigInt.asUintN(64,hash*1099511628211n); }
   return `${value.length}:${hash.toString(16).padStart(16,'0')}`;

@@ -1,27 +1,3 @@
-// src/types.ts
-var VERSION = "0.1.12";
-var DEMO_STORY = `The Lighthouse Letter
-
-Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
-
-At the harbor, Iona tells Mara that Elias left a sealed letter in the old chart room. Iona is wary of outsiders, but admits she is worried. A storm will reach Greyhaven at midnight. Mara can ask Iona for help or investigate alone.
-
-The chart room contains a letter from Elias: the lighthouse lens was deliberately damaged, and he has gone to the north cove to find a replacement. He asks for a lantern signal if the boat should return. The letter is the first evidence that Elias left willingly.
-
-At the north cove, Elias waits beside a stranded boat. He has the lens, but the tide has blocked the footpath. Iona knows a sea route back. The group must decide how to carry the fragile lens home.
-
-At the lighthouse, the storm arrives. The replacement lens can restore the beacon. Whether Mara repairs it, asks for help, or finds another solution remains her choice.`;
-
-// src/styles.ts
-var styles = `
-.sp-app{--sp-bg:var(--lumiverse-bg,#181b20);--sp-card:var(--lumiverse-bg-secondary,#20242a);--sp-ink:var(--lumiverse-text,#eeeae2);--sp-muted:var(--lumiverse-text-muted,#a4a6ab);--sp-line:color-mix(in srgb,var(--sp-ink) 14%,transparent);--sp-accent:#e9b968;--sp-accent-ink:#211a10;--sp-radius:12px;color:var(--sp-ink);background:var(--sp-bg);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100%;padding:26px 24px 36px;box-sizing:border-box;color-scheme:dark;container-type:inline-size;overflow-wrap:anywhere}
-.sp-app *, .sp-app *:before,.sp-app *:after{box-sizing:border-box}.sp-app [hidden]{display:none!important}.sp-app h1,.sp-app h2,.sp-app h3,.sp-app p{margin:0}.sp-app h1{font:normal 38px/1.15 Georgia,"Times New Roman",serif;letter-spacing:-1.5px}.sp-app h2{font:normal 25px/1.25 Georgia,"Times New Roman",serif;letter-spacing:-.4px}.sp-app h3{font-size:15px;font-weight:650}.sp-app button,.sp-app input,.sp-app textarea,.sp-app select{font:inherit}.sp-app button{cursor:pointer}.sp-app button:disabled{cursor:not-allowed;opacity:.46}.sp-app button:focus-visible,.sp-app summary:focus-visible,.sp-app input:focus-visible,.sp-app textarea:focus-visible,.sp-app select:focus-visible{outline:2px solid var(--sp-accent);outline-offset:3px}.sp-app input,.sp-app textarea,.sp-app select{width:100%;border:1px solid var(--sp-line);border-radius:8px;background:color-mix(in srgb,var(--sp-bg) 80%,transparent);color:var(--sp-ink);padding:10px 12px;min-width:0}.sp-app textarea{resize:vertical;min-height:90px}.sp-app input::placeholder,.sp-app textarea::placeholder{color:var(--sp-muted);opacity:.7}.sp-app select option{background:var(--sp-card);color:var(--sp-ink)}
-.sp-header{display:flex;align-items:center;gap:15px;margin-bottom:28px}.sp-mark{flex:none;width:44px;height:54px;position:relative;border-left:1px solid var(--sp-accent);transform:skewY(-18deg);margin:0 1px 0 12px}.sp-mark:before,.sp-mark:after{content:"";width:13px;height:13px;border:2px solid var(--sp-accent);border-radius:50%;position:absolute;background:var(--sp-bg);left:-7px}.sp-mark:before{top:0}.sp-mark:after{bottom:0;background:var(--sp-accent)}.sp-mark span{position:absolute;left:0;top:26px;width:35px;border-top:1px solid var(--sp-accent)}.sp-eyebrow{font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;color:var(--sp-accent);margin-bottom:6px!important}.sp-subtitle{font-size:12px;color:var(--sp-muted);margin-top:6px!important}.sp-tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--sp-line);gap:8px;margin-bottom:24px}.sp-tab{background:none;border:0;color:var(--sp-muted);padding:11px 4px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;text-align:left;font-size:13px!important}.sp-tab[aria-selected=true]{border-color:var(--sp-accent);color:var(--sp-ink)}.sp-tab small{color:var(--sp-accent);margin-right:7px;font-size:10px;letter-spacing:1px}.sp-intro{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:20px}.sp-muted{color:var(--sp-muted)}.sp-small{font-size:12px}.sp-intro p{margin-top:7px}.sp-panel{display:flex;flex-direction:column;gap:18px}.sp-card{border:1px solid var(--sp-line);border-radius:var(--sp-radius);padding:18px;background:var(--sp-card)}.sp-collection{border-top:1px solid var(--sp-line);padding-top:15px}.sp-page-list{margin:0;padding-left:20px;max-height:210px;overflow:auto}.sp-page-list li{padding:3px 0 10px}.sp-page-list li>span,.sp-page-list li>a{display:block}.sp-page-list a{color:var(--sp-muted);text-decoration:underline;text-underline-offset:2px;word-break:break-all}.sp-card>h3{margin-bottom:12px}.sp-stack{display:flex;flex-direction:column;gap:14px}.sp-field{display:flex;flex-direction:column;gap:6px}.sp-label{font-size:12px;font-weight:650;letter-spacing:.2px}.sp-hint{font-size:11px;line-height:1.5;color:var(--sp-muted)}.sp-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sp-row.sp-spread{justify-content:space-between}.sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sp-button{border:1px solid var(--sp-line);border-radius:8px;background:transparent;color:var(--sp-ink);padding:9px 13px;font-weight:600;font-size:12px!important;line-height:1.4;display:inline-flex;justify-content:center;align-items:center;gap:8px;white-space:normal}.sp-button:hover:not(:disabled){background:color-mix(in srgb,var(--sp-ink) 7%,transparent)}.sp-button.sp-primary{background:var(--sp-accent);color:var(--sp-accent-ink);border-color:var(--sp-accent)}.sp-button.sp-primary:hover:not(:disabled){filter:brightness(1.07)}.sp-button.sp-text{border:0;color:var(--sp-accent);padding:3px 0;font-weight:500}.sp-button.sp-wide{width:100%;padding:13px}.sp-source{min-height:245px!important;line-height:1.65!important;font:14px/1.7 Georgia,"Times New Roman",serif!important}.sp-separator{height:1px;background:var(--sp-line);margin:2px 0}.sp-details{border:1px solid var(--sp-line);border-radius:10px;background:var(--sp-card);padding:0 15px}.sp-details>summary{cursor:pointer;font-weight:600;font-size:12px;padding:14px 0;list-style-position:inside}.sp-details[open]>summary{border-bottom:1px solid var(--sp-line);margin-bottom:15px}.sp-details>.sp-stack{padding-bottom:16px}.sp-details .sp-hint{font-weight:400}.sp-status{font-size:12px;line-height:1.5;padding:11px 13px;background:color-mix(in srgb,var(--sp-accent) 9%,var(--sp-bg));border:1px solid color-mix(in srgb,var(--sp-accent) 24%,transparent);border-radius:8px;margin-bottom:17px}.sp-status[data-kind=error]{border-color:#c6786c;color:#efa99e;background:color-mix(in srgb,#c6786c 8%,var(--sp-bg))}.sp-status:empty{display:none}.sp-progress{display:flex;flex-direction:column;gap:9px;border:1px solid var(--sp-line);padding:16px;border-radius:10px}.sp-progress progress{width:100%;height:6px;accent-color:var(--sp-accent);border:0}.sp-empty{padding:32px 22px;border:1px dashed var(--sp-line);border-radius:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}.sp-empty p{max-width:320px}.sp-tag{display:inline-block;padding:4px 8px;border-radius:5px;background:color-mix(in srgb,var(--sp-accent) 10%,transparent);color:var(--sp-accent);font-size:10px;font-weight:650;letter-spacing:1px;text-transform:uppercase}.sp-counts{display:flex;gap:20px;border-top:1px solid var(--sp-line);border-bottom:1px solid var(--sp-line);padding:13px 0;margin-top:17px}.sp-counts strong{display:block;font:normal 24px Georgia,serif;color:var(--sp-ink)}.sp-counts span{font-size:11px;color:var(--sp-muted)}.sp-section-label{font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--sp-muted);font-weight:700;padding-top:4px}.sp-review-group{display:flex;flex-direction:column;gap:9px}.sp-scene-num{font-variant-numeric:tabular-nums;color:var(--sp-accent);font-size:11px;margin-right:8px}.sp-notice{border-left:2px solid var(--sp-accent);padding:3px 0 3px 13px;font-size:12px;color:var(--sp-muted)}.sp-footnote{font-size:11px;color:var(--sp-muted);line-height:1.6}.sp-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--sp-line);display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--sp-muted);font-size:10px;letter-spacing:.4px}.sp-footer button{font-size:10px!important}.sp-preview{white-space:pre-wrap;font:15px/1.8 Georgia,"Times New Roman",serif;max-height:280px;overflow:auto;padding-right:4px}.sp-stage-title{font:normal 25px/1.3 Georgia,serif;margin-top:9px!important;margin-bottom:12px!important}.sp-switch{display:flex;align-items:center;justify-content:space-between;gap:20px}.sp-switch input{width:36px;height:20px;accent-color:var(--sp-accent);flex:none}.sp-play-track{display:flex;gap:5px;margin:17px 0 7px}.sp-play-track span{height:3px;flex:1;border-radius:2px;background:var(--sp-line)}.sp-play-track span[data-done=true]{background:var(--sp-accent)}.sp-saved{border:1px solid color-mix(in srgb,var(--sp-accent) 40%,transparent);border-radius:10px;padding:15px;background:color-mix(in srgb,var(--sp-accent) 5%,transparent)}.sp-saved code{font-size:10px;word-break:break-all}.sp-inline-code{font:11px/1.6 ui-monospace,monospace;white-space:pre-wrap}.sp-app .sp-no-margin{margin:0}
-.sp-look{display:grid;grid-template-columns:minmax(84px,max-content) 1fr;gap:9px 14px;margin:0}.sp-look dt{padding-top:2px}.sp-look dd{margin:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0}.sp-look dd>p{flex-basis:100%}.sp-basis{display:inline-block;font-size:10px;font-weight:650;letter-spacing:.3px;line-height:1.5;padding:1px 7px;border-radius:999px;border:1px solid var(--sp-line);color:var(--sp-muted);white-space:nowrap;margin-right:6px}.sp-basis[data-basis=story]{border-color:var(--sp-accent);color:var(--sp-accent)}.sp-basis[data-basis=implied]{border-style:dashed;border-color:var(--sp-accent);color:var(--sp-ink)}
-@media(prefers-color-scheme:light){.sp-app{--sp-bg:var(--lumiverse-bg,#faf8f3);--sp-card:var(--lumiverse-bg-secondary,#fffdf8);--sp-ink:var(--lumiverse-text,#28251f);--sp-muted:var(--lumiverse-text-muted,#746e62);--sp-accent:#996219;--sp-accent-ink:#fff9ed;color-scheme:light}.sp-status[data-kind=error]{color:#a43f33}}
-@container(max-width:380px){.sp-look{grid-template-columns:1fr;gap:2px 0}.sp-look dd{margin-bottom:8px}.sp-grid{grid-template-columns:1fr}.sp-intro{flex-wrap:wrap}.sp-counts{gap:14px}.sp-header{gap:10px}.sp-app h1{font-size:33px}.sp-tab small{margin-right:4px}.sp-button{padding:9px 10px}}
-`;
-
 // src/roles.ts
 var escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 var clean = (text) => text.trim();
@@ -107,7 +83,8 @@ function roleIssues(draft) {
     { fieldKey: "narratorInstructions", text: draft.narratorInstructions },
     ...draft.scenes.map((scene) => ({ fieldKey: `scene:${scene.id}:direction`, sceneId: scene.id, text: scene.direction })),
     ...draft.lore.map((entry) => ({ fieldKey: `lore:${entry.id}:content`, text: entry.content })),
-    ...draft.cast.flatMap((person) => ["personality", "voice"].map((key) => ({ fieldKey: `cast:${person.id}:${key}`, text: person[key] })))
+    ...draft.cast.flatMap((person) => ["personality", "voice"].map((key) => ({ fieldKey: `cast:${person.id}:${key}`, text: person[key] }))),
+    ...draft.cast.flatMap((person) => person.notes ? [{ fieldKey: `cast:${person.id}:motivations`, text: person.notes.motivations }, { fieldKey: `cast:${person.id}:reactions`, text: person.notes.reactions }] : [])
   ];
   for (const entry of directions)
     if (roles.narration === "neutral" && firstPersonRule.test(entry.text) && !forbidsFirst.test(entry.text) || roles.narration === "character" && forbidsFirst.test(entry.text))
@@ -116,7 +93,7 @@ function roleIssues(draft) {
 }
 function roleReviewFingerprint(draft) {
   const roles = draft.roles ?? defaultRoles(draft);
-  const value = JSON.stringify({ checker: 2, openingStyle: draft.openingStyle ?? "interactive", id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice) })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
+  const value = JSON.stringify({ checker: 2, openingStyle: draft.openingStyle ?? "interactive", id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice), ...person.notes ? { notes: person.notes } : {} })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
   let hash = 14695981039346656037n;
   for (let i = 0;i < value.length; i++) {
     hash ^= BigInt(value.charCodeAt(i));
@@ -128,6 +105,20 @@ function requireRoleReview(draft) {
   if (roleIssues(draft).length && draft.roleReview !== roleReviewFingerprint(draft))
     throw new Error("Review the player and viewpoint checks in Review before saving to Lumiverse. Correct the flagged fields or explicitly mark the current checks reviewed. No model request was made.");
 }
+
+// src/types.ts
+var VERSION = "0.1.13";
+var DEMO_STORY = `The Lighthouse Letter
+
+Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
+
+At the harbor, Iona tells Mara that Elias left a sealed letter in the old chart room. Iona is wary of outsiders, but admits she is worried. A storm will reach Greyhaven at midnight. Mara can ask Iona for help or investigate alone.
+
+The chart room contains a letter from Elias: the lighthouse lens was deliberately damaged, and he has gone to the north cove to find a replacement. He asks for a lantern signal if the boat should return. The letter is the first evidence that Elias left willingly.
+
+At the north cove, Elias waits beside a stranded boat. He has the lens, but the tide has blocked the footpath. Iona knows a sea route back. The group must decide how to carry the fragile lens home.
+
+At the lighthouse, the storm arrives. The replacement lens can restore the beacon. Whether Mara repairs it, asks for help, or finds another solution remains her choice.`;
 
 // src/importer.ts
 var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
@@ -220,7 +211,8 @@ function validateDraft(value) {
   const allowed = new Set(Array.from({ length: chunks }, (_, i) => `chunk:${i + 1}`));
   const cast = list(draft.cast, "cast", 64).map((value, i) => {
     const person = object(value, `cast[${i}]`), p = `cast[${i}]`;
-    return { id: identifier(person.id, `${p}.id`), name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 4000), voice: safeText(person.voice, `${p}.voice`, 2000), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledge: safeText(person.knowledge, `${p}.knowledge`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
+    const notes = person.notes === undefined ? undefined : object(person.notes, `${p}.notes`);
+    return { id: identifier(person.id, `${p}.id`), name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 4000), voice: safeText(person.voice, `${p}.voice`, 2000), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledge: safeText(person.knowledge, `${p}.knowledge`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed), ...notes ? { notes: { motivations: safeText(notes.motivations, `${p}.notes.motivations`, 800, true), reactions: safeText(notes.reactions, `${p}.notes.reactions`, 1200, true), voiceExamples: texts(notes.voiceExamples, `${p}.notes.voiceExamples`, 3, 240), cautions: texts(notes.cautions, `${p}.notes.cautions`, 6, 300), ...notes.evidence !== undefined ? { evidence: texts(notes.evidence, `${p}.notes.evidence`, 24, 1500) } : {} } } : {} };
   });
   const lore = list(draft.lore, "lore", 96).map((value, i) => {
     const entry = object(value, `lore[${i}]`), p = `lore[${i}]`;
@@ -293,6 +285,67 @@ function validateDraft(value) {
     createdAt: number(draft.createdAt, "createdAt", 0, Number.MAX_SAFE_INTEGER)
   };
 }
+
+// src/persona.ts
+function playerCharacter(draft) {
+  const id = (draft.roles ?? defaultRoles(draft)).playerCharacterId;
+  return draft.cast.find((person) => person.id === id);
+}
+function writePersona(draft, modern = true) {
+  const person = playerCharacter(draft), title = draft.title.trim().slice(0, 200);
+  if (!person) {
+    const role = draft.playerRole.trim();
+    return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}
+Joining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}${modern ? `
+
+${PLAYER_PERSONA_RULE}` : ""}` };
+  }
+  const look = draft.appearances?.find((item) => item.characterId === person.id);
+  const lines = [
+    `${person.name}${person.aliases.length ? `, also called ${person.aliases.join(", ")}` : ""}. From "${draft.title.trim()}", starting at: ${draft.startingPoint.trim()}`,
+    `Personality: ${person.personality.trim()}`,
+    ...modern && person.notes?.motivations ? [`Motivations at the start: ${person.notes.motivations}`] : [],
+    ...modern && person.notes?.reactions ? [`Behavioral tendencies: ${person.notes.reactions}`] : [],
+    `Voice: ${person.voice.trim()}`,
+    ...modern && person.notes?.voiceExamples.length ? [`Illustrative voice preferences (not past dialogue or instructions to speak for the player):
+${person.notes.voiceExamples.map((line) => `- ${line}`).join(`
+`)}`] : [],
+    `Relationships at the start: ${person.relationships.trim()}`,
+    `What ${person.name} knows at the start: ${person.knowledge.trim()}`,
+    ...look?.description.trim() ? [`Appearance:
+${look.description.trim()}`] : [],
+    ...look?.startingOutfit.trim() ? [`Outfit at the start: ${look.startingOutfit.trim()}`] : [],
+    ...modern ? [PLAYER_PERSONA_RULE] : []
+  ];
+  return { name: person.name.trim().slice(0, 200), title, description: lines.join(`
+
+`) };
+}
+var PLAYER_PERSONA_RULE = "This is the human-controlled player. These are starting facts and tendencies, not a script. During live play, the human supplies new actions, dialogue, thoughts, feelings, decisions, and consent.";
+function personaDraft(draft) {
+  return writePersona(draft);
+}
+function personaIsAutomatic(draft) {
+  if (draft.persona?.mode !== "create")
+    return false;
+  return [personaDraft(draft), writePersona(draft, false)].some((fresh) => draft.persona.name.trim() === fresh.name && draft.persona.title.trim() === fresh.title && draft.persona.description.trim() === fresh.description);
+}
+
+// src/character-polish.ts
+function characterPolishSignature(draft) {
+  const { roleReview: _review, ...input } = validateDraft(draft);
+  return JSON.stringify(input);
+}
+
+// src/styles.ts
+var styles = `
+.sp-app{--sp-bg:var(--lumiverse-bg,#181b20);--sp-card:var(--lumiverse-bg-secondary,#20242a);--sp-ink:var(--lumiverse-text,#eeeae2);--sp-muted:var(--lumiverse-text-muted,#a4a6ab);--sp-line:color-mix(in srgb,var(--sp-ink) 14%,transparent);--sp-accent:#e9b968;--sp-accent-ink:#211a10;--sp-radius:12px;color:var(--sp-ink);background:var(--sp-bg);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100%;padding:26px 24px 36px;box-sizing:border-box;color-scheme:dark;container-type:inline-size;overflow-wrap:anywhere}
+.sp-app *, .sp-app *:before,.sp-app *:after{box-sizing:border-box}.sp-app [hidden]{display:none!important}.sp-app h1,.sp-app h2,.sp-app h3,.sp-app p{margin:0}.sp-app h1{font:normal 38px/1.15 Georgia,"Times New Roman",serif;letter-spacing:-1.5px}.sp-app h2{font:normal 25px/1.25 Georgia,"Times New Roman",serif;letter-spacing:-.4px}.sp-app h3{font-size:15px;font-weight:650}.sp-app button,.sp-app input,.sp-app textarea,.sp-app select{font:inherit}.sp-app button{cursor:pointer}.sp-app button:disabled{cursor:not-allowed;opacity:.46}.sp-app button:focus-visible,.sp-app summary:focus-visible,.sp-app input:focus-visible,.sp-app textarea:focus-visible,.sp-app select:focus-visible{outline:2px solid var(--sp-accent);outline-offset:3px}.sp-app input,.sp-app textarea,.sp-app select{width:100%;border:1px solid var(--sp-line);border-radius:8px;background:color-mix(in srgb,var(--sp-bg) 80%,transparent);color:var(--sp-ink);padding:10px 12px;min-width:0}.sp-app textarea{resize:vertical;min-height:90px}.sp-app input::placeholder,.sp-app textarea::placeholder{color:var(--sp-muted);opacity:.7}.sp-app select option{background:var(--sp-card);color:var(--sp-ink)}
+.sp-header{display:flex;align-items:center;gap:15px;margin-bottom:28px}.sp-mark{flex:none;width:44px;height:54px;position:relative;border-left:1px solid var(--sp-accent);transform:skewY(-18deg);margin:0 1px 0 12px}.sp-mark:before,.sp-mark:after{content:"";width:13px;height:13px;border:2px solid var(--sp-accent);border-radius:50%;position:absolute;background:var(--sp-bg);left:-7px}.sp-mark:before{top:0}.sp-mark:after{bottom:0;background:var(--sp-accent)}.sp-mark span{position:absolute;left:0;top:26px;width:35px;border-top:1px solid var(--sp-accent)}.sp-eyebrow{font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;color:var(--sp-accent);margin-bottom:6px!important}.sp-subtitle{font-size:12px;color:var(--sp-muted);margin-top:6px!important}.sp-tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--sp-line);gap:8px;margin-bottom:24px}.sp-tab{background:none;border:0;color:var(--sp-muted);padding:11px 4px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;text-align:left;font-size:13px!important}.sp-tab[aria-selected=true]{border-color:var(--sp-accent);color:var(--sp-ink)}.sp-tab small{color:var(--sp-accent);margin-right:7px;font-size:10px;letter-spacing:1px}.sp-intro{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:20px}.sp-muted{color:var(--sp-muted)}.sp-small{font-size:12px}.sp-intro p{margin-top:7px}.sp-panel{display:flex;flex-direction:column;gap:18px}.sp-card{border:1px solid var(--sp-line);border-radius:var(--sp-radius);padding:18px;background:var(--sp-card)}.sp-collection{border-top:1px solid var(--sp-line);padding-top:15px}.sp-page-list{margin:0;padding-left:20px;max-height:210px;overflow:auto}.sp-page-list li{padding:3px 0 10px}.sp-page-list li>span,.sp-page-list li>a{display:block}.sp-page-list a{color:var(--sp-muted);text-decoration:underline;text-underline-offset:2px;word-break:break-all}.sp-card>h3{margin-bottom:12px}.sp-stack{display:flex;flex-direction:column;gap:14px}.sp-field{display:flex;flex-direction:column;gap:6px}.sp-label{font-size:12px;font-weight:650;letter-spacing:.2px}.sp-hint{font-size:11px;line-height:1.5;color:var(--sp-muted)}.sp-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sp-row.sp-spread{justify-content:space-between}.sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sp-button{border:1px solid var(--sp-line);border-radius:8px;background:transparent;color:var(--sp-ink);padding:9px 13px;font-weight:600;font-size:12px!important;line-height:1.4;display:inline-flex;justify-content:center;align-items:center;gap:8px;white-space:normal}.sp-button:hover:not(:disabled){background:color-mix(in srgb,var(--sp-ink) 7%,transparent)}.sp-button.sp-primary{background:var(--sp-accent);color:var(--sp-accent-ink);border-color:var(--sp-accent)}.sp-button.sp-primary:hover:not(:disabled){filter:brightness(1.07)}.sp-button.sp-text{border:0;color:var(--sp-accent);padding:3px 0;font-weight:500}.sp-button.sp-wide{width:100%;padding:13px}.sp-source{min-height:245px!important;line-height:1.65!important;font:14px/1.7 Georgia,"Times New Roman",serif!important}.sp-separator{height:1px;background:var(--sp-line);margin:2px 0}.sp-details{border:1px solid var(--sp-line);border-radius:10px;background:var(--sp-card);padding:0 15px}.sp-details>summary{cursor:pointer;font-weight:600;font-size:12px;padding:14px 0;list-style-position:inside}.sp-details[open]>summary{border-bottom:1px solid var(--sp-line);margin-bottom:15px}.sp-details>.sp-stack{padding-bottom:16px}.sp-details .sp-hint{font-weight:400}.sp-status{font-size:12px;line-height:1.5;padding:11px 13px;background:color-mix(in srgb,var(--sp-accent) 9%,var(--sp-bg));border:1px solid color-mix(in srgb,var(--sp-accent) 24%,transparent);border-radius:8px;margin-bottom:17px}.sp-status[data-kind=error]{border-color:#c6786c;color:#efa99e;background:color-mix(in srgb,#c6786c 8%,var(--sp-bg))}.sp-status:empty{display:none}.sp-progress{display:flex;flex-direction:column;gap:9px;border:1px solid var(--sp-line);padding:16px;border-radius:10px}.sp-progress progress{width:100%;height:6px;accent-color:var(--sp-accent);border:0}.sp-empty{padding:32px 22px;border:1px dashed var(--sp-line);border-radius:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}.sp-empty p{max-width:320px}.sp-tag{display:inline-block;padding:4px 8px;border-radius:5px;background:color-mix(in srgb,var(--sp-accent) 10%,transparent);color:var(--sp-accent);font-size:10px;font-weight:650;letter-spacing:1px;text-transform:uppercase}.sp-counts{display:flex;gap:20px;border-top:1px solid var(--sp-line);border-bottom:1px solid var(--sp-line);padding:13px 0;margin-top:17px}.sp-counts strong{display:block;font:normal 24px Georgia,serif;color:var(--sp-ink)}.sp-counts span{font-size:11px;color:var(--sp-muted)}.sp-section-label{font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--sp-muted);font-weight:700;padding-top:4px}.sp-review-group{display:flex;flex-direction:column;gap:9px}.sp-scene-num{font-variant-numeric:tabular-nums;color:var(--sp-accent);font-size:11px;margin-right:8px}.sp-notice{border-left:2px solid var(--sp-accent);padding:3px 0 3px 13px;font-size:12px;color:var(--sp-muted)}.sp-footnote{font-size:11px;color:var(--sp-muted);line-height:1.6}.sp-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--sp-line);display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--sp-muted);font-size:10px;letter-spacing:.4px}.sp-footer button{font-size:10px!important}.sp-preview{white-space:pre-wrap;font:15px/1.8 Georgia,"Times New Roman",serif;max-height:280px;overflow:auto;padding-right:4px}.sp-stage-title{font:normal 25px/1.3 Georgia,serif;margin-top:9px!important;margin-bottom:12px!important}.sp-switch{display:flex;align-items:center;justify-content:space-between;gap:20px}.sp-switch input{width:36px;height:20px;accent-color:var(--sp-accent);flex:none}.sp-play-track{display:flex;gap:5px;margin:17px 0 7px}.sp-play-track span{height:3px;flex:1;border-radius:2px;background:var(--sp-line)}.sp-play-track span[data-done=true]{background:var(--sp-accent)}.sp-saved{border:1px solid color-mix(in srgb,var(--sp-accent) 40%,transparent);border-radius:10px;padding:15px;background:color-mix(in srgb,var(--sp-accent) 5%,transparent)}.sp-saved code{font-size:10px;word-break:break-all}.sp-inline-code{font:11px/1.6 ui-monospace,monospace;white-space:pre-wrap}.sp-app .sp-no-margin{margin:0}
+.sp-look{display:grid;grid-template-columns:minmax(84px,max-content) 1fr;gap:9px 14px;margin:0}.sp-look dt{padding-top:2px}.sp-look dd{margin:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0}.sp-look dd>p{flex-basis:100%}.sp-basis{display:inline-block;font-size:10px;font-weight:650;letter-spacing:.3px;line-height:1.5;padding:1px 7px;border-radius:999px;border:1px solid var(--sp-line);color:var(--sp-muted);white-space:nowrap;margin-right:6px}.sp-basis[data-basis=story]{border-color:var(--sp-accent);color:var(--sp-accent)}.sp-basis[data-basis=implied]{border-style:dashed;border-color:var(--sp-accent);color:var(--sp-ink)}
+@media(prefers-color-scheme:light){.sp-app{--sp-bg:var(--lumiverse-bg,#faf8f3);--sp-card:var(--lumiverse-bg-secondary,#fffdf8);--sp-ink:var(--lumiverse-text,#28251f);--sp-muted:var(--lumiverse-text-muted,#746e62);--sp-accent:#996219;--sp-accent-ink:#fff9ed;color-scheme:light}.sp-status[data-kind=error]{color:#a43f33}}
+@container(max-width:380px){.sp-look{grid-template-columns:1fr;gap:2px 0}.sp-look dd{margin-bottom:8px}.sp-grid{grid-template-columns:1fr}.sp-intro{flex-wrap:wrap}.sp-counts{gap:14px}.sp-header{gap:10px}.sp-app h1{font-size:33px}.sp-tab small{margin-right:4px}.sp-button{padding:9px 10px}}
+`;
 
 // src/scene-repair.ts
 function repairSignature(draft) {
@@ -586,40 +639,6 @@ function useLooks(draft, looks) {
   return draft;
 }
 
-// src/persona.ts
-function playerCharacter(draft) {
-  const id = (draft.roles ?? defaultRoles(draft)).playerCharacterId;
-  return draft.cast.find((person) => person.id === id);
-}
-function personaDraft(draft) {
-  const person = playerCharacter(draft), title = draft.title.trim().slice(0, 200);
-  if (!person) {
-    const role = draft.playerRole.trim();
-    return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}
-Joining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}` };
-  }
-  const look = draft.appearances?.find((item) => item.characterId === person.id);
-  const lines = [
-    `${person.name}${person.aliases.length ? `, also called ${person.aliases.join(", ")}` : ""}. From "${draft.title.trim()}", starting at: ${draft.startingPoint.trim()}`,
-    `Personality: ${person.personality.trim()}`,
-    `Voice: ${person.voice.trim()}`,
-    `Relationships at the start: ${person.relationships.trim()}`,
-    `What ${person.name} knows at the start: ${person.knowledge.trim()}`,
-    ...look?.description.trim() ? [`Appearance:
-${look.description.trim()}`] : [],
-    ...look?.startingOutfit.trim() ? [`Outfit at the start: ${look.startingOutfit.trim()}`] : []
-  ];
-  return { name: person.name.trim().slice(0, 200), title, description: lines.join(`
-
-`) };
-}
-function personaIsAutomatic(draft) {
-  if (draft.persona?.mode !== "create")
-    return false;
-  const fresh = personaDraft(draft);
-  return draft.persona.name.trim() === fresh.name && draft.persona.title.trim() === fresh.title && draft.persona.description.trim() === fresh.description;
-}
-
 // src/frontend.ts
 var MAX_SOURCE = 500000;
 var MAX_DRAFT = 192000;
@@ -735,6 +754,9 @@ function setup(ctx) {
   let connectionChecking = false;
   let visualsStarting = false;
   let looksStarting = false;
+  let characterPolishStarting = false;
+  let renderCharacterPolishStatus = () => {};
+  const characterPolishBusy = () => characterPolishStarting || snapshot?.characterPolish?.job?.status === "running";
   let repairStarting = false;
   let renderRepairStatus = () => {};
   const repairBusy = () => repairStarting || snapshot?.repairs?.job?.status === "running";
@@ -832,6 +854,8 @@ function setup(ctx) {
       if (control && !destroyed) {
         control.disabled = false;
         syncImportControls();
+        renderCharacterPolishStatus();
+        renderRepairStatus();
       }
     }
   }
@@ -1103,7 +1127,7 @@ function setup(ctx) {
     }
   }
   function syncImportControls() {
-    const busy = repairBusy() || loadingPages || adaptationStarting || connectionChecking || visualsBusy() || looksBusy() || snapshot?.job?.status === "running";
+    const busy = characterPolishBusy() || repairBusy() || loadingPages || adaptationStarting || connectionChecking || visualsBusy() || looksBusy() || snapshot?.job?.status === "running";
     checkConnectionButton.disabled = !!busy || !connection.value;
     connection.disabled = connectionChecking;
     resumeButton.disabled = !!busy || !snapshot?.resume?.available;
@@ -1299,7 +1323,7 @@ function setup(ctx) {
       progress.max = Math.max(1, job.total);
       progress.value = Math.min(job.completed, progress.max);
     }
-    const anyRunning = repairBusy() || running || snapshot?.visuals?.job?.status === "running" || snapshot?.looks?.job?.status === "running";
+    const anyRunning = characterPolishBusy() || repairBusy() || running || snapshot?.visuals?.job?.status === "running" || snapshot?.looks?.job?.status === "running";
     if (anyRunning && !polling)
       polling = setInterval(() => {
         refresh();
@@ -1506,7 +1530,7 @@ function setup(ctx) {
     return visualsStarting || snapshot?.visuals?.job?.status === "running";
   }
   function otherWorkBusy() {
-    return repairBusy() || loadingPages || adaptationStarting || connectionChecking || looksBusy() || snapshot?.job?.status === "running";
+    return characterPolishBusy() || repairBusy() || loadingPages || adaptationStarting || connectionChecking || looksBusy() || snapshot?.job?.status === "running";
   }
   function syncVisualControls() {
     const busy = !!(otherWorkBusy() || visualsBusy());
@@ -1847,7 +1871,7 @@ function setup(ctx) {
     return looksStarting || snapshot?.looks?.job?.status === "running";
   }
   function lookBlocked() {
-    return !!(repairBusy() || loadingPages || adaptationStarting || connectionChecking || visualsBusy() || looksBusy() || snapshot?.job?.status === "running");
+    return !!(characterPolishBusy() || repairBusy() || loadingPages || adaptationStarting || connectionChecking || visualsBusy() || looksBusy() || snapshot?.job?.status === "running");
   }
   function syncLookControls() {
     const busy = lookBlocked();
@@ -2129,6 +2153,7 @@ function setup(ctx) {
     panelNonce++;
     approvedControls.clear();
     renderRepairStatus = () => {};
+    renderCharacterPolishStatus = () => {};
     if (!draft) {
       const top = intro("Meet your adaptation", "A little preparation makes room for a better story.");
       top.append(row(openDraftButton, pasteDraftButton));
@@ -2145,12 +2170,15 @@ function setup(ctx) {
     top.append(group(dirtyTag, row(openDraftButton, pasteDraftButton)));
     panel.append(top);
     let updateRoleReview = () => {};
+    let invalidateCharacterChecks = () => {};
     const markDirty = () => {
       draftDirty = true;
       dirtyTag.textContent = "Unsaved edits";
       renderVisuals();
       updateRoleReview();
       renderRepairStatus();
+      renderCharacterPolishStatus();
+      invalidateCharacterChecks();
     };
     const reviewFields = new Map;
     let showPersona = () => {};
@@ -2314,6 +2342,25 @@ function setup(ctx) {
         person.name = v;
         entry.summary.textContent = v;
       }, false, undefined, `cast:${person.id}:name`), edit("Also known as", person.aliases.join(", "), (v) => person.aliases = v.split(",").map((x) => x.trim()).filter(Boolean), false, undefined, `cast:${person.id}:aliases`), edit("Personality", person.personality, (v) => person.personality = v, true, undefined, `cast:${person.id}:personality`), edit("Voice & manner", person.voice, (v) => person.voice = v, true, undefined, `cast:${person.id}:voice`), edit("Relationships at the start", person.relationships, (v) => person.relationships = v, true, undefined, `cast:${person.id}:relationships`), edit("Knowledge at the start", person.knowledge, (v) => person.knowledge = v, true, undefined, `cast:${person.id}:knowledge`));
+      const note = (key, value) => {
+        person.notes ??= { motivations: "", reactions: "", voiceExamples: [], cautions: [] };
+        if (key === "voiceExamples")
+          person.notes.voiceExamples = value.split(`
+`).map((line) => line.trim()).filter(Boolean);
+        else
+          person.notes[key] = value;
+      };
+      entry.body.append(edit("Motivations at the start · optional", person.notes?.motivations ?? "", (value) => note("motivations", value), true, "Why this person behaves this way. Leave unknown motives blank; add only source facts or deliberate choices of your own.", `cast:${person.id}:motivations`), edit("Behavior & reactions · optional", person.notes?.reactions ?? "", (value) => note("reactions", value), true, "Concrete tendencies under pressure, with friends, or in conflict. These may change during play.", `cast:${person.id}:reactions`), edit("Speech examples · optional", person.notes?.voiceExamples.join(`
+`) ?? "", (value) => note("voiceExamples", value), true, "Up to three short lines, one per line, at most 240 characters each. Style references, not past dialogue, future events, or permission to speak for your persona.", `cast:${person.id}:voiceExamples`));
+      if (person.notes?.cautions.length)
+        for (const caution of person.notes.cautions)
+          entry.body.append(paragraph(caution, "sp-notice"));
+      if (person.notes?.evidence?.length) {
+        const evidence = details("Starting notes used for these suggestions");
+        for (const quote of person.notes.evidence)
+          evidence.body.append(paragraph(quote, "sp-small"));
+        entry.body.append(evidence.root);
+      }
       const approved = () => current.appearances?.find((item) => item.characterId === person.id);
       const setApproved = (key, value) => {
         let appearance = approved();
@@ -2331,13 +2378,164 @@ function setup(ctx) {
       appearanceMismatch.hidden = true;
       approvedControls.set(person.id, updateApproved);
       updateApproved();
-      entry.body.append(edit(`${person.name}: approved appearance`, approved()?.description ?? "", (v) => setApproved("description", v), true, "Your chosen physical details stay fixed. For supporting characters, leave missing traits for the narrator to fill. This is independent of generated source facts."), edit(`${person.name}: approved starting outfit`, approved()?.startingOutfit ?? "", (v) => setApproved("startingOutfit", v), true, "Your chosen outfit at the start. For supporting characters, leave blank for the narrator. Edit conflicting lore or scene openings separately."), appearanceMismatch, approvedCaption.wrap, approvedCopy);
+      entry.body.append(edit(`${person.name}: approved appearance`, approved()?.description ?? "", (v) => setApproved("description", v), true, "Your chosen physical details stay fixed. For supporting characters, leave missing traits for the narrator to fill. This is independent of generated source facts.", `appearance:${person.id}:description`), edit(`${person.name}: approved starting outfit`, approved()?.startingOutfit ?? "", (v) => setApproved("startingOutfit", v), true, "Your chosen outfit at the start. For supporting characters, leave blank for the narrator. Edit conflicting lore or scene openings separately.", `appearance:${person.id}:startingOutfit`), appearanceMismatch, approvedCaption.wrap, approvedCopy);
       if (person.sourceRefs.length)
         entry.body.append(paragraph(`Source: ${person.sourceRefs.join(" · ")}`, "sp-hint"));
       cast.append(entry.root);
     }
     cast.append(lookPanel.root);
     panel.append(cast);
+    const characterChecks = details("Character consistency · free");
+    const characterCheckStatus = paragraph("Checks identities, ambiguous character placeholders, differing labeled persona notes, and possible hair or eye conflicts. These are review aids, not confirmed errors.", "sp-hint"), characterCheckResults = group();
+    const openField = (key) => {
+      const target = reviewFields.get(key);
+      if (!target) {
+        notify("Open Your persona in Lumiverse to review this existing persona.");
+        return;
+      }
+      for (let parent = target;parent; parent = parent.parentElement)
+        if (parent.tagName === "DETAILS")
+          parent.open = true;
+      target.scrollIntoView?.({ block: "center" });
+      target.focus();
+    };
+    invalidateCharacterChecks = () => {
+      characterCheckResults.replaceChildren();
+      characterCheckStatus.textContent = "The draft changed. Run the free checks again to review the current version.";
+    };
+    characterChecks.body.append(characterCheckStatus, button("Check character consistency", async () => {
+      const before = JSON.stringify(current), issues = await rpc.request("check-character-consistency", { draft: clone(current) });
+      if (nonce !== panelNonce || JSON.stringify(current) !== before)
+        return;
+      characterCheckResults.replaceChildren();
+      characterCheckStatus.textContent = issues.length ? `${issues.length} possible differences to review. Nothing was changed and no model request was made.` : "No matches in these limited checks. This does not prove that the prose is consistent. No model request was made.";
+      for (const issue of issues) {
+        const item = group(node("h4", "", issue.location), paragraph(issue.message, "sp-small"));
+        if (issue.excerpt)
+          item.append(paragraph(`Current: ${issue.excerpt}`, "sp-notice"));
+        if (issue.reference)
+          item.append(paragraph(`Compare with: ${issue.reference}`, "sp-small"));
+        item.append(button("Open character issue", () => openField(issue.fieldKey)));
+        characterCheckResults.append(item);
+      }
+    }), paragraph("For a selected existing persona, this reads its current description from Lumiverse. Edit it there; Set Points does not overwrite it.", "sp-hint"), characterCheckResults);
+    panel.append(characterChecks.root);
+    const polish = details("Polish character prompting · optional"), polishChoices = new Map;
+    polish.body.append(paragraph("Uses the starting cast notes in this completed draft. No story text or new import is needed. It adds concise motivations, reactions, and up to three illustrative speech examples without replacing your existing profiles, relationships, knowledge, looks, or scenes. Unsupported details should stay blank and be explained in the preview.", "sp-hint"));
+    for (const person of current.cast) {
+      const check = node("input");
+      check.type = "checkbox";
+      check.checked = false;
+      check.id = `sp-${suffix}-polish-${person.id}`;
+      polishChoices.set(person.id, check);
+      const label = node("label", "sp-check", person.name);
+      label.htmlFor = check.id;
+      polish.body.append(row(check, label));
+    }
+    const polishConnection = selectField("Character polish connection", snapshot?.connections.map((item) => [item.id, item.name]) ?? [], snapshot?.characterPolish?.connectionId ?? connection.value);
+    const polishAllowance = selectField("Character polish response allowance", responseAllowances, String(snapshot?.characterPolish?.maxOutputTokens ?? 8000)), polishReasoning = selectField("Character polish reasoning", reasoningModes, snapshot?.characterPolish?.reasoningMode ?? "inherit");
+    const polishStatus = paragraph("", "sp-hint"), polishPreview = details("Preview character notes");
+    polishPreview.root.hidden = true;
+    const startPolish = button("Polish selected characters", async () => {
+      if (otherWorkBusy() || visualsBusy())
+        throw new Error("Wait for the current operation to finish.");
+      const characterIds = [...polishChoices].filter(([, check]) => check.checked).map(([id]) => id);
+      if (!characterIds.length)
+        throw new Error("Select the characters to polish.");
+      const requested = clone(current), basis = characterPolishSignature(requested);
+      characterPolishStarting = true;
+      syncImportControls();
+      try {
+        const job = await rpc.request("start-character-polish", { draft: requested, characterIds, connectionId: polishConnection.input.value, ...readResponseSettings(polishAllowance.input, polishReasoning.input) });
+        if (snapshot)
+          snapshot.characterPolish = { job, result: null, requestSignature: basis, resumeAvailable: false, retryUncertain: false };
+        await refresh();
+        notify("Character polish started. Your current draft stays in place until you review and apply the notes.");
+      } finally {
+        characterPolishStarting = false;
+        syncImportControls();
+        renderCharacterPolishStatus();
+      }
+    }, true);
+    const resumePolish = button("Resume character polish", async () => {
+      if (otherWorkBusy() || visualsBusy())
+        throw new Error("Wait for the current operation to finish.");
+      characterPolishStarting = true;
+      syncImportControls();
+      try {
+        const job = await rpc.request("resume-character-polish", { draft: clone(current), retryUncertain: snapshot?.characterPolish?.retryUncertain === true, ...readResponseSettings(polishAllowance.input, polishReasoning.input) });
+        if (snapshot?.characterPolish)
+          snapshot.characterPolish.job = job;
+        await refresh();
+      } finally {
+        characterPolishStarting = false;
+        syncImportControls();
+        renderCharacterPolishStatus();
+      }
+    });
+    const cancelPolish = button("Cancel character polish", async () => {
+      await rpc.request("cancel-character-polish");
+      notify("Cancellation requested. Completed character responses are retained.");
+      await refresh();
+    });
+    const applyPolish = button("Apply character notes", async () => {
+      const before = JSON.stringify(current), result = await rpc.request("apply-character-polish", { draft: clone(current) });
+      if (nonce === panelNonce && JSON.stringify(current) === before) {
+        draft = clone(result);
+        draftDirty = false;
+        draftRevision++;
+        draftVersion = JSON.stringify(result);
+        renderReview();
+        notify("Character notes applied and saved to your existing draft. Review them, then save a new card to Lumiverse.");
+      } else {
+        pendingReplacement = result;
+        newDraftNotice.hidden = false;
+        notify("Upgraded draft saved. Your newer review edits remain visible; choose Load new draft to replace them deliberately.");
+      }
+    });
+    renderCharacterPolishStatus = () => {
+      const state = snapshot?.characterPolish;
+      let matching = false;
+      try {
+        matching = !!state?.requestSignature && characterPolishSignature(current) === state.requestSignature;
+      } catch {}
+      polishStatus.textContent = state?.job ? `${state.job.label} · ${state.job.completed}/${state.job.total}${state.job.error ? " · " + state.job.error : ""}${!matching ? " · This saved request belongs to a different draft version." : ""}` : "No character polish requested. You can also fill the optional character fields yourself for free.";
+      startPolish.disabled = otherWorkBusy() || visualsBusy();
+      resumePolish.disabled = startPolish.disabled;
+      applyPolish.disabled = startPolish.disabled;
+      resumePolish.hidden = !matching || !state?.resumeAvailable;
+      resumePolish.textContent = state?.retryUncertain ? "Retry unfinished character request" : "Resume character polish";
+      cancelPolish.hidden = state?.job?.status !== "running";
+      applyPolish.hidden = !matching || state?.job?.status !== "complete" || !state.result;
+      polishPreview.root.hidden = applyPolish.hidden;
+      polishPreview.body.replaceChildren();
+      if (!applyPolish.hidden && state?.result)
+        for (const person of state.result.cast) {
+          const original = current.cast.find((item) => item.id === person.id);
+          if (!person.notes || JSON.stringify(original?.notes) === JSON.stringify(person.notes))
+            continue;
+          const preview = group(node("h4", "", person.name));
+          for (const [label, text] of [["Motivations", person.notes.motivations || "Not established in the draft."], ["Behavior & reactions", person.notes.reactions || "Not established in the draft."], ["Illustrative speech examples", person.notes.voiceExamples.join(`
+`) || "No examples suggested."], ["Review notes", person.notes.cautions.join(`
+`) || "Review the suggestions against your intended character."], ["Evidence from starting notes", person.notes.evidence?.join(`
+`) || "No additional evidence."]]) {
+            const field = paragraph(`${label}: ${text}`, "sp-small");
+            preview.append(field);
+          }
+          if (original?.notes)
+            preview.prepend(paragraph(`Existing notes: ${[original.notes.motivations, original.notes.reactions, ...original.notes.voiceExamples].filter(Boolean).join(" · ")}`, "sp-notice"));
+          polishPreview.body.append(preview);
+        }
+      if (state?.retryUncertain)
+        polishStatus.textContent += " The earlier request may already have been charged; this explicit retry can charge again.";
+    };
+    polish.body.append(button("Select all characters", () => {
+      for (const check of polishChoices.values())
+        check.checked = true;
+    }), polishConnection.wrap, polishAllowance.wrap, polishReasoning.wrap, paragraph("Each selected character uses one normally charged model request, with at most one additional format repair. Completed requests are cached for resume. Suggestions use your draft, not a fresh check of the original story.", "sp-hint"), startPolish, polishStatus, resumePolish, cancelPolish, polishPreview.root, applyPolish);
+    panel.append(polish.root);
+    renderCharacterPolishStatus();
+    panel.append(paragraph("Clear character sections and the smaller card layout apply automatically when you next Save to Lumiverse, including for old drafts. Each full cast profile appears once in the narrator card, so basic voices do not depend on lorebook activation. This saves a new card; existing cards and chats keep their previous version.", "sp-hint"));
     const mentions = details("Check for conflicting looks · optional");
     const mentionResults = group(), mentionStatus = paragraph("", "sp-hint");
     mentionStatus.setAttribute("role", "status");
@@ -2534,7 +2732,7 @@ function setup(ctx) {
         matching = !!state?.requestSignature && repairSignature(current) === state.requestSignature;
       } catch {}
       repairStatus.textContent = state?.job ? `${state.job.label} · ${state.job.completed}/${state.job.total}${state.job.error ? " · " + state.job.error : ""}${!matching ? " · This result or saved request belongs to a different draft version." : ""}` : "No scene repair requested.";
-      startRepair.disabled = !!repairBusy() || otherWorkBusy() || visualsBusy();
+      startRepair.disabled = !!characterPolishBusy() || repairBusy() || otherWorkBusy() || visualsBusy();
       resumeRepair.hidden = !matching || !state?.resumeAvailable;
       resumeRepair.textContent = state?.retryUncertain ? "Retry unfinished scene request" : "Resume scene repair";
       resumeRepair.disabled = startRepair.disabled;
@@ -2723,6 +2921,7 @@ function setup(ctx) {
         updateConnections(next);
         renderJob(next.job);
         renderRepairStatus();
+        renderCharacterPolishStatus();
         newDraftNotice.hidden = !(pendingReplacement || draftDirty && draft && next.draft && draft.id !== next.draft.id);
         const nextVersion = JSON.stringify(next.draft);
         if (!openingDraft && !draftDirty && readRevision === draftRevision && nextVersion !== draftVersion) {

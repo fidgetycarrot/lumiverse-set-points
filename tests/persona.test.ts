@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { validateDraft } from '../src/importer';
-import { personaDraft, personaIsAutomatic, playerCharacter, savePersona } from '../src/persona';
+import { PLAYER_PERSONA_RULE, personaDraft, personaIsAutomatic, playerCharacter, savePersona } from '../src/persona';
 import { CardPublisher, draftKey } from '../src/publisher';
 import { EXTENSION_ID, type StoryDraft } from '../src/types';
 import { draft } from './fixtures';
@@ -51,6 +51,7 @@ describe('writing a persona from the draft', () => {
       'What Iona knows at the start: Elias left a letter in the chart room.',
       'Appearance:\nAge: early fifties\nHair: iron grey, cropped',
       'Outfit at the start: Salt-stained coat',
+      PLAYER_PERSONA_RULE,
     ].join('\n\n'));
     // Later scenes, private direction, and lore are not part of a persona.
     expect(persona.description).not.toContain('sealed letter rests');
@@ -62,7 +63,7 @@ describe('writing a persona from the draft', () => {
   test('gives a newcomer a short starting point instead of someone else’s profile', () => {
     const story = draft(); story.playerRole = 'Mara, the cartographer';
     expect(playerCharacter(story)).toBeUndefined();
-    expect(personaDraft(story)).toEqual({ name: 'Mara', title: 'The Lighthouse Letter', description: 'Mara, the cartographer\nJoining "The Lighthouse Letter" at: At the harbor' });
+    expect(personaDraft(story)).toEqual({ name: 'Mara', title: 'The Lighthouse Letter', description: `Mara, the cartographer\nJoining "The Lighthouse Letter" at: At the harbor\n\n${PLAYER_PERSONA_RULE}` });
   });
   test('follows the draft until its wording is changed by hand', () => {
     const story = withPersona();

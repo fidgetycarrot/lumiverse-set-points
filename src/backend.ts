@@ -1,3 +1,6 @@
+import { personaDraft, personaIsAutomatic } from './persona';
+import { polishCharacters, characterPolishSignature, validateCharacterPolishResult } from './character-polish';
+import { characterIssues } from './character-review';
 import type { SpindleAPI, GenerationRequestDTO, GenerationResponseDTO, InterceptorDisposer } from 'lumiverse-spindle-types';
 import { adaptStory, ImportError, validateDraft, type Generate, type GenerationMessage } from './importer';
 import { ResponseCheckpoints, CheckpointError } from './checkpoints';
@@ -15,7 +18,9 @@ type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string
 // character (needs only the saved looks, which carry their own story notes).
 type LookInput = { draft: StoryDraft; sourceText?: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; reroll?: { characterId: string; note: string; pack: LookPack } };
 type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2 };
+type CharacterPolishInput = { draft: StoryDraft; characterIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 type Workspace = {
+  characterPolishInput?: CharacterPolishInput; characterPolishJob?: ImportJob; characterPolishResult?: StoryDraft; characterPolishConnectionFingerprint?: unknown;
   repairInput?: RepairInput; repairJob?: ImportJob; repairResult?: StoryDraft; repairConnectionFingerprint?: unknown;
   draft: StoryDraft|null; saved: SavedStory|null; job: ImportJob|null; lastImport?: ImportOptions; lastConnectionFingerprint?: unknown;
   // This binding is created only from a completed adaptation (or explicit visual
@@ -96,6 +101,11 @@ export class SetPointsController {
   private visualAbort?: AbortController;
   private visualTask?: Promise<void>;
   private visualStarting = false;
+  private characterPolishStarting = false;
+  private characterPolishAbort?: AbortController;
+  private characterPolishTask?: Promise<void>;
+  private characterPolishCheckpoints: ResponseCheckpoints;
+  private polishBusy() { return this.characterPolishStarting || !!this.characterPolishAbort || this.workspace.characterPolishJob?.status === 'running'; }
   private repairStarting = false;
   private repairAbort?: AbortController;
   private repairTask?: Promise<void>;
@@ -116,6 +126,7 @@ export class SetPointsController {
     this.checkpoints = new ResponseCheckpoints(api, userId);
     this.visualCheckpoints = new ResponseCheckpoints(api, userId);
     this.repairCheckpoints = new ResponseCheckpoints(api, userId);
+    this.characterPolishCheckpoints = new ResponseCheckpoints(api, userId);
     this.lookCheckpoints = new ResponseCheckpoints(api, userId);
     this.ready = this.restore();
   }
@@ -142,6 +153,24 @@ export class SetPointsController {
       await this.api.userStorage.setJson(`recovery/workspace-${Date.now()}.json`, saved, { userId: this.userId });
       this.workspace = { draft: null, saved: null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}), job: { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
       this.note('Invalid saved draft backed up for recovery.');
+    }
+    // A failed optional upgrade cannot prevent opening a completed old draft.
+    try {
+      if (saved.characterPolishInput) this.workspace.characterPolishInput = this.validateCharacterPolishInput(saved.characterPolishInput);
+      if (saved.characterPolishResult) {
+        if (!this.workspace.characterPolishInput) throw new Error('Missing character polish input');
+        this.workspace.characterPolishResult = validateCharacterPolishResult(saved.characterPolishResult, this.workspace.characterPolishInput.draft, this.workspace.characterPolishInput.characterIds);
+      }
+      if (saved.characterPolishJob) {
+        const job = saved.characterPolishJob;
+        if (!['running', 'complete', 'failed', 'cancelled'].includes(job.status) || typeof job.id !== 'string' || !Number.isSafeInteger(job.completed) || !Number.isSafeInteger(job.total) || job.completed < 0 || job.completed > job.total || job.total < 1 || job.total > 64 || typeof job.label !== 'string') throw new Error('Invalid character polish');
+        this.workspace.characterPolishJob = job.status === 'running' ? { ...job, status: 'failed', label: 'Character polish interrupted', error: 'Resume character polish to reuse completed steps. An unknown outcome needs an explicit retry.' } : job;
+      }
+      this.workspace.characterPolishConnectionFingerprint = saved.characterPolishConnectionFingerprint;
+    } catch {
+      await this.api.userStorage.setJson(`recovery/character-polish-${Date.now()}.json`, { input: saved.characterPolishInput, result: saved.characterPolishResult, job: saved.characterPolishJob }, { userId: this.userId });
+      delete this.workspace.characterPolishInput; delete this.workspace.characterPolishResult;
+      this.workspace.characterPolishJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Character polish needs attention', error: 'Invalid upgrade data was backed up. Your draft and paid responses are preserved.' };
     }
     // Optional repair recovery must not make completed legacy drafts unreadable.
     try {
@@ -314,6 +343,7 @@ export class SetPointsController {
   }
   private async testConnection(connectionId: unknown): Promise<{ message: string }> {
     this.require('generation');
+    if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
     if (this.checking) throw new Error('A connection check is already running.');
     if (this.starting || this.abort || this.workspace.job?.status === 'running') throw new Error('Wait for the adaptation to finish before checking a connection.');
@@ -364,10 +394,12 @@ export class SetPointsController {
       resumeAvailable: Boolean(this.workspace.lookInput && lookJob && ['failed', 'cancelled'].includes(lookJob.status)), retryUncertain: Boolean(lookJob?.retryUncertain),
       ...(this.workspace.lookInput?.reroll && lookJob?.status === 'running' ? { rerolling: this.workspace.lookInput.reroll.characterId } : {}),
       connectionId: this.workspace.lookInput?.connectionId, ...responseSettings(this.workspace.lookInput ?? {}),
-    }, ...(personas ? { personas } : {}), repairs: {job:this.workspace.repairJob??null,result:this.workspace.repairResult??null,requestSignature:this.workspace.repairInput?repairSignature(this.workspace.repairInput.draft):undefined,resumeAvailable:!!this.workspace.repairInput&&['failed','cancelled'].includes(this.workspace.repairJob?.status??''),retryUncertain:!!this.workspace.repairJob?.retryUncertain,connectionId:this.workspace.repairInput?.connectionId}, play, diagnostics: [...this.entries] };
+    }, ...(personas ? { personas } : {}), repairs: {job:this.workspace.repairJob??null,result:this.workspace.repairResult??null,requestSignature:this.workspace.repairInput?repairSignature(this.workspace.repairInput.draft):undefined,resumeAvailable:!!this.workspace.repairInput&&['failed','cancelled'].includes(this.workspace.repairJob?.status??''),retryUncertain:!!this.workspace.repairJob?.retryUncertain,connectionId:this.workspace.repairInput?.connectionId}, characterPolish: { job: structuredClone(this.workspace.characterPolishJob ?? null), result: structuredClone(this.workspace.characterPolishResult ?? null), requestSignature: this.workspace.characterPolishInput ? characterPolishSignature(this.workspace.characterPolishInput.draft) : undefined, resumeAvailable: !!this.workspace.characterPolishInput && ['failed','cancelled'].includes(this.workspace.characterPolishJob?.status ?? ''), retryUncertain: !!this.workspace.characterPolishJob?.retryUncertain, connectionId: this.workspace.characterPolishInput?.connectionId, ...responseSettings(this.workspace.characterPolishInput ?? {}) }, play, diagnostics: [...this.entries] };
   }
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
+    if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
+    if (!resume) options = { ...options, profilePromptVersion: 2 };
     const settings = responseSettings(options);
     this.require('generation');
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
@@ -463,6 +495,50 @@ export class SetPointsController {
       return structuredClone(job);
     } finally { this.starting = false; }
   }
+  private validateCharacterPolishInput(value: unknown): CharacterPolishInput {
+    const data = record(value), draft = validateDraft(data.draft);
+    if (!Array.isArray(data.characterIds) || !data.characterIds.length || new Set(data.characterIds).size !== data.characterIds.length || data.characterIds.some(id => typeof id !== 'string' || !draft.cast.some(person => person.id === id))) throw new Error('Select existing characters once each for polish.');
+    return { draft, characterIds: data.characterIds as string[], connectionId: string(data.connectionId, 'Character polish connection'), ...responseSettings(data) };
+  }
+  private async startCharacterPolish(value: unknown, retryUncertain = false, resume = false): Promise<ImportJob> {
+    await this.ready; this.require('generation');
+    if (this.polishBusy() || this.starting || this.abort || this.visualStarting || this.visualAbort || this.repairStarting || this.repairAbort || this.checking || this.saving || this.workspace.job?.status === 'running' || this.workspace.visualJob?.status === 'running' || this.looksBusy()) throw new Error('Wait for the current operation to finish or cancel it before polishing characters.');
+    this.characterPolishStarting = true;
+    try {
+      const options = this.validateCharacterPolishInput(value), settings = responseSettings(options), connection = await this.selectedConnection(options.connectionId);
+      if (resume && !sameSettings(connection.fingerprint, this.workspace.characterPolishConnectionFingerprint)) throw new Error('The saved character polish connection changed. Restore its settings before resuming, or start a new normally charged polish.');
+      this.characterPolishCheckpoints.beginRun({ retryUncertain });
+      const controller = new AbortController(), job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: options.characterIds.length, label: 'Preparing character polish' };
+      this.characterPolishAbort = controller;
+      this.workspace.characterPolishInput = structuredClone(options); this.workspace.characterPolishJob = job; delete this.workspace.characterPolishResult;
+      this.workspace.characterPolishConnectionFingerprint = structuredClone(connection.fingerprint);
+      try { await this.persist(); } catch { this.characterPolishAbort = undefined; this.workspace.characterPolishJob = { ...job, status: 'failed', label: 'Character polish could not be saved', error: 'No model request was sent. Check extension storage.' }; this.changed(); throw new Error(this.workspace.characterPolishJob.error); }
+      this.changed();
+      this.characterPolishTask = (async () => {
+        let responseReturned = false;
+        try {
+          const fingerprint = requestFingerprint(connection.fingerprint, settings), reuseFingerprints = OUTPUT_ALLOWANCES.flatMap(maxOutputTokens => REASONING_MODES.map(reasoningMode => requestFingerprint(connection.fingerprint, { maxOutputTokens, reasoningMode })));
+          const generate: Generate = async (messages, signal) => {
+            responseReturned = false; controller.signal.throwIfAborted();
+            const result = await this.characterPolishCheckpoints.request(messages, fingerprint, () => this.requestModel(connection, messages, signal ?? controller.signal, settings.maxOutputTokens, 600_000, settings.reasoningMode), { reuseFingerprints });
+            responseReturned = true; return this.readModelResponse(result);
+          };
+          this.workspace.characterPolishResult = await polishCharacters(options.draft, options.characterIds, generate, (completed, total, label) => { this.workspace.characterPolishJob = { ...job, completed, total, label, phase: label }; this.changed(); }, controller.signal);
+          controller.signal.throwIfAborted(); this.workspace.characterPolishJob = { ...this.workspace.characterPolishJob!, status: 'complete', label: 'Character notes ready to review' };
+          this.note('Character polish completed; result awaits explicit review.'); await this.persist();
+        } catch (error) {
+          const cancelled = controller.signal.aborted;
+          let message = error instanceof ImportError || error instanceof ModelRequestError || error instanceof CheckpointError ? error.message : 'Character polish could not finish. Your current draft is preserved.';
+          if (!cancelled && responseReturned && (error instanceof ModelRequestError || error instanceof ImportError && !['REQUEST_SIZE_LIMIT', 'OUTPUT_LIMIT'].includes(error.code))) {
+            try { await this.characterPolishCheckpoints.invalidateLast(); } catch { message = 'Could not mark the failed character response for retry. Saved work was retained.'; }
+          }
+          this.workspace.characterPolishJob = { ...this.workspace.characterPolishJob!, status: cancelled ? 'cancelled' : 'failed', label: cancelled ? 'Character polish cancelled' : 'Character polish needs attention', retryUncertain: error instanceof CheckpointError && error.code === 'UNCERTAIN_REQUEST', error: cancelled ? undefined : `${message} Resume character polish reuses completed steps; remaining requests use normal charges.` };
+          delete this.workspace.characterPolishResult; await this.persist().catch(() => this.note('Could not persist character polish status.'));
+        } finally { if (this.characterPolishAbort === controller) this.characterPolishAbort = undefined; this.changed(); }
+      })();
+      return structuredClone(job);
+    } finally { this.characterPolishStarting = false; }
+  }
   private validateRepairInput(value: unknown): RepairInput {
     const data=record(value), draft=validateDraft(data.draft);
     if (!Array.isArray(data.sceneIds) || !data.sceneIds.length || new Set(data.sceneIds).size!==data.sceneIds.length || data.sceneIds.some(id=>typeof id!=='string'||!draft.scenes.some(scene=>scene.id===id))) throw new Error('Select existing scenes once each for repair.');
@@ -471,6 +547,7 @@ export class SetPointsController {
   }
   private async startRepair(value: unknown, retryUncertain=false, resume=false): Promise<ImportJob> {
     await this.ready; this.require('generation');
+    if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
     if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.looksBusy()) throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
     this.repairStarting=true;
     try {
@@ -510,6 +587,7 @@ export class SetPointsController {
   }
   private async startVisuals(value: unknown, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
+    if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
     this.require('generation');
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
     if (this.checking) throw new Error('Wait for the connection check to finish before creating image descriptions.');
@@ -588,6 +666,7 @@ export class SetPointsController {
   }
   private async startLooks(value: unknown, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
+    if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
     this.require('generation');
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
     if (this.checking) throw new Error('Wait for the connection check to finish before designing looks.');
@@ -732,6 +811,30 @@ export class SetPointsController {
         this.note('Active persona switched on request.');
         return { personaId: persona.id, name: persona.name };
       }
+      case 'check-character-consistency': {
+        const draft = validateDraft(data.draft);
+        let existing: { name: string; description: string } | undefined;
+        if (draft.persona?.mode === 'existing') {
+          this.require('personas');
+          const persona = await this.api.personas.get(draft.persona.personaId!, this.userId);
+          if (!persona) throw new Error('The selected persona is no longer available. Pick another persona before checking it.');
+          existing = { name: persona.name, description: persona.description };
+        }
+        return characterIssues(draft, existing);
+      }
+      case 'start-character-polish': return this.startCharacterPolish(data);
+      case 'resume-character-polish': {
+        if (!this.workspace.characterPolishInput) throw new Error('No saved character polish is available.');
+        if (characterPolishSignature(validateDraft(data.draft)) !== characterPolishSignature(this.workspace.characterPolishInput.draft)) throw new Error('The saved polish belongs to a different draft version. Your edits are preserved.');
+        return this.startCharacterPolish({ ...this.workspace.characterPolishInput, ...responseSettings({ ...this.workspace.characterPolishInput, ...data }) }, data.retryUncertain === true, true);
+      }
+      case 'cancel-character-polish': this.characterPolishAbort?.abort(); return { cancelled: true };
+      case 'apply-character-polish': {
+        const current = validateDraft(data.draft);
+        if (this.polishBusy() || this.starting || this.abort || this.visualStarting || this.visualAbort || this.repairStarting || this.repairAbort || this.looksBusy() || this.workspace.job?.status === 'running' || this.workspace.visualJob?.status === 'running' || this.saving) throw new Error('Wait for the current operation to finish.');
+        if (!this.workspace.characterPolishInput || !this.workspace.characterPolishResult || this.workspace.characterPolishJob?.status !== 'complete' || characterPolishSignature(current) !== characterPolishSignature(this.workspace.characterPolishInput.draft)) throw new Error('The polished notes belong to a different draft version. Your edits are preserved.');
+        const result = validateCharacterPolishResult(this.workspace.characterPolishResult, this.workspace.characterPolishInput.draft, this.workspace.characterPolishInput.characterIds); this.workspace.draft = result; this.workspace.saved = null; await this.persist(); this.changed(); return result;
+      }
       case 'start-scene-repair': return this.startRepair(data);
       case 'resume-scene-repair': {
         if (!this.workspace.repairInput) throw new Error('No saved scene repair is available.');
@@ -740,6 +843,7 @@ export class SetPointsController {
       }
       case 'cancel-scene-repair': this.repairAbort?.abort(); return {cancelled:true};
       case 'apply-scene-repair': {
+        if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it before loading repaired scenes.');
         const current=validateDraft(data.draft);
         if (this.starting||this.visualStarting||this.repairStarting||this.repairAbort||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.looksBusy()||this.saving) throw new Error('Wait for the current operation to finish.');
         if (!this.workspace.repairResult||!this.workspace.repairInput||this.workspace.repairJob?.status!=='complete'||repairSignature(current)!==repairSignature(this.workspace.repairInput.draft)) throw new Error('The repaired scenes belong to a different draft version. Your edits are preserved.');
@@ -753,10 +857,12 @@ export class SetPointsController {
         await this.persist(); this.changed(); return draft;
       }
       case 'create-card': {
+        if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it before publishing.');
         if (this.repairStarting||this.repairAbort) throw new Error('Wait for scene repair to finish or cancel it before publishing.');
         if (this.saving) throw new Error('This card is already being saved. Wait for the save to finish.');
         if (this.workspace.job?.status === 'running') throw new Error('Wait for the import to finish before saving a card.');
         const draft = validateDraft(data.draft);
+        if (personaIsAutomatic(draft) && draft.persona) Object.assign(draft.persona, personaDraft(draft));
         this.saving = true;
         try {
           this.workspace.draft = draft; await this.persist();
@@ -780,13 +886,14 @@ export class SetPointsController {
       }
       case 'diagnostics': {
         const view = await this.runtime.view();
-        return { version: VERSION, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, lookJob: this.workspace.lookJob && { id: this.workspace.lookJob.id, status: this.workspace.lookJob.status, completed: this.workspace.lookJob.completed, total: this.workspace.lookJob.total }, reusedLookResponses: this.lookCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, repairJob:this.workspace.repairJob&&{status:this.workspace.repairJob.status,completed:this.workspace.repairJob.completed,total:this.workspace.repairJob.total}, entries: [...this.entries] };
+        return { version: VERSION, characterPolishJob: this.workspace.characterPolishJob && { status: this.workspace.characterPolishJob.status, completed: this.workspace.characterPolishJob.completed, total: this.workspace.characterPolishJob.total }, reusedCharacterResponses: this.characterPolishCheckpoints.reused, job: this.workspace.job && { id: this.workspace.job.id, status: this.workspace.job.status, completed: this.workspace.job.completed, total: this.workspace.job.total }, reusedResponses: this.checkpoints.reused, visualJob: this.workspace.visualJob && { id: this.workspace.visualJob.id, status: this.workspace.visualJob.status, completed: this.workspace.visualJob.completed, total: this.workspace.visualJob.total }, reusedVisualResponses: this.visualCheckpoints.reused, lookJob: this.workspace.lookJob && { id: this.workspace.lookJob.id, status: this.workspace.lookJob.status, completed: this.workspace.lookJob.completed, total: this.workspace.lookJob.total }, reusedLookResponses: this.lookCheckpoints.reused, play: { chatId: view.chatId, current: view.current, next: view.next, enabled: view.enabled, sceneCount: view.scenes.length, busy: view.busy }, repairJob:this.workspace.repairJob&&{status:this.workspace.repairJob.status,completed:this.workspace.repairJob.completed,total:this.workspace.repairJob.total}, entries: [...this.entries] };
       }
       default: throw new Error('Unknown Set Points action. Reload the extension.');
     }
   }
-  dispose() { this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); this.repairAbort?.abort(); this.lookAbort?.abort(); }
+  dispose() { this.characterPolishAbort?.abort(); this.abort?.abort(); this.visualAbort?.abort(); this.checkAbort?.abort(); this.repairAbort?.abort(); this.lookAbort?.abort(); }
   async waitForImport() { await this.jobTask; }
+  async waitForCharacterPolish() { await this.characterPolishTask; }
   async waitForRepair() { await this.repairTask; }
   async waitForVisuals() { await this.visualTask; }
   async waitForLooks() { await this.lookTask; }

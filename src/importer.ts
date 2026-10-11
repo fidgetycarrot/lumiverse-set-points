@@ -1,3 +1,4 @@
+import { characterText } from './character-format';
 import { defaultRoles, roleInstruction, rolesForImport, validateRoles } from './roles';
 import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type PersonaPlan, type StoryDraft, type LoreEntry, type StoryScene } from './types';
 
@@ -94,7 +95,8 @@ export function validateDraft(value: unknown): StoryDraft {
   const allowed = new Set(Array.from({ length: chunks }, (_, i) => `chunk:${i + 1}`));
   const cast = list(draft.cast, 'cast', 64).map((value, i): CastMember => {
     const person = object(value, `cast[${i}]`), p = `cast[${i}]`;
-    return { id: identifier(person.id, `${p}.id`), name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 4000), voice: safeText(person.voice, `${p}.voice`, 2000), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledge: safeText(person.knowledge, `${p}.knowledge`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed) };
+    const notes = person.notes === undefined ? undefined : object(person.notes, `${p}.notes`);
+    return { id: identifier(person.id, `${p}.id`), name: safeText(person.name, `${p}.name`, 200), aliases: texts(person.aliases, `${p}.aliases`, 16, 200), personality: safeText(person.personality, `${p}.personality`, 4000), voice: safeText(person.voice, `${p}.voice`, 2000), relationships: safeText(person.relationships, `${p}.relationships`, 4000), knowledge: safeText(person.knowledge, `${p}.knowledge`, 4000), sourceRefs: refs(person.sourceRefs, `${p}.sourceRefs`, allowed), ...(notes ? {notes: {motivations: safeText(notes.motivations, `${p}.notes.motivations`, 800, true), reactions: safeText(notes.reactions, `${p}.notes.reactions`, 1200, true), voiceExamples: texts(notes.voiceExamples, `${p}.notes.voiceExamples`, 3, 240), cautions: texts(notes.cautions, `${p}.notes.cautions`, 6, 300), ...(notes.evidence !== undefined ? {evidence: texts(notes.evidence, `${p}.notes.evidence`, 24, 1500)} : {})}} : {}) };
   });
   const lore = list(draft.lore, 'lore', 96).map((value, i) => {
     const entry = object(value, `lore[${i}]`), p = `lore[${i}]`;
@@ -437,7 +439,7 @@ function packNewWarnings(values: string[]): string[] {
   return result;
 }
 
-async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal): Promise<{ draft: StoryDraft; operations: number }> {
+async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal, profilePromptVersion: 1|2 = 1): Promise<{ draft: StoryDraft; operations: number }> {
   const roleCast = ledger.cast.map((person,index)=>({ ...person, id:`cast-${index+1}`, knowledge:person.knowledgeAtIntroduction }));
   let roles: StoryDraft['roles'];
   if (preferences.narrationMode !== undefined) { try { roles = rolesForImport(roleCast, preferences.playerRole, preferences); } catch (error) { fail('INVALID_SCHEMA', error instanceof Error ? error.message : 'Invalid narration choice.'); } }
@@ -479,7 +481,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
     const targets = characters.slice(start, start + 4), skeletons = cast.slice(start, start + 4);
     report(completed, total, `Creating character batch ${Math.floor(start / 4) + 1} of ${Math.ceil(characters.length / 4)}`);
     const result = await requestJson([
-      { role: 'system', content: `${sourcePolicy}\n${stagedAgencyRules}${rolePolicy}\nWrite only the requested character profiles, as they are at the chosen starting point. Return exactly {"cast":[{"id":"requested id","personality":"traits","voice":"speech style","relationships":"relationships at the start","knowledge":"knowledge at the start"}],"warnings":[]}. Return every requested ID once, without adding or omitting characters. Names, aliases and source references are retained automatically. Preserve relationship context and motivations; keep later developments and secrets out of these starting profiles. Keep each field to a concise paragraph and stay below the provided serialized JSON prose budget per character. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate scenes or lore.` },
+      { role: 'system', content: `${sourcePolicy}\n${stagedAgencyRules}${rolePolicy}\nWrite only the requested character profiles, as they are at the chosen starting point. Return exactly {"cast":[{"id":"requested id","personality":"traits","voice":"speech style","relationships":"relationships at the start","knowledge":"knowledge at the start"}],"warnings":[]}. Return every requested ID once, without adding or omitting characters. Names, aliases and source references are retained automatically. Preserve relationship context and motivations; keep later developments and secrets out of these starting profiles. Keep each field to a concise paragraph and stay below the provided serialized JSON prose budget per character. Give only new warnings within the batch warning budget; known source warnings are already saved. Do not generate scenes or lore.${profilePromptVersion===2 ? '\nFor personality, explain supported motivations, strengths, flaws, and how traits show up in specific situations; use clear labeled phrases rather than an adjective pile. For voice, capture vocabulary, rhythm, tone, and supported changes under stress or with different people. Do not invent habits, diagnoses, motives, preferences, or speech examples to fill gaps. Mark unknowns in warnings. Use explicit character names for each profile; {{char}} refers to the narrator card. The played character stays human-controlled. Keep the existing prose budget.' : ''}` },
       { role: 'user', content: JSON.stringify({ task: 'set-points-cast-v1', preferences, ledger, foundation, characters: targets, limits: { prosePerCharacter: budgets.cast, newWarnings: budgets.warnings } }) },
     ], generate, value => {
       const batch = orderedBatch(value, 'cast', targets.map(item => item.id));
@@ -574,7 +576,7 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   let adapted = preferences.narrationMode !== undefined || preferences.openingStyle!==undefined ? undefined : await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, value => validateAdaptation(value, metadata, sceneCount), value => finalizeAdaptation(value, ledger, sceneCount), signal);
   if (adapted) completed++;
   else {
-    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal);
+    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal, options.profilePromptVersion ?? 1);
     adapted = staged.draft;
     completed += staged.operations;
   }
@@ -626,11 +628,11 @@ export function mainCharacterIds(draft: Pick<StoryDraft, 'cast' | 'scenes' | 'pl
 /** Native character payload. The host adapter attaches world_book_ids after creating the book. */
 export function cardPayload(value: StoryDraft) {
   const draft = validateDraft(value);
-  const cast = draft.cast.map(person => `### ${person.name}${person.aliases.length ? ` (${person.aliases.join(', ')})` : ''}\nPersonality: ${person.personality}\nVoice: ${person.voice}\nRelationships at the start: ${person.relationships}\nKnowledge at the start: ${person.knowledge}`).join('\n\n');
+  const cast = draft.cast.map(person => characterText(person, draft)).join('\n\n');
   const approvedAppearances = approvedLooks(draft).length > 0;
   return {
     name: draft.title,
-    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${roleInstruction(draft)}\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}` : ''}`,
+    description: `You are the narrator and supporting cast of ${draft.title}. The human plays ${draft.playerRole}.\n\n${roleInstruction(draft)}\n\n${draft.premise}${cast ? `\n\nStarting cast\n\n${cast}\n\nKeep these named profiles distinct; {{char}} names this narrator card, not every cast member.` : ''}`,
     personality: 'A responsive narrator who keeps supporting characters distinct and leaves the player character under the human’s control.',
     scenario: `${draft.premise}\n\nPlayer role: ${draft.playerRole}\nStarting point: ${draft.startingPoint}`,
     first_mes: draft.scenes[0].greeting,
