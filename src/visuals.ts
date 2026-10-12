@@ -118,6 +118,7 @@ function unknownProfile(characterId: string): VisualProfile {
 
 function validateFacts(value: unknown, ids: Set<string>, source: { ref: string; text: string }, chunkIndex: number): { facts: VisualFact[]; warnings: string[] } {
   const input = object(value, 'visual facts'), seen = new Set<string>(), facts: VisualFact[] = [];
+  let dropped = 0;
   for (const [index, item] of list(input.characters, 'characters', ids.size).entries()) {
     const entry = object(item, `characters[${index}]`), characterId = text(entry.characterId, 'characterId', 80);
     if (!ids.has(characterId) || seen.has(characterId)) fail('INVALID_SCHEMA', 'Visual facts must use known character IDs without duplicates.');
@@ -125,13 +126,20 @@ function validateFacts(value: unknown, ids: Set<string>, source: { ref: string; 
     for (const [factIndex, value] of list(entry.facts, 'facts', 128).entries()) {
       const fact = object(value, 'fact'), kind = text(fact.kind, 'fact.kind', 20), timing = text(fact.timing, 'fact.timing', 20);
       if (!['appearance', 'clothing', 'identity'].includes(kind) || !['start', 'later', 'uncertain'].includes(timing)) fail('INVALID_SCHEMA', 'Visual fact kind or timing is not supported.');
-      const evidence = text(fact.evidence, 'fact.evidence', 400);
-      if (!source.text.includes(evidence)) fail('INVALID_REFERENCE', 'A visual fact cites words that do not appear in its source section.');
-      facts.push({ id: `visual-${chunkIndex + 1}-${index + 1}-${factIndex + 1}`, characterId, kind: kind as FactKind, timing: timing as FactTiming, text: text(fact.text, 'fact.text', 1000), sourceRefs: [source.ref] });
+      // A quote that is too long or not found is dropped and counted, never
+      // allowed to fail the whole section. Only found quotes become facts.
+      const evidence = typeof fact.evidence === 'string' ? fact.evidence : '';
+      if (!evidence.trim() || evidence.length > 4000 || !loose(source.text).includes(loose(evidence))) { dropped++; continue; }
+      const note = typeof fact.text === 'string' && fact.text.trim().length > 1000 ? `${fact.text.trim().slice(0, 999).trimEnd()}…` : fact.text;
+      facts.push({ id: `visual-${chunkIndex + 1}-${index + 1}-${factIndex + 1}`, characterId, kind: kind as FactKind, timing: timing as FactTiming, text: text(note, 'fact.text', 1000), sourceRefs: [source.ref] });
     }
   }
-  return { facts, warnings: texts(input.warnings, 'warnings', 24, 1000) };
+  const warnings = texts(input.warnings, 'warnings', 24, 1000);
+  if (dropped) warnings.push(`Section ${chunkIndex + 1}: ${dropped} detail${dropped === 1 ? '' : 's'} could not be matched to the story's own words and ${dropped === 1 ? 'was' : 'were'} left out.`);
+  return { facts, warnings };
 }
+/** Compare quotes without tripping on curly quotes or line wrapping. */
+function loose(value: string): string { return value.replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, ' ').trim(); }
 
 function validateConstructed(value: unknown, characterId: string, facts: VisualFact[], draft: StoryDraft, chunks: number): { profile: VisualProfile; warnings: string[] } {
   const input = object(value, 'visual profile'), raw = object(input.profile, 'profile'), grounding = object(input.grounding, 'grounding');

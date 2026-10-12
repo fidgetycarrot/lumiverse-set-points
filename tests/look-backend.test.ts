@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { SetPointsController } from '../src/backend';
-import { LOOK_FIELDS, lookDraftSignature, type LookPack } from '../src/looks';
+import { LOOK_FIELDS, LOOK_LIMITS, lookDraftSignature, type LookPack } from '../src/looks';
 import { visualDraftSignature } from '../src/visuals';
 import type { StoryDraft } from '../src/types';
 import { draft } from './fixtures';
@@ -209,5 +209,81 @@ describe('personas in the workspace', () => {
     expect(h.switched).toEqual([]);
     expect(await app.handle('switch-persona', { personaId: 'mine' })).toEqual({ personaId: 'mine', name: 'Eric' });
     expect(h.switched).toEqual(['mine']);
+  });
+});
+
+describe('looks as part of the import', () => {
+  test('autoUse fills each character’s look in the draft, keeping any look already there', async () => {
+    const h = harness(); const story = draft();
+    story.cast.push({ ...story.cast[0], id: 'elias', name: 'Elias', aliases: [] });
+    story.appearances = [{ characterId: 'elias', description: 'Tall and red-haired.', startingOutfit: '' }];
+    seed(h, story);
+    const app = new SetPointsController(h.api, 'alice');
+    await app.handle('start-looks', { draft: story, connectionId: 'model', autoUse: true }); await app.waitForLooks();
+    const snap = await app.snapshot(null);
+    expect(snap.looks?.job?.label).toBe('Looks added for 1 character. Change them in Review.');
+    expect(snap.draft?.appearances?.find(item => item.characterId === 'iona')?.description).toContain('Cropped grey hair');
+    expect(snap.draft?.appearances?.find(item => item.characterId === 'elias')?.description).toBe('Tall and red-haired.');
+  });
+
+  test('autoUse leaves a different draft alone', async () => {
+    const h = harness(); seed(h);
+    const app = new SetPointsController(h.api, 'alice');
+    const edited = draft(); edited.id = 'another-draft';
+    await app.handle('save-draft', { draft: edited });
+    await app.handle('start-looks', { draft: draft(), connectionId: 'model', autoUse: true, sourceText: source }); await app.waitForLooks();
+    const snap = await app.snapshot(null);
+    expect(snap.looks?.job?.label).toBe('Looks ready to review');
+    expect(snap.draft?.appearances ?? []).toEqual([]);
+  });
+
+  test('a bad or over-long clue is left out instead of failing the reading', async () => {
+    const h = harness(request => {
+      const input = body(request);
+      if (input.task === 'set-points-look-clues-v1') return Promise.resolve({ content: JSON.stringify({ characters: [{ characterId: 'iona', clues: [
+        { kind: 'stated', about: 'hair', timing: 'start', text: 'Cropped grey hair.', evidence: 'cropped grey hair' },
+        { kind: 'stated', about: 'hair', timing: 'start', text: 'Long quote.', evidence: 'x'.repeat(5000) },
+        { kind: 'guess', about: 'hair', timing: 'start', text: 'Odd label.', evidence: 'cropped grey hair' },
+        { kind: 'implied', about: 'build', timing: 'start', text: 'Strong from hauling nets. '.repeat(40), evidence: 'hauls the nets alone' },
+      ] }], warnings: [] }), finish_reason: 'stop' });
+      return accepted(request);
+    });
+    seed(h);
+    const looks = await design(new SetPointsController(h.api, 'alice'));
+    expect(looks.job?.status).toBe('complete');
+    expect(h.tasks()).toEqual(['set-points-look-clues-v1', 'set-points-look-design-v1']);
+    expect(looks.pack!.warnings.join(' ')).toContain('1 clue could not be matched');
+    expect(looks.pack!.warnings.join(' ')).toContain('1 clue was not readable');
+    const build = looks.pack!.looks[0].clues.find(clue => clue.about === 'build')!;
+    expect(build.text.length).toBeLessThanOrEqual(LOOK_LIMITS.clueText);
+    expect(build.text.endsWith('…')).toBe(true);
+  });
+
+  test('an import with “Describe how everyone looks” designs and fills the looks afterwards', async () => {
+    const story = 'Iona keeps the harbor boat. She has cropped grey hair and hauls the nets alone each morning. Elias waits by the lighthouse with a letter.';
+    const importReply = (request: any) => {
+      const messages = request.messages;
+      if (messages[1].content.startsWith('SOURCE CHUNK')) return { coveredChunks: ['chunk:1'], premise: 'A harbor and a letter.', cast: [{ name: 'Iona', aliases: [], personality: 'Blunt.', voice: 'Short.', relationships: 'Knows Elias.', knowledgeAtIntroduction: 'The letter exists.', developments: 'None.', sourceRefs: ['chunk:1'] }], setting: [{ name: 'Harbor', details: 'Cold.', sourceRefs: ['chunk:1'] }], events: [{ title: 'Nets', summary: 'Iona hauls nets.', participants: ['Iona'], changes: 'None.', sourceRefs: ['chunk:1'] }, { title: 'Letter', summary: 'Iona brings the letter.', participants: ['Iona'], changes: 'None.', sourceRefs: ['chunk:1'] }], warnings: [] };
+      const input = body(request);
+      if (input.task === 'set-points-plan-v1') return { title: 'Harbor', premise: 'A harbor.', narratorInstructions: 'Third person.', startingLore: [0], scenes: [{ title: 'Nets', eventIndexes: [0], brief: 'Nets.', assumptions: [] }, { title: 'Letter', eventIndexes: [1], brief: 'Letter.', assumptions: [] }], warnings: [] };
+      if (input.task === 'set-points-cast-v1') return { cast: input.characters.map((item: any) => ({ id: item.id, personality: 'Blunt.', voice: 'Short.', relationships: 'Known.', knowledge: 'Some.' })), warnings: [] };
+      if (input.task === 'set-points-lore-v1') return { lore: input.entries.map((item: any) => ({ id: item.id, keys: ['harbor'], content: 'Cold.' })), warnings: [] };
+      if (input.task === 'set-points-scenes-v1') return { scenes: input.scenes.map((scene: any) => ({ id: scene.id, greeting: 'Iona coils a rope as you come down the dock.', direction: 'Iona may speak.', assumptions: [], roles: { playerCharacterId: 'cast-1', narration: 'neutral', viewpointCharacterId: null } })), warnings: [] };
+      return lookReply(request);
+    };
+    const h = harness(request => Promise.resolve({ content: JSON.stringify(importReply(request)), finish_reason: 'stop' }));
+    const app = new SetPointsController(h.api, 'alice');
+    await app.handle('start-import', { options: { text: story, sourceTitle: 'Harbor', playerRole: 'Iona', startingPoint: 'Morning', sceneCount: 2, connectionId: 'model', chunkSize: 12000, narrationMode: 'neutral', narratorCharacter: '', sourceViewpoint: '', openingStyle: 'interactive', describeLooks: true } });
+    await app.waitForImport(); await app.waitForLooks();
+    const snap = await app.snapshot(null);
+    expect(h.calls.slice(-2).map(call => body(call).task)).toEqual(['set-points-look-clues-v1', 'set-points-look-design-v1']);
+    expect(snap.draft?.appearances?.[0].description).toContain('Cropped grey hair');
+    // The played character's persona follows the new look.
+    expect(snap.draft?.persona?.description).toContain('Cropped grey hair');
+  });
+
+  test('without the option, an import does not describe looks', async () => {
+    const h = harness(); const app = new SetPointsController(h.api, 'alice');
+    await expect(app.handle('start-import', { options: { text: 'x'.repeat(200), sourceTitle: 'T', playerRole: 'Iona', startingPoint: 'S', sceneCount: 2, connectionId: 'model', chunkSize: 12000, describeLooks: 'yes' } })).rejects.toThrow('describe how everyone looks');
   });
 });

@@ -1,7 +1,7 @@
 import type { VisualPack } from './visuals';
 import type { LookPack } from './looks';
 export const EXTENSION_ID = 'lumiverse_set_points';
-export const VERSION = '0.1.16';
+export const VERSION = '0.1.17';
 export type NarrationMode = 'neutral'|'character';
 export interface StoryRoles { narration: NarrationMode; playerCharacterId: string|null; viewpointCharacterId: string|null; sourceViewpoint: string }
 export interface CharacterNotes { motivations: string; reactions: string; voiceExamples: string[]; cautions: string[]; evidence?: string[] }
@@ -23,7 +23,7 @@ export interface StoryDraft {
   source: { title: string; url?: string; characters: number; chunks: number }; createdAt: number;
 }
 export type ReasoningMode = 'inherit'|'off'|'low';
-export interface ImportOptions { text: string; sourceTitle: string; sourceUrl?: string; playerRole: string; startingPoint: string; sceneCount: number; connectionId: string; chunkSize: number; maxOutputTokens?: number; reasoningMode?: ReasoningMode; narrationMode?: NarrationMode; narratorCharacter?: string; sourceViewpoint?: string; openingStyle?:StoryDraft['openingStyle']; profilePromptVersion?:1|2; planPromptVersion?:1|2|3; playerDetails?: string }
+export interface ImportOptions { text: string; sourceTitle: string; sourceUrl?: string; playerRole: string; startingPoint: string; sceneCount: number; connectionId: string; chunkSize: number; maxOutputTokens?: number; reasoningMode?: ReasoningMode; narrationMode?: NarrationMode; narratorCharacter?: string; sourceViewpoint?: string; openingStyle?:StoryDraft['openingStyle']; profilePromptVersion?:1|2; planPromptVersion?:1|2|3; playerDetails?: string; describeLooks?: boolean }
 export interface WebPageLink { title: string; url: string }
 export interface WebStoryPage { title: string; text: string; url: string; nextPages: WebPageLink[] }
 export interface ImportJob { id: string; status: 'running'|'complete'|'cancelled'|'failed'; completed: number; total: number; label: string; error?: string; retryUncertain?: boolean; phase?: string }

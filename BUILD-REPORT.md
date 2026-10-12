@@ -1,6 +1,18 @@
-# Set Points 0.1.16 — verification
+# Set Points 0.1.17 — verification
 
 Prepared October 12, 2026.
+
+## Change in 0.1.17
+
+**Problem.** Imports never filled character appearance fields; looks needed a separate, easy-to-miss step. The step the user tried (image descriptions) failed on its first section because one quoted piece of evidence exceeded 400 characters, and that limit failed the whole section without a format repair.
+
+**Looks during import.** `ImportOptions.describeLooks` (checkbox, on by default) starts the existing look design job after a successful import, with the import's connection, response settings, and story text. Such a job carries `autoUse`: on completion, looks go into the draft's approved appearance and starting outfit for characters that have none, an automatic persona follows, and a card saved in the meantime is marked unsaved. Nothing is applied if the draft ID or cast IDs changed. A job that cannot start leaves a failed look status pointing to Design character looks. Looks started by hand behave as before.
+
+**Tolerant reading.** Look clues with an unknown label, or a quote that is missing, too long (over 4,000 characters), or not found in the section, are dropped and counted in warnings instead of failing the section. Over-long clue notes and trait values are shortened with an ellipsis. Image-description facts with a missing, over-long, or unmatched quote are dropped with a warning (quotes are compared ignoring curly quotes and line wrapping), and over-long fact notes are shortened. Unsafe markup still fails. Request messages are unchanged, so saved answers are reused and earlier rejected answers can now pass.
+
+**Wording.** The image step is renamed **Image prompts** and says it does not fill character looks.
+
+**Validation.** Type checking and all 517 tests across 20 files pass. New tests cover automatic looks after an import (including the persona following), keeping existing looks, skipping a different draft, the import option's validation and default, dropped and shortened clues, and dropped image facts without a repair request. The user's draft still matches its saved story, so Design looks needs no pasted text. Production and preview bundles were rebuilt. Real model output and a live Lumiverse session were not verified here.
 
 ## Change in 0.1.16
 

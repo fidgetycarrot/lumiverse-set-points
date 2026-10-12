@@ -274,6 +274,9 @@ export function setup(ctx: SpindleFrontendContext) {
   const options=node('div','sp-card sp-stack'); options.append(node('h3','','Make a place for yourself'));
   const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'Type a story character’s name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new character in the story, and Set Points writes them for you. The story’s main character stays in the story. You get a persona to check in Review.'});
   const playerDetails=field('Your character · optional','',undefined,{area:true,rows:5,placeholder:'Name, looks, who they are, why they’re here',hint:'Joining as someone new? Describe them here. Set Points keeps your words, adds only what’s missing, and makes this your persona. Leave it blank and Set Points writes someone for you.'});
+  const describeLooks=node('input');describeLooks.type='checkbox';describeLooks.checked=true;describeLooks.id=`sp-${suffix}-describe-looks`;describeLooks.style.width='auto';
+  const describeLooksLabel=node('label','sp-check','Describe how everyone looks');describeLooksLabel.htmlFor=describeLooks.id;
+  const describeLooksWrap=node('div','sp-field');describeLooksWrap.append(row(describeLooks,describeLooksLabel),paragraph('After the import, reads the story again for looks and clothes, and makes up what it doesn’t say. Each character’s look is filled in for you to change in Review. Adds a few model requests.','sp-hint'));
   const narrationMode=selectField('Narration style',[['neutral','External narrator'],['character','Supporting character in first person']],'neutral',()=>{narratorName.wrap.hidden=narrationMode.input.value!=='character';});
   const narratorName=field('Who narrates?','',undefined,{placeholder:'Exact supporting-character name or alias',hint:'Choose someone other than the character you play.'});narratorName.wrap.hidden=true;
   const sourceViewpoint=field('Original story viewpoint · optional','',undefined,{placeholder:'For example: Lina tells the story in first person',hint:'Source context only. It does not assign your player role.'});
@@ -299,7 +302,7 @@ export function setup(ctx: SpindleFrontendContext) {
   });checkConnectionButton.disabled=true;
   connection.addEventListener('change',()=>{connectionStatus.textContent='';syncImportControls();});
   connectionWrap.append(checkConnectionButton,paragraph('Sends a small test request without your story. Normal model charges apply.','sp-hint'),connectionStatus);
-  const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,playerDetails.wrap,narrationMode.wrap,narratorName.wrap,sourceViewpoint.wrap,importOpeningStyle.wrap,start.wrap,optionGrid);panels.import.append(options);
+  const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,playerDetails.wrap,describeLooksWrap,narrationMode.wrap,narratorName.wrap,sourceViewpoint.wrap,importOpeningStyle.wrap,start.wrap,optionGrid);panels.import.append(options);
   const advanced=details('Long-story settings');const chunk=field('Characters per section','12000',undefined,{type:'number',min:4000,max:20000,hint:'Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context.'});advanced.body.append(chunk.wrap);panels.import.append(advanced.root);
   const responseSettings=details('Model response settings');
   const outputAllowance=selectField('Response allowance',responseAllowances,'16000');
@@ -333,7 +336,7 @@ export function setup(ctx: SpindleFrontendContext) {
     const sceneNumber=Number(sceneCount.input.value),chunkNumber=Number(chunk.input.value);
     if(!Number.isInteger(sceneNumber)||sceneNumber<2||sceneNumber>24) throw new Error('Choose between 2 and 24 scenes.');
     if(!Number.isInteger(chunkNumber)||chunkNumber<4000||chunkNumber>20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
-    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,narrationMode:narrationMode.input.value as 'neutral'|'character',narratorCharacter:narratorName.input.value.trim(),sourceViewpoint:sourceViewpoint.input.value.trim(),...(playerDetails.input.value.trim()?{playerDetails:playerDetails.input.value.trim()}:{}),openingStyle:importOpeningStyle.input.value as 'interactive'|'story',...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
+    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,narrationMode:narrationMode.input.value as 'neutral'|'character',narratorCharacter:narratorName.input.value.trim(),sourceViewpoint:sourceViewpoint.input.value.trim(),...(playerDetails.input.value.trim()?{playerDetails:playerDetails.input.value.trim()}:{}),describeLooks:describeLooks.checked,openingStyle:importOpeningStyle.input.value as 'interactive'|'story',...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
     adaptationStarting=true;syncImportControls();
     try{const job=await rpc.request<ImportJob>('start-import',{options});if(snapshot)snapshot.job=job;renderJob(job);notify('Your story is being adapted. You can leave this panel open or return later.');await refresh();}
     finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
@@ -365,9 +368,9 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   // This panel is mounted independently of the story editor, so background jobs cannot replace story edits.
-  const visualPanel=details('Image descriptions · optional').root;
+  const visualPanel=details('Image prompts · optional').root;
   const visualBody=visualPanel.querySelector<HTMLDivElement>('.sp-stack')!;
-  const visualInfo=paragraph('Reads the original story again for appearance details. Uses normal text-model charges; it does not generate images.','sp-hint');
+  const visualInfo=paragraph('Makes picture prompts for Lumi Studio from the story. It does not fill in how characters look in your story; use Design character looks for that. Uses normal text-model charges and makes no images.','sp-hint');
   const visualSourceNotice=paragraph('','sp-notice');
   const visualSource=field('Original story for these descriptions','',undefined,{area:true,rows:5,hint:'Paste the original story for this draft. Review it before creating descriptions. This stays separate from your Import form.'});visualSource.input.maxLength=MAX_SOURCE;
   const visualSources=new Map<string,string>();const visualSourceOverrides=new Set<string>();let visualSourceKey='';

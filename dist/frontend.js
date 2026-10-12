@@ -163,7 +163,7 @@ function requireRoleReview(draft) {
 }
 
 // src/types.ts
-var VERSION = "0.1.16";
+var VERSION = "0.1.17";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -1244,6 +1244,15 @@ function setup(ctx) {
   options.append(node("h3", "", "Make a place for yourself"));
   const role = field("Who will you play?", "", undefined, { placeholder: "An existing character, or someone new", hint: "Type a story character’s name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new character in the story, and Set Points writes them for you. The story’s main character stays in the story. You get a persona to check in Review." });
   const playerDetails = field("Your character · optional", "", undefined, { area: true, rows: 5, placeholder: "Name, looks, who they are, why they’re here", hint: "Joining as someone new? Describe them here. Set Points keeps your words, adds only what’s missing, and makes this your persona. Leave it blank and Set Points writes someone for you." });
+  const describeLooks = node("input");
+  describeLooks.type = "checkbox";
+  describeLooks.checked = true;
+  describeLooks.id = `sp-${suffix}-describe-looks`;
+  describeLooks.style.width = "auto";
+  const describeLooksLabel = node("label", "sp-check", "Describe how everyone looks");
+  describeLooksLabel.htmlFor = describeLooks.id;
+  const describeLooksWrap = node("div", "sp-field");
+  describeLooksWrap.append(row(describeLooks, describeLooksLabel), paragraph("After the import, reads the story again for looks and clothes, and makes up what it doesn’t say. Each character’s look is filled in for you to change in Review. Adds a few model requests.", "sp-hint"));
   const narrationMode = selectField("Narration style", [["neutral", "External narrator"], ["character", "Supporting character in first person"]], "neutral", () => {
     narratorName.wrap.hidden = narrationMode.input.value !== "character";
   });
@@ -1298,7 +1307,7 @@ function setup(ctx) {
   connectionWrap.append(checkConnectionButton, paragraph("Sends a small test request without your story. Normal model charges apply.", "sp-hint"), connectionStatus);
   const optionGrid = node("div", "sp-grid");
   optionGrid.append(sceneCount.wrap, connectionWrap);
-  options.append(role.wrap, playerDetails.wrap, narrationMode.wrap, narratorName.wrap, sourceViewpoint.wrap, importOpeningStyle.wrap, start.wrap, optionGrid);
+  options.append(role.wrap, playerDetails.wrap, describeLooksWrap, narrationMode.wrap, narratorName.wrap, sourceViewpoint.wrap, importOpeningStyle.wrap, start.wrap, optionGrid);
   panels.import.append(options);
   const advanced = details("Long-story settings");
   const chunk = field("Characters per section", "12000", undefined, { type: "number", min: 4000, max: 20000, hint: "Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context." });
@@ -1374,7 +1383,7 @@ function setup(ctx) {
       throw new Error("Choose between 2 and 24 scenes.");
     if (!Number.isInteger(chunkNumber) || chunkNumber < 4000 || chunkNumber > 20000)
       throw new Error("Section size must be between 4,000 and 20,000 characters.");
-    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, narrationMode: narrationMode.input.value, narratorCharacter: narratorName.input.value.trim(), sourceViewpoint: sourceViewpoint.input.value.trim(), ...playerDetails.input.value.trim() ? { playerDetails: playerDetails.input.value.trim() } : {}, openingStyle: importOpeningStyle.input.value, ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
+    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, narrationMode: narrationMode.input.value, narratorCharacter: narratorName.input.value.trim(), sourceViewpoint: sourceViewpoint.input.value.trim(), ...playerDetails.input.value.trim() ? { playerDetails: playerDetails.input.value.trim() } : {}, describeLooks: describeLooks.checked, openingStyle: importOpeningStyle.input.value, ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
     adaptationStarting = true;
     syncImportControls();
     try {
@@ -1445,9 +1454,9 @@ function setup(ctx) {
     if (next.connections.some((item) => item.id === current))
       connection.value = current;
   }
-  const visualPanel = details("Image descriptions · optional").root;
+  const visualPanel = details("Image prompts · optional").root;
   const visualBody = visualPanel.querySelector(".sp-stack");
-  const visualInfo = paragraph("Reads the original story again for appearance details. Uses normal text-model charges; it does not generate images.", "sp-hint");
+  const visualInfo = paragraph("Makes picture prompts for Lumi Studio from the story. It does not fill in how characters look in your story; use Design character looks for that. Uses normal text-model charges and makes no images.", "sp-hint");
   const visualSourceNotice = paragraph("", "sp-notice");
   const visualSource = field("Original story for these descriptions", "", undefined, { area: true, rows: 5, hint: "Paste the original story for this draft. Review it before creating descriptions. This stays separate from your Import form." });
   visualSource.input.maxLength = MAX_SOURCE;

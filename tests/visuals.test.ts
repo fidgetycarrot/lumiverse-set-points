@@ -210,12 +210,20 @@ describe('source-grounded visual enrichment',()=>{
     },()=>{});
     expect(read).toBe(text);expect(sections).toBeGreaterThan(1);expect(result.profiles[0].sourceRefs).toHaveLength(sections);
   });
-  test('rejects fabricated evidence before creating any character profile',async()=>{
-    let calls=0;
-    await expect(enrichVisuals({draft:draft(),sourceText:source},async()=>{
-      calls++;const result=sourceFacts();result.characters[0].facts[0].evidence='a quote that is not in the story';return reply(result);
-    },()=>{})).rejects.toMatchObject({code:'INVALID_REFERENCE'});
-    expect(calls).toBe(2);
+  test('drops a detail whose quote is not in the story, or is too long, without failing or buying a repair',async()=>{
+    const seen:any[]=[];
+    await enrichVisuals({draft:draft(),sourceText:source},async(messages:any)=>{
+      seen.push(messages);
+      if(seen.length===1){const result=sourceFacts();result.characters[0].facts[0].evidence='a quote that is not in the story';result.characters[0].facts[1].evidence='x'.repeat(5000);return reply(result);}
+      throw new Error('stop after reading');
+    },()=>{}).catch(()=>{});
+    // The second request is the next step, not a repair of the reading.
+    expect(seen).toHaveLength(2);
+    expect(seen[1][0].content).not.toContain('did not match');
+    // Dropped details never reach it; the matched ones do.
+    expect(seen[1][1].content).not.toContain('Dark hair and green eyes.');
+    expect(seen[1][1].content).not.toContain('A blue coat.');
+    expect(seen[1][1].content).toContain('A woman, 30 years old.');
   });
   test.each(['appearance','clothing','identity','count-only'] as const)('retains uncited starting facts without a repair request: %s',async omission=>{
     let calls=0;

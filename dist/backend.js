@@ -3293,7 +3293,7 @@ function requireRoleReview(draft) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.16";
+var VERSION = "0.1.17";
 
 // src/persona.ts
 function playerCharacter(draft) {
@@ -14247,6 +14247,7 @@ function unknownProfile(characterId) {
 }
 function validateFacts(value, ids, source, chunkIndex) {
   const input = object3(value, "visual facts"), seen = new Set, facts = [];
+  let dropped = 0;
   for (const [index, item] of list2(input.characters, "characters", ids.size).entries()) {
     const entry = object3(item, `characters[${index}]`), characterId = text(entry.characterId, "characterId", 80);
     if (!ids.has(characterId) || seen.has(characterId))
@@ -14256,13 +14257,22 @@ function validateFacts(value, ids, source, chunkIndex) {
       const fact = object3(value, "fact"), kind = text(fact.kind, "fact.kind", 20), timing = text(fact.timing, "fact.timing", 20);
       if (!["appearance", "clothing", "identity"].includes(kind) || !["start", "later", "uncertain"].includes(timing))
         fail2("INVALID_SCHEMA", "Visual fact kind or timing is not supported.");
-      const evidence = text(fact.evidence, "fact.evidence", 400);
-      if (!source.text.includes(evidence))
-        fail2("INVALID_REFERENCE", "A visual fact cites words that do not appear in its source section.");
-      facts.push({ id: `visual-${chunkIndex + 1}-${index + 1}-${factIndex + 1}`, characterId, kind, timing, text: text(fact.text, "fact.text", 1000), sourceRefs: [source.ref] });
+      const evidence = typeof fact.evidence === "string" ? fact.evidence : "";
+      if (!evidence.trim() || evidence.length > 4000 || !loose(source.text).includes(loose(evidence))) {
+        dropped++;
+        continue;
+      }
+      const note = typeof fact.text === "string" && fact.text.trim().length > 1000 ? `${fact.text.trim().slice(0, 999).trimEnd()}\u2026` : fact.text;
+      facts.push({ id: `visual-${chunkIndex + 1}-${index + 1}-${factIndex + 1}`, characterId, kind, timing, text: text(note, "fact.text", 1000), sourceRefs: [source.ref] });
     }
   }
-  return { facts, warnings: texts2(input.warnings, "warnings", 24, 1000) };
+  const warnings = texts2(input.warnings, "warnings", 24, 1000);
+  if (dropped)
+    warnings.push(`Section ${chunkIndex + 1}: ${dropped} detail${dropped === 1 ? "" : "s"} could not be matched to the story's own words and ${dropped === 1 ? "was" : "were"} left out.`);
+  return { facts, warnings };
+}
+function loose(value) {
+  return value.replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, " ").trim();
 }
 function validateConstructed(value, characterId, facts, draft, chunks) {
   const input = object3(value, "visual profile"), raw = object3(input.profile, "profile"), grounding = object3(input.grounding, "grounding");
@@ -14462,8 +14472,17 @@ function text2(value, path, max, allowEmpty = false) {
     fail3("INVALID_SCHEMA", `${path} contains unsupported control characters.`);
   return result;
 }
+function clip2(value, max) {
+  if (typeof value !== "string")
+    return value;
+  const trimmed = value.trim();
+  if (trimmed.length <= max)
+    return trimmed;
+  const cut = trimmed.slice(0, max - 1), space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
+}
 function phrase(value, path, max, allowEmpty = false) {
-  return text2(value, path, max, allowEmpty).replace(/\s+/g, " ").replace(/[.;,\s]+$/, "");
+  return text2(clip2(value, max), path, max, allowEmpty).replace(/\s+/g, " ").replace(/[.;,\s]+$/, "");
 }
 function identifier2(value, path) {
   const id = text2(value, path, 80);
@@ -14477,7 +14496,7 @@ function sourceRefs2(value, path) {
     fail3("INVALID_REFERENCE", `${path} refers to an unknown story section.`);
   return refs;
 }
-function loose(value) {
+function loose2(value) {
   return value.replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, " ").trim();
 }
 function cancelled2(signal) {
@@ -14487,8 +14506,30 @@ function cancelled2(signal) {
 function lookDraftSignature(draft) {
   return JSON.stringify({ id: draft.id.trim(), cast: draft.cast.map((person) => person.id.trim()) });
 }
+function lookAppearance(look) {
+  return BODY_FIELDS.map((field) => look.traits.find((trait) => trait.field === field)).filter((trait) => !!trait?.value).map((trait) => `${LOOK_LABELS[trait.field]}: ${trait.value}`).join(`
+`);
+}
+function lookOutfit(look) {
+  return look.traits.find((trait) => trait.field === "outfit")?.value ?? "";
+}
 function lookSummary(look) {
   return look.traits.filter((trait) => trait.value).map((trait) => `${LOOK_LABELS[trait.field].toLowerCase()}: ${trait.value}`).join("; ");
+}
+function approvedFromLook(look) {
+  return { characterId: look.characterId, description: lookAppearance(look), startingOutfit: lookOutfit(look) };
+}
+function useLooks(draft, looks) {
+  for (const look of looks) {
+    if (!draft.cast.some((person) => person.id === look.characterId))
+      continue;
+    const approved = approvedFromLook(look), index = draft.appearances?.findIndex((item) => item.characterId === look.characterId) ?? -1;
+    if (index >= 0)
+      draft.appearances[index] = approved;
+    else
+      (draft.appearances ??= []).push(approved);
+  }
+  return draft;
 }
 function validateClue(value, path) {
   const clue = object4(value, path), kind = text2(clue.kind, `${path}.kind`, 20), about = text2(clue.about, `${path}.about`, 20);
@@ -14573,32 +14614,41 @@ function validateLookPack(value, draft) {
 }
 function validateChunkClues(value, ids, source, chunkIndex) {
   const input = object4(value, "story clues"), known = new Set(ids), seen = new Set, clues = [];
-  const haystack = loose(source.text);
-  let unquoted = 0;
+  const haystack = loose2(source.text);
+  let unquoted = 0, skipped = 0;
   for (const [index, item] of list3(input.characters, "characters", ids.length).entries()) {
     const entry = object4(item, `characters[${index}]`), characterId = text2(entry.characterId, "characterId", 80);
     if (!known.has(characterId) || seen.has(characterId))
       fail3("INVALID_SCHEMA", "Story clues must use known character IDs without duplicates.");
     seen.add(characterId);
     for (const [clueIndex, raw] of list3(entry.clues, "clues", 96).entries()) {
-      const clue = object4(raw, "clue"), kind = text2(clue.kind, "clue.kind", 20), about = text2(clue.about, "clue.about", 20), timing = text2(clue.timing, "clue.timing", 20);
-      if (kind !== "stated" && kind !== "implied")
-        fail3("INVALID_SCHEMA", "A story clue must be stated or implied.");
-      if (!TOPICS.includes(about))
-        fail3("INVALID_SCHEMA", "A story clue names an unknown trait.");
-      if (!["start", "later", "uncertain"].includes(timing))
-        fail3("INVALID_SCHEMA", "A story clue has an unknown timing.");
-      const evidence = text2(clue.evidence, "clue.evidence", 400);
-      if (!haystack.includes(loose(evidence))) {
-        unquoted++;
+      let clue;
+      try {
+        const item = object4(raw, "clue"), kind = text2(item.kind, "clue.kind", 20), about = text2(item.about, "clue.about", 20), timing = text2(item.timing, "clue.timing", 20);
+        if (kind !== "stated" && kind !== "implied" || !TOPICS.includes(about) || !["start", "later", "uncertain"].includes(timing)) {
+          skipped++;
+          continue;
+        }
+        const evidence = typeof item.evidence === "string" ? item.evidence : "";
+        if (!evidence.trim() || evidence.length > 4000 || !haystack.includes(loose2(evidence))) {
+          unquoted++;
+          continue;
+        }
+        clue = { id: `clue-${chunkIndex + 1}-${ids.indexOf(characterId) + 1}-${clueIndex + 1}`, characterId, kind, about, timing, text: text2(clip2(item.text, LOOK_LIMITS.clueText), "clue.text", LOOK_LIMITS.clueText), sourceRefs: [source.ref] };
+      } catch (error) {
+        if (!(error instanceof ImportError) || error.code === "UNSAFE_TEMPLATE" || error.code === "UNSAFE_MARKUP")
+          throw error;
+        skipped++;
         continue;
       }
-      clues.push({ id: `clue-${chunkIndex + 1}-${ids.indexOf(characterId) + 1}-${clueIndex + 1}`, characterId, kind, about, timing, text: text2(clue.text, "clue.text", LOOK_LIMITS.clueText), sourceRefs: [source.ref] });
+      clues.push(clue);
     }
   }
   const warnings = list3(input.warnings, "warnings", 24).map((item, index) => text2(item, `warnings[${index}]`, 1000));
   if (unquoted)
     warnings.push(`Section ${chunkIndex + 1}: ${unquoted} clue${unquoted === 1 ? "" : "s"} could not be matched to the story's own words and ${unquoted === 1 ? "was" : "were"} left out.`);
+  if (skipped)
+    warnings.push(`Section ${chunkIndex + 1}: ${skipped} clue${skipped === 1 ? " was" : "s were"} not readable and ${skipped === 1 ? "was" : "were"} left out.`);
   return { clues, warnings };
 }
 function acceptLook(value, characterId, clues, previous) {
@@ -15051,7 +15101,7 @@ class SetPointsController {
     }
     if (typeof data.sourceText !== "string" || data.sourceText.trim().length < 100 || data.sourceText.length > 500000)
       throw new Error("Provide between 100 and 500,000 characters of the original story to design looks from.");
-    return { ...base, sourceText: data.sourceText };
+    return { ...base, sourceText: data.sourceText, ...data.autoUse === true ? { autoUse: true } : {} };
   }
   looksBusy() {
     return this.lookStarting || !!this.lookAbort || this.workspace.lookJob?.status === "running";
@@ -15332,6 +15382,8 @@ class SetPointsController {
         throw new Error("Name the supporting character who narrates.");
       if (options.narratorCharacter !== undefined && (typeof options.narratorCharacter !== "string" || options.narratorCharacter.length > 200) || options.sourceViewpoint !== undefined && (typeof options.sourceViewpoint !== "string" || options.sourceViewpoint.length > 500))
         throw new Error("Keep narrator names under 200 characters and source viewpoint under 500.");
+      if (options.describeLooks !== undefined && typeof options.describeLooks !== "boolean")
+        throw new Error("Choose whether to describe how everyone looks.");
       if (options.playerDetails !== undefined && (typeof options.playerDetails !== "string" || options.playerDetails.length > 4000))
         throw new Error("Keep your character description under 4,000 characters.");
       if (options.sourceUrl)
@@ -15357,7 +15409,7 @@ class SetPointsController {
       this.note("Import started.");
       this.changed();
       this.jobTask = (async () => {
-        let responseReturned = false;
+        let responseReturned = false, finished;
         try {
           const generate = async (messages, signal) => {
             responseReturned = false;
@@ -15400,6 +15452,7 @@ class SetPointsController {
           this.workspace.job = { ...this.workspace.job, status: "complete", label: "Ready to review", completed: this.workspace.job.total };
           await this.persist();
           this.note("Import completed. Draft ready to review.");
+          finished = this.workspace.draft;
         } catch (error) {
           const cancelled = controller.signal.aborted;
           let message = error instanceof Error ? error.message : "Import failed. Your last completed draft is preserved.";
@@ -15421,6 +15474,15 @@ class SetPointsController {
           if (this.abort === controller)
             this.abort = undefined;
           this.changed();
+        }
+        if (finished && options.describeLooks) {
+          try {
+            await this.startLooks({ draft: finished, sourceText: options.text, connectionId: options.connectionId, ...settings, autoUse: true });
+          } catch (error) {
+            this.note("Describing looks could not start after the import.");
+            this.workspace.lookJob = { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Looks were not described", error: `${error instanceof Error ? error.message : "Describing looks could not start."} Use Design character looks to try again.` };
+            this.changed();
+          }
         }
       })();
       return structuredClone(job);
@@ -15749,6 +15811,20 @@ class SetPointsController {
           this.workspace.lookPack = validateLookPack(pack, options.draft);
           this.workspace.lookResultSignature = signature;
           this.workspace.lookJob = { ...this.workspace.lookJob, status: "complete", label: options.reroll ? "New look ready to review" : "Looks ready to review", completed: this.workspace.lookJob.total };
+          const current = this.workspace.draft;
+          if (options.autoUse && current && lookDraftSignature(current) === signature) {
+            const filled = new Set((current.appearances ?? []).filter((item) => item.description.trim() || item.startingOutfit.trim()).map((item) => item.characterId));
+            const fresh = this.workspace.lookPack.looks.filter((look) => !filled.has(look.characterId));
+            if (fresh.length) {
+              const follows = personaIsAutomatic(current);
+              const next = validateDraft(useLooks(structuredClone(current), fresh));
+              if (follows && next.persona)
+                Object.assign(next.persona, personaDraft(next));
+              this.workspace.draft = validateDraft(next);
+              this.workspace.saved = null;
+              this.workspace.lookJob = { ...this.workspace.lookJob, label: `Looks added for ${fresh.length} character${fresh.length === 1 ? "" : "s"}. Change them in Review.` };
+            }
+          }
           await this.persist();
           this.note(options.reroll ? "Look reroll completed." : "Look design completed.");
         } catch (error) {

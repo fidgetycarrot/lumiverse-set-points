@@ -11,14 +11,14 @@ import { repairSceneOpenings, repairSignature } from './scene-repair';
 import { SceneRuntime } from './runtime';
 import { extractPage, storyUrl } from './source';
 import { enrichVisuals, validateVisualPack, visualDraftSignature, type VisualPack } from './visuals';
-import { designLooks, lookDraftSignature, rerollLook, validateLookPack, LOOK_LIMITS, type LookPack } from './looks';
+import { designLooks, lookDraftSignature, rerollLook, useLooks, validateLookPack, LOOK_LIMITS, type LookPack } from './looks';
 import { EXTENSION_ID, VERSION, type AppSnapshot, type Newcomer, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
 
 const STATE_PATH = 'workspace.json';
 type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 // A look job is either a full design (needs the story text) or a reroll of one
 // character (needs only the saved looks, which carry their own story notes).
-type LookInput = { draft: StoryDraft; sourceText?: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; reroll?: { characterId: string; note: string; pack: LookPack } };
+type LookInput = { draft: StoryDraft; sourceText?: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; reroll?: { characterId: string; note: string; pack: LookPack }; autoUse?: boolean };
 type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2|3|4 };
 type CharacterPolishInput = { draft: StoryDraft; characterIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 type Workspace = {
@@ -281,7 +281,7 @@ export class SetPointsController {
       return { ...base, reroll: { characterId, note: reroll.note.trim(), pack: validateLookPack(reroll.pack, draft) } };
     }
     if (typeof data.sourceText !== 'string' || data.sourceText.trim().length < 100 || data.sourceText.length > 500_000) throw new Error('Provide between 100 and 500,000 characters of the original story to design looks from.');
-    return { ...base, sourceText: data.sourceText };
+    return { ...base, sourceText: data.sourceText, ...(data.autoUse === true ? { autoUse: true } : {}) };
   }
   private looksBusy() { return this.lookStarting || !!this.lookAbort || this.workspace.lookJob?.status === 'running'; }
   private note(kind: string) { this.entries.push(`${new Date().toISOString()} ${kind}`); this.entries = this.entries.slice(-100); }
@@ -496,6 +496,7 @@ export class SetPointsController {
       if (options.narrationMode !== undefined && !['neutral','character'].includes(options.narrationMode)) throw new Error('Choose a valid narration style.');
       if (options.narrationMode === 'character' && (typeof options.narratorCharacter !== 'string' || !options.narratorCharacter.trim())) throw new Error('Name the supporting character who narrates.');
       if (options.narratorCharacter !== undefined && (typeof options.narratorCharacter !== 'string' || options.narratorCharacter.length>200) || options.sourceViewpoint !== undefined && (typeof options.sourceViewpoint !== 'string' || options.sourceViewpoint.length>500)) throw new Error('Keep narrator names under 200 characters and source viewpoint under 500.');
+      if (options.describeLooks !== undefined && typeof options.describeLooks !== 'boolean') throw new Error('Choose whether to describe how everyone looks.');
       if (options.playerDetails !== undefined && (typeof options.playerDetails !== 'string' || options.playerDetails.length > 4000)) throw new Error('Keep your character description under 4,000 characters.');
       if (options.sourceUrl) options.sourceUrl = storyUrl(options.sourceUrl);
       const connection = await this.selectedConnection(options.connectionId);
@@ -517,7 +518,7 @@ export class SetPointsController {
       this.note('Import started.');
       this.changed();
       this.jobTask = (async () => {
-        let responseReturned = false;
+        let responseReturned = false, finished: StoryDraft | undefined;
         try {
           const generate: Generate = async (messages, signal) => {
             responseReturned = false;
@@ -555,6 +556,7 @@ export class SetPointsController {
           this.workspace.job = { ...this.workspace.job!, status: 'complete', label: 'Ready to review', completed: this.workspace.job!.total };
           await this.persist();
           this.note('Import completed. Draft ready to review.');
+          finished = this.workspace.draft;
         } catch (error) {
           const cancelled = controller.signal.aborted;
           let message = error instanceof Error ? error.message : 'Import failed. Your last completed draft is preserved.';
@@ -569,6 +571,12 @@ export class SetPointsController {
           this.note(cancelled ? 'Import cancelled.' : 'Import failed; last completed draft preserved.');
           await this.persist().catch(() => this.note('Could not persist the import status.'));
         } finally { if (this.abort === controller) this.abort = undefined; this.changed(); }
+        // Looks are part of the import when asked for: read the story again for
+        // them and fill each character's look, so Review starts with them in place.
+        if (finished && options.describeLooks) {
+          try { await this.startLooks({ draft: finished, sourceText: options.text, connectionId: options.connectionId, ...settings, autoUse: true }); }
+          catch (error) { this.note('Describing looks could not start after the import.'); this.workspace.lookJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Looks were not described', error: `${error instanceof Error ? error.message : 'Describing looks could not start.'} Use Design character looks to try again.` }; this.changed(); }
+        }
       })();
       return structuredClone(job);
     } finally { this.starting = false; }
@@ -798,6 +806,20 @@ export class SetPointsController {
           this.workspace.lookPack = validateLookPack(pack, options.draft);
           this.workspace.lookResultSignature = signature;
           this.workspace.lookJob = { ...this.workspace.lookJob!, status: 'complete', label: options.reroll ? 'New look ready to review' : 'Looks ready to review', completed: this.workspace.lookJob!.total };
+          // Started by an import: put each look into its character's fields,
+          // unless that character already has one or the draft has moved on.
+          const current = this.workspace.draft;
+          if (options.autoUse && current && lookDraftSignature(current) === signature) {
+            const filled = new Set((current.appearances ?? []).filter(item => item.description.trim() || item.startingOutfit.trim()).map(item => item.characterId));
+            const fresh = this.workspace.lookPack.looks.filter(look => !filled.has(look.characterId));
+            if (fresh.length) {
+              const follows = personaIsAutomatic(current);
+              const next = validateDraft(useLooks(structuredClone(current), fresh));
+              if (follows && next.persona) Object.assign(next.persona, personaDraft(next));
+              this.workspace.draft = validateDraft(next); this.workspace.saved = null;
+              this.workspace.lookJob = { ...this.workspace.lookJob, label: `Looks added for ${fresh.length} character${fresh.length === 1 ? '' : 's'}. Change them in Review.` };
+            }
+          }
           await this.persist();
           this.note(options.reroll ? 'Look reroll completed.' : 'Look design completed.');
         } catch (error) {

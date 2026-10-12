@@ -4,6 +4,10 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
+Version **0.1.17** fills in how everyone looks as part of the import. **Describe how everyone looks** is on by default in the import form: after the import, Set Points reads the story again for looks and clothes, makes up what the story doesn't say, and puts each look into that character's fields in Review. A long or unmatched quote from the model no longer stops this step or the image prompts step; that one detail is just left out.
+
+Already have a draft without looks? Open **Design character looks** in Import and choose **Design looks**, then **Use all looks in the story**. The story text is already saved with your draft.
+
 Version **0.1.16** keeps your own character. When you join as someone new, the import form now has **Your character**: describe them there and Set Points keeps your words exactly, adds only what you left out, and makes that your persona. Editing the persona in Review now changes the character the story uses too, and renaming them is flagged anywhere the old name is still used. Openings that call you by name instead of “you” are flagged as well, and new scene repairs fix them.
 
 Version **0.1.15** fixed playing **someone new** in a story told from one character's point of view. The character the story follows stays in the story as someone the narrator plays, and you join as your own person. If you leave **Your character** blank, the import writes someone for you (name, why they are there, how they look) and makes them your persona. The first time you open a chat with the card, Set Points switches to that persona for that chat.
@@ -159,11 +163,11 @@ Publishing an edited appearance guide creates a new card and attached world book
 
 ## Design character looks
 
-Some stories never say what anyone looks like. Open **Review → The people → Design character looks · optional**, choose a connection, and click **Design looks**. This is a separate step with normal text-model charges. It makes no images and changes nothing in your story until you choose a look.
+Some stories never say what anyone looks like. New imports do this for you when **Describe how everyone looks** is ticked (the default): the looks go straight into each character's fields, and anyone who already has a look keeps it. To do it later, open **Design character looks · optional**, choose a connection, and click **Design looks**. This is a separate step with normal text-model charges. It makes no images, and when you start it yourself it changes nothing in your story until you choose a look.
 
 It works in two passes:
 
-1. **Clues.** The story is read again in sections for anything that bears on how each character looks at your starting point. A clue is either *stated* (a hair color, a scar, what someone is wearing) or *implied* (a job, a physical feat, how others react to them, the era and weather they dress for). Each clue must quote the story; one that cannot be found in the story’s own words is dropped. Clues about later moments, such as a new injury or a disguise, are left out of the starting look.
+1. **Clues.** The story is read again in sections for anything that bears on how each character looks at your starting point. A clue is either *stated* (a hair color, a scar, what someone is wearing) or *implied* (a job, a physical feat, how others react to them, the era and weather they dress for). Each clue must quote the story; one that cannot be found in the story’s own words, or that the model wrote badly, is dropped and counted in the notes instead of stopping the step. Clues about later moments, such as a new injury or a disguise, are left out of the starting look.
 2. **Design.** The whole cast is designed in one request (groups of eight for a large cast, each group told about the ones before it) so people who share scenes differ in age, height, build, coloring, and outline. The model is told to tie each made-up trait to the character’s work, history, or temperament, to give everyone at least one lived-in or uneven detail, and to avoid stock phrases. With no sign of someone’s age, they are designed as an adult.
 
 Every character gets the same nine fields: age, height, build, skin, hair, eyes, face, marks, and outfit at the start. Each one is marked:
@@ -184,7 +188,9 @@ Looks belong to the draft and cast they were designed for. Ordinary edits in Rev
 
 ## Optional image descriptions
 
-After a draft is ready, open **Review → Image descriptions · optional**. Choose the description connection and click **Create image descriptions** only when you want this additional step. Set Points reads the original story again in sections, then creates profiles for the draft’s cast. Each new source-reading, profile, or format-repair request uses normal text-model charges. Generation alone does not change the approved story appearances, published card, or world book. Nothing is sent to Lumi Studio automatically.
+This step makes picture prompts for Lumi Studio. It does not fill in how characters look in your story; that is **Describe how everyone looks** in the import form, or **Design character looks** afterwards.
+
+After a draft is ready, open **Image prompts · optional**. Choose the description connection and click **Create image descriptions** only when you want this additional step. Set Points reads the original story again in sections, then creates profiles for the draft’s cast. Each new source-reading, profile, or format-repair request uses normal text-model charges. Generation alone does not change the approved story appearances, published card, or world book. Nothing is sent to Lumi Studio automatically.
 
 Newly completed drafts retain a verified link to their original source. Existing 0.1.5 drafts, opened drafts, or relevant edits to a draft may need the original text once. Open **Read the original story from a website**, enter its first-page URL, and choose **Read linked story pages**. The saved source URL is prefilled when available. Check the page count and stopping message, then choose **Use website text for descriptions** to place the collected text in the source field for review. The same multi-page collector and limits apply as in Import; loading pages makes no model request and preserves your completed adaptation. Optional **Other description page links** accepts additional URLs in reading order when automatic navigation is unclear. Pasting into **Original story for these descriptions** or choosing **Use story text from Import** also remains available.
 

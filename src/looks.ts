@@ -77,9 +77,17 @@ function text(value: unknown, path: string, max: number, allowEmpty = false): st
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(result)) fail('INVALID_SCHEMA', `${path} contains unsupported control characters.`);
   return result;
 }
+/** Shorten an over-long model note instead of failing the whole step over it. */
+function clip(value: unknown, max: number): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (trimmed.length <= max) return trimmed;
+  const cut = trimmed.slice(0, max - 1), space = cut.lastIndexOf(' ');
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
 /** One line, no trailing full stop, so traits join cleanly into an entry. */
 function phrase(value: unknown, path: string, max: number, allowEmpty = false): string {
-  return text(value, path, max, allowEmpty).replace(/\s+/g, ' ').replace(/[.;,\s]+$/, '');
+  return text(clip(value, max), path, max, allowEmpty).replace(/\s+/g, ' ').replace(/[.;,\s]+$/, '');
 }
 function identifier(value: unknown, path: string): string {
   const id = text(value, path, 80);
@@ -200,24 +208,32 @@ export function validateLookPack(value: unknown, draft?: StoryDraft): LookPack {
 function validateChunkClues(value: unknown, ids: string[], source: { ref: string; text: string }, chunkIndex: number): { clues: ChunkClue[]; warnings: string[] } {
   const input = object(value, 'story clues'), known = new Set(ids), seen = new Set<string>(), clues: ChunkClue[] = [];
   const haystack = loose(source.text);
-  let unquoted = 0;
+  let unquoted = 0, skipped = 0;
   for (const [index, item] of list(input.characters, 'characters', ids.length).entries()) {
     const entry = object(item, `characters[${index}]`), characterId = text(entry.characterId, 'characterId', 80);
     if (!known.has(characterId) || seen.has(characterId)) fail('INVALID_SCHEMA', 'Story clues must use known character IDs without duplicates.');
     seen.add(characterId);
     for (const [clueIndex, raw] of list(entry.clues, 'clues', 96).entries()) {
-      const clue = object(raw, 'clue'), kind = text(clue.kind, 'clue.kind', 20), about = text(clue.about, 'clue.about', 20), timing = text(clue.timing, 'clue.timing', 20);
-      if (kind !== 'stated' && kind !== 'implied') fail('INVALID_SCHEMA', 'A story clue must be stated or implied.');
-      if (!TOPICS.includes(about)) fail('INVALID_SCHEMA', 'A story clue names an unknown trait.');
-      if (!['start', 'later', 'uncertain'].includes(timing)) fail('INVALID_SCHEMA', 'A story clue has an unknown timing.');
-      const evidence = text(clue.evidence, 'clue.evidence', 400);
-      // A clue we cannot find in the text is dropped, not trusted and not re-bought.
-      if (!haystack.includes(loose(evidence))) { unquoted++; continue; }
-      clues.push({ id: `clue-${chunkIndex + 1}-${ids.indexOf(characterId) + 1}-${clueIndex + 1}`, characterId, kind, about: about as ClueTopic, timing: timing as Timing, text: text(clue.text, 'clue.text', LOOK_LIMITS.clueText), sourceRefs: [source.ref] });
+      // One bad clue is dropped and counted, never allowed to fail the whole
+      // section: a long quote or an odd label should not cost the reading.
+      let clue: ChunkClue;
+      try {
+        const item = object(raw, 'clue'), kind = text(item.kind, 'clue.kind', 20), about = text(item.about, 'clue.about', 20), timing = text(item.timing, 'clue.timing', 20);
+        if (kind !== 'stated' && kind !== 'implied' || !TOPICS.includes(about) || !['start', 'later', 'uncertain'].includes(timing)) { skipped++; continue; }
+        const evidence = typeof item.evidence === 'string' ? item.evidence : '';
+        // A clue we cannot find in the text is dropped, not trusted and not re-bought.
+        if (!evidence.trim() || evidence.length > 4000 || !haystack.includes(loose(evidence))) { unquoted++; continue; }
+        clue = { id: `clue-${chunkIndex + 1}-${ids.indexOf(characterId) + 1}-${clueIndex + 1}`, characterId, kind, about: about as ClueTopic, timing: timing as Timing, text: text(clip(item.text, LOOK_LIMITS.clueText), 'clue.text', LOOK_LIMITS.clueText), sourceRefs: [source.ref] };
+      } catch (error) {
+        if (!(error instanceof ImportError) || error.code === 'UNSAFE_TEMPLATE' || error.code === 'UNSAFE_MARKUP') throw error;
+        skipped++; continue;
+      }
+      clues.push(clue);
     }
   }
   const warnings = list(input.warnings, 'warnings', 24).map((item, index) => text(item, `warnings[${index}]`, 1000));
   if (unquoted) warnings.push(`Section ${chunkIndex + 1}: ${unquoted} clue${unquoted === 1 ? '' : 's'} could not be matched to the story's own words and ${unquoted === 1 ? 'was' : 'were'} left out.`);
+  if (skipped) warnings.push(`Section ${chunkIndex + 1}: ${skipped} clue${skipped === 1 ? ' was' : 's were'} not readable and ${skipped === 1 ? 'was' : 'were'} left out.`);
   return { clues, warnings };
 }
 

@@ -334,7 +334,7 @@ describe('optional image descriptions',()=>{
     app.button('Use story text from Import').click();expect(app.field('Original story for these descriptions').value).toBe('Original story. '.repeat(20));expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
     app.input('Image description connection','model');app.input('Description response allowance','32000');app.input('Description reasoning mode','low');app.button('Create image descriptions').click();await tick();
     const request=app.requests.find(item=>item.action==='start-visuals');expect(request?.input).toEqual({draft:fixture(),connectionId:'model',maxOutputTokens:32000,reasoningMode:'low',sourceText:'Original story. '.repeat(20)});expect(app.field('Story text').value).toBe('Original story. '.repeat(20));
-    expect(app.root.textContent).toContain('normal text-model charges');expect(app.root.textContent).toContain('does not generate images');
+    expect(app.root.textContent).toContain('normal text-model charges');expect(app.root.textContent).toContain('makes no images');
   });
   test('verified source is used only for the exact current draft and no unrelated form text is sent',async()=>{
     const app=harness();readyVisuals(app);await tick();app.input('Story text','A different source in Import');app.button('Review').click();app.button('Create image descriptions').click();await tick();
@@ -556,6 +556,7 @@ describe('joining as someone new',()=>{
     app.input('Your character · optional','Bruenor, a huge warrior with a hammer.');
     app.button('Create adaptation').click();await tick();
     expect(app.requests.find(item=>item.action==='start-import')!.input.options.playerDetails).toBe('Bruenor, a huge warrior with a hammer.');
+    expect(app.requests.find(item=>item.action==='start-import')!.input.options.describeLooks).toBe(true);
   });
   test('a played story character gets no Write my character button',async()=>{
     const app=harness();app.state.draft!.playerRole='Iona';app.state.draft!.roles={narration:'neutral',playerCharacterId:'captain',viewpointCharacterId:null,sourceViewpoint:''};await tick();app.changed();await tick();app.button('Review').click();
