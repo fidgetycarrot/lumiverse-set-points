@@ -1,6 +1,20 @@
-# Set Points 0.1.15 — verification
+# Set Points 0.1.16 — verification
 
 Prepared October 12, 2026.
+
+## Change in 0.1.16
+
+**Problem.** With a vague role ("Someone new"), the 0.1.15 newcomer step invented a character and name. The player then wrote their own character into the persona in Review, but the draft kept the invented character: the persona name stayed the invented one, `draft.newcomer` (used by scene context and repairs) still described it, and two openings narrated the player in third person by that name.
+
+**Your own words.** The import form has an optional **Your character** field (`ImportOptions.playerDetails`, at most 4,000 characters). When filled, the newcomer request (`set-points-newcomer-details-v1`) returns only a name, a role line, and labeled paragraphs for missing sections; the description is composed locally as the player's text unchanged, followed by those additions. Requests without details are byte-identical to 0.1.15. **Write my character** sends a user-written persona body the same way.
+
+**Review sync.** For a newcomer draft in Make a persona mode, editing the persona name or description updates `draft.newcomer` (the trailing join and player-rule lines are stripped first). A rename stores the old name in `newcomer.previousNames` (at most eight) and updates a role line that began with it.
+
+**Checks.** Checker revision 4 flags a role line that does not name the newcomer, unquoted use of the newcomer's current or previous name in an opening, and previous names in private scene direction. Run against the reported draft, it flags the mismatched role and both openings that name the invented character; after renaming, those openings and their directions are flagged as using the old name.
+
+**Prompts.** Scene repair prompt version 4 tells the model to call the newcomer "you", never use their current or previous names in narration, and replace old names in direction. Version 3 and older repairs are unchanged. Import scene context now asks for "you" rather than the newcomer's name.
+
+**Validation.** Type checking and all 512 tests across 20 files pass. Production and preview bundles were rebuilt. Real model output and a live Lumiverse session were not verified here.
 
 ## Change in 0.1.15
 

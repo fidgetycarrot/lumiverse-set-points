@@ -117,6 +117,22 @@ function roleIssues(draft) {
       if (you)
         result.push({ fieldKey: `scene:${scene.id}:greeting`, sceneId: scene.id, kind: "identity", ...matchedText(scene.greeting, you), message: `${lead.name} is part of this scene’s story but isn’t in this opening. Check that “you” is your own character here, not standing in for ${lead.name}.` });
     });
+  const newcomer = player ? undefined : draft.newcomer;
+  if (newcomer) {
+    const current = newcomer.name.trim(), old = (newcomer.previousNames ?? []).map((name) => name.trim()).filter((name) => name && name.toLocaleLowerCase() !== current.toLocaleLowerCase());
+    const names = (list) => list.filter((name) => name.length >= 2).map(escape);
+    const named = (list) => names(list).length ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${names(list).join("|")})(?![\\p{L}\\p{N}])`, "iu") : null;
+    const now = named([current]), before = named(old), any = named([current, ...old]);
+    if (now && !now.test(draft.playerRole))
+      result.push({ fieldKey: "playerRole", kind: "identity", message: `Your role doesn’t name your character, ${current}. Use the same name in both, so the narrator knows who you are.` });
+    for (const scene of draft.scenes) {
+      const call = any?.exec(narrative(scene.greeting));
+      if (call)
+        result.push({ fieldKey: `scene:${scene.id}:greeting`, sceneId: scene.id, kind: "identity", ...matchedText(scene.greeting, call), message: old.some((name) => name.toLocaleLowerCase() === call[0].toLocaleLowerCase()) ? `This opening still uses your character’s old name, “${call[0]}”. Openings should speak to you as “you”.` : `This opening calls you “${call[0]}”. Openings should speak to you as “you”.` });
+      if (before?.test(scene.direction))
+        result.push({ fieldKey: `scene:${scene.id}:direction`, sceneId: scene.id, kind: "identity", message: `This scene’s notes still use your character’s old name. Change it to ${current}.` });
+    }
+  }
   const firstPersonRule = /(?:narrate|narration|write|tell|use|perspective|viewpoint|voice|inside).{0,90}first[ -]person|first[ -]person.{0,90}(?:narration|perspective|viewpoint|head)/i;
   const forbidsFirst = /(?:never|do not|don't|avoid|no).{0,60}first[ -]person/i;
   const directions = [
@@ -133,7 +149,7 @@ function roleIssues(draft) {
 }
 function roleReviewFingerprint(draft) {
   const roles = draft.roles ?? defaultRoles(draft);
-  const value = JSON.stringify({ checker: 3, openingStyle: draft.openingStyle ?? "interactive", id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice), ...person.notes ? { notes: person.notes } : {} })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
+  const value = JSON.stringify({ checker: 4, newcomer: draft.newcomer ? { name: clean(draft.newcomer.name), previousNames: draft.newcomer.previousNames ?? [] } : null, openingStyle: draft.openingStyle ?? "interactive", id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice), ...person.notes ? { notes: person.notes } : {} })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
   let hash = 14695981039346656037n;
   for (let i = 0;i < value.length; i++) {
     hash ^= BigInt(value.charCodeAt(i));
@@ -147,7 +163,7 @@ function requireRoleReview(draft) {
 }
 
 // src/types.ts
-var VERSION = "0.1.15";
+var VERSION = "0.1.16";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -201,6 +217,31 @@ ${look.description.trim()}`] : [],
   return { name: person.name.trim().slice(0, 200), title, description: lines.join(`
 
 `) };
+}
+function personaBody(description) {
+  let text = description.trim();
+  if (text.endsWith(PLAYER_PERSONA_RULE))
+    text = text.slice(0, -PLAYER_PERSONA_RULE.length).trim();
+  return text.replace(/\n*Joining "[^"\n]*" at: [^\n]*$/, "").trim();
+}
+function setNewcomer(draft, next) {
+  const name = next.name.trim(), old = draft.newcomer?.name.trim() ?? "";
+  const key = (value) => value.trim().toLocaleLowerCase();
+  const previous = [...draft.newcomer?.previousNames ?? [], ...old ? [old] : []].filter((value, index, list) => value.trim() && key(value) !== key(name) && list.findIndex((other) => key(other) === key(value)) === index).slice(-8);
+  if (old && key(old) !== key(name) && key(draft.playerRole).startsWith(key(old)))
+    draft.playerRole = `${name}${draft.playerRole.trim().slice(old.length)}`;
+  draft.newcomer = { name, description: next.description.trim(), ...previous.length ? { previousNames: previous } : {} };
+}
+function newcomerFromPersona(draft) {
+  if (playerCharacter(draft) || draft.persona?.mode !== "create")
+    return false;
+  const name = draft.persona.name.trim(), body = personaBody(draft.persona.description);
+  if (!name || !body || name.length > 80 || body.length > 8000)
+    return false;
+  if (draft.newcomer && draft.newcomer.name === name && draft.newcomer.description === body)
+    return false;
+  setNewcomer(draft, { name, description: body });
+  return true;
 }
 var PLAYER_PERSONA_RULE = "This is the human-controlled player. These are starting facts and tendencies, not a script. During live play, the human supplies new actions, dialogue, thoughts, feelings, decisions, and consent.";
 function personaDraft(draft) {
@@ -356,7 +397,9 @@ function validateDraft(value) {
   let newcomer;
   if (draft.newcomer !== undefined) {
     const entry = object(draft.newcomer, "newcomer");
-    newcomer = { name: safeText(entry.name, "newcomer.name", 80), description: safeText(entry.description, "newcomer.description", 4000) };
+    newcomer = { name: safeText(entry.name, "newcomer.name", 80), description: safeText(entry.description, "newcomer.description", 8000) };
+    if (entry.previousNames !== undefined)
+      newcomer.previousNames = texts(entry.previousNames, "newcomer.previousNames", 8, 80);
   }
   const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, "roleReview", 80);
   if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview))
@@ -1264,6 +1307,7 @@ function setup(ctx) {
   const options = node("div", "sp-card sp-stack");
   options.append(node("h3", "", "Make a place for yourself"));
   const role = field("Who will you play?", "", undefined, { placeholder: "An existing character, or someone new", hint: "Type a story character’s name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new character in the story, and Set Points writes them for you. The story’s main character stays in the story. You get a persona to check in Review." });
+  const playerDetails = field("Your character · optional", "", undefined, { area: true, rows: 5, placeholder: "Name, looks, who they are, why they’re here", hint: "Joining as someone new? Describe them here. Set Points keeps your words, adds only what’s missing, and makes this your persona. Leave it blank and Set Points writes someone for you." });
   const narrationMode = selectField("Narration style", [["neutral", "External narrator"], ["character", "Supporting character in first person"]], "neutral", () => {
     narratorName.wrap.hidden = narrationMode.input.value !== "character";
   });
@@ -1318,7 +1362,7 @@ function setup(ctx) {
   connectionWrap.append(checkConnectionButton, paragraph("Sends a small test request without your story. Normal model charges apply.", "sp-hint"), connectionStatus);
   const optionGrid = node("div", "sp-grid");
   optionGrid.append(sceneCount.wrap, connectionWrap);
-  options.append(role.wrap, narrationMode.wrap, narratorName.wrap, sourceViewpoint.wrap, importOpeningStyle.wrap, start.wrap, optionGrid);
+  options.append(role.wrap, playerDetails.wrap, narrationMode.wrap, narratorName.wrap, sourceViewpoint.wrap, importOpeningStyle.wrap, start.wrap, optionGrid);
   panels.import.append(options);
   const advanced = details("Long-story settings");
   const chunk = field("Characters per section", "12000", undefined, { type: "number", min: 4000, max: 20000, hint: "Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context." });
@@ -1394,7 +1438,7 @@ function setup(ctx) {
       throw new Error("Choose between 2 and 24 scenes.");
     if (!Number.isInteger(chunkNumber) || chunkNumber < 4000 || chunkNumber > 20000)
       throw new Error("Section size must be between 4,000 and 20,000 characters.");
-    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, narrationMode: narrationMode.input.value, narratorCharacter: narratorName.input.value.trim(), sourceViewpoint: sourceViewpoint.input.value.trim(), openingStyle: importOpeningStyle.input.value, ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
+    const options = { text: source.input.value, sourceTitle: title.input.value.trim(), sourceUrl: appliedSourceUrl, playerRole: role.input.value.trim(), startingPoint: start.input.value.trim(), sceneCount: sceneNumber, connectionId: connection.value, chunkSize: chunkNumber, narrationMode: narrationMode.input.value, narratorCharacter: narratorName.input.value.trim(), sourceViewpoint: sourceViewpoint.input.value.trim(), ...playerDetails.input.value.trim() ? { playerDetails: playerDetails.input.value.trim() } : {}, openingStyle: importOpeningStyle.input.value, ...readResponseSettings(outputAllowance.input, reasoningChoice.input) };
     adaptationStarting = true;
     syncImportControls();
     try {
@@ -2410,24 +2454,28 @@ function setup(ctx) {
         const result = await rpc.request("write-newcomer", { draft: clone(current), connectionId: newcomerConnection.input.value });
         if (destroyed || nonce !== panelNonce || draft !== current)
           return;
-        current.newcomer = result.newcomer;
+        const renamed = current.newcomer && current.newcomer.name.trim().toLocaleLowerCase() !== result.newcomer.name.trim().toLocaleLowerCase();
+        setNewcomer(current, result.newcomer);
         current.playerRole = result.role;
         if (current.persona?.mode !== "existing")
           current.persona = { mode: "create", ...personaDraft(current) };
         markDirty();
         renderReview();
-        notify(`Wrote ${result.newcomer.name}. Check the persona below, then save.`);
+        notify(renamed ? `Wrote ${result.newcomer.name}. Openings that still use the old name are flagged under Player and viewpoint checks.` : `Wrote ${result.newcomer.name}. Check the persona below, then save.`);
       });
-      personaSection.body.append(paragraph(current.newcomer ? `You join this story as ${current.newcomer.name}, someone new. Edit them in the persona below.` : "You join this story as someone new. Set Points can write who you are, why you’re here at the start, and how you look.", "sp-hint"), newcomerConnection.wrap, writeCharacter, paragraph("Uses one model request. Replaces the persona text below.", "sp-hint"));
+      personaSection.body.append(paragraph(current.newcomer ? `You join this story as ${current.newcomer.name}, someone new. Edit them in the persona below.` : "You join this story as someone new. Set Points can write who you are, why you’re here at the start, and how you look.", "sp-hint"), newcomerConnection.wrap, writeCharacter, paragraph("Uses one model request. If you wrote the persona below yourself, your words are kept and only missing parts are added.", "sp-hint"));
     }
     personaSection.body.append(personaMode.wrap);
     if (current.persona && current.persona.mode !== "none" && !canUsePersonas)
       personaSection.body.append(paragraph("Grant personas in Lumiverse’s Extensions panel so Set Points can do this. Until then, Save to Lumiverse will stop and tell you.", "sp-notice"));
     if (current.persona?.mode === "create") {
       const plan = current.persona;
+      const roleInput = reviewFields.get("playerRole");
       const personaField = (label, key, options = {}) => {
         const item = field(label, plan[key], (value) => {
           plan[key] = value;
+          if (key !== "title" && newcomerFromPersona(current) && roleInput)
+            roleInput.value = current.playerRole;
           markDirty();
         }, options);
         reviewFields.set(`persona:${key}`, item.input);

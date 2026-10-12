@@ -9,7 +9,7 @@ import { appearanceMentions } from './appearance-review';
 import { visualCaption, visualDraftSignature, visualTagPrompt, emptyVisualText, incompleteVisualText, type VisualPack } from './visuals';
 import { collectStoryPages, type WebCollection, type WebCollectionProgress } from './web-import';
 import { BASIS_LABELS, LOOK_LABELS, LOOK_LIMITS, lookAppearance, lookDraftSignature, lookInUse, lookOutfit, useLooks, type CharacterLook, type LookPack } from './looks';
-import { personaDraft, personaIsAutomatic, playerCharacter } from './persona';
+import { newcomerFromPersona, personaDraft, personaIsAutomatic, playerCharacter, setNewcomer } from './persona';
 
 const MAX_SOURCE = 500_000;
 const MAX_DRAFT = 192_000;
@@ -273,6 +273,7 @@ export function setup(ctx: SpindleFrontendContext) {
   sourceCard.append(sourceTools,fileInput,title.wrap,source.wrap,sourceBottom,linkSection.root);panels.import.append(sourceCard);
   const options=node('div','sp-card sp-stack'); options.append(node('h3','','Make a place for yourself'));
   const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'Type a story character’s name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new character in the story, and Set Points writes them for you. The story’s main character stays in the story. You get a persona to check in Review.'});
+  const playerDetails=field('Your character · optional','',undefined,{area:true,rows:5,placeholder:'Name, looks, who they are, why they’re here',hint:'Joining as someone new? Describe them here. Set Points keeps your words, adds only what’s missing, and makes this your persona. Leave it blank and Set Points writes someone for you.'});
   const narrationMode=selectField('Narration style',[['neutral','External narrator'],['character','Supporting character in first person']],'neutral',()=>{narratorName.wrap.hidden=narrationMode.input.value!=='character';});
   const narratorName=field('Who narrates?','',undefined,{placeholder:'Exact supporting-character name or alias',hint:'Choose someone other than the character you play.'});narratorName.wrap.hidden=true;
   const sourceViewpoint=field('Original story viewpoint · optional','',undefined,{placeholder:'For example: Lina tells the story in first person',hint:'Source context only. It does not assign your player role.'});
@@ -298,7 +299,7 @@ export function setup(ctx: SpindleFrontendContext) {
   });checkConnectionButton.disabled=true;
   connection.addEventListener('change',()=>{connectionStatus.textContent='';syncImportControls();});
   connectionWrap.append(checkConnectionButton,paragraph('Sends a small test request without your story. Normal model charges apply.','sp-hint'),connectionStatus);
-  const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,narrationMode.wrap,narratorName.wrap,sourceViewpoint.wrap,importOpeningStyle.wrap,start.wrap,optionGrid);panels.import.append(options);
+  const optionGrid=node('div','sp-grid');optionGrid.append(sceneCount.wrap,connectionWrap);options.append(role.wrap,playerDetails.wrap,narrationMode.wrap,narratorName.wrap,sourceViewpoint.wrap,importOpeningStyle.wrap,start.wrap,optionGrid);panels.import.append(options);
   const advanced=details('Long-story settings');const chunk=field('Characters per section','12000',undefined,{type:'number',min:4000,max:20000,hint:'Long stories are read in sections, then reconciled into one adaptation. Use a smaller section for models with less context.'});advanced.body.append(chunk.wrap);panels.import.append(advanced.root);
   const responseSettings=details('Model response settings');
   const outputAllowance=selectField('Response allowance',responseAllowances,'16000');
@@ -332,7 +333,7 @@ export function setup(ctx: SpindleFrontendContext) {
     const sceneNumber=Number(sceneCount.input.value),chunkNumber=Number(chunk.input.value);
     if(!Number.isInteger(sceneNumber)||sceneNumber<2||sceneNumber>24) throw new Error('Choose between 2 and 24 scenes.');
     if(!Number.isInteger(chunkNumber)||chunkNumber<4000||chunkNumber>20000) throw new Error('Section size must be between 4,000 and 20,000 characters.');
-    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,narrationMode:narrationMode.input.value as 'neutral'|'character',narratorCharacter:narratorName.input.value.trim(),sourceViewpoint:sourceViewpoint.input.value.trim(),openingStyle:importOpeningStyle.input.value as 'interactive'|'story',...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
+    const options:ImportOptions={text:source.input.value,sourceTitle:title.input.value.trim(),sourceUrl:appliedSourceUrl,playerRole:role.input.value.trim(),startingPoint:start.input.value.trim(),sceneCount:sceneNumber,connectionId:connection.value,chunkSize:chunkNumber,narrationMode:narrationMode.input.value as 'neutral'|'character',narratorCharacter:narratorName.input.value.trim(),sourceViewpoint:sourceViewpoint.input.value.trim(),...(playerDetails.input.value.trim()?{playerDetails:playerDetails.input.value.trim()}:{}),openingStyle:importOpeningStyle.input.value as 'interactive'|'story',...readResponseSettings(outputAllowance.input,reasoningChoice.input)};
     adaptationStarting=true;syncImportControls();
     try{const job=await rpc.request<ImportJob>('start-import',{options});if(snapshot)snapshot.job=job;renderJob(job);notify('Your story is being adapted. You can leave this panel open or return later.');await refresh();}
     finally{adaptationStarting=false;if(!destroyed)syncImportControls();}
@@ -811,17 +812,20 @@ export function setup(ctx: SpindleFrontendContext) {
         if(!newcomerConnection.input.value)throw new Error('Choose a connection. Add one in Lumiverse settings if the list is empty.');
         const result=await rpc.request<{newcomer:NonNullable<StoryDraft['newcomer']>;role:string}>('write-newcomer',{draft:clone(current),connectionId:newcomerConnection.input.value});
         if(destroyed||nonce!==panelNonce||draft!==current)return;
-        current.newcomer=result.newcomer;current.playerRole=result.role;
+        const renamed=current.newcomer&&current.newcomer.name.trim().toLocaleLowerCase()!==result.newcomer.name.trim().toLocaleLowerCase();
+        setNewcomer(current,result.newcomer);current.playerRole=result.role;
         if(current.persona?.mode!=='existing')current.persona={mode:'create',...personaDraft(current)};
-        markDirty();renderReview();notify(`Wrote ${result.newcomer.name}. Check the persona below, then save.`);
+        markDirty();renderReview();notify(renamed?`Wrote ${result.newcomer.name}. Openings that still use the old name are flagged under Player and viewpoint checks.`:`Wrote ${result.newcomer.name}. Check the persona below, then save.`);
       });
-      personaSection.body.append(paragraph(current.newcomer?`You join this story as ${current.newcomer.name}, someone new. Edit them in the persona below.`:'You join this story as someone new. Set Points can write who you are, why you’re here at the start, and how you look.','sp-hint'),newcomerConnection.wrap,writeCharacter,paragraph('Uses one model request. Replaces the persona text below.','sp-hint'));
+      personaSection.body.append(paragraph(current.newcomer?`You join this story as ${current.newcomer.name}, someone new. Edit them in the persona below.`:'You join this story as someone new. Set Points can write who you are, why you’re here at the start, and how you look.','sp-hint'),newcomerConnection.wrap,writeCharacter,paragraph('Uses one model request. If you wrote the persona below yourself, your words are kept and only missing parts are added.','sp-hint'));
     }
     personaSection.body.append(personaMode.wrap);
     if(current.persona&&current.persona.mode!=='none'&&!canUsePersonas)personaSection.body.append(paragraph('Grant personas in Lumiverse’s Extensions panel so Set Points can do this. Until then, Save to Lumiverse will stop and tell you.','sp-notice'));
     if(current.persona?.mode==='create'){
       const plan=current.persona;
-      const personaField=(label:string,key:'name'|'title'|'description',options:{area?:boolean;rows?:number;hint?:string}={})=>{const item=field(label,plan[key],value=>{plan[key]=value;markDirty();},options);reviewFields.set(`persona:${key}`,item.input);return item;};
+      const roleInput=reviewFields.get('playerRole') as HTMLInputElement|undefined;
+      // For someone new, the persona is their character: edits here update the character the story uses.
+      const personaField=(label:string,key:'name'|'title'|'description',options:{area?:boolean;rows?:number;hint?:string}={})=>{const item=field(label,plan[key],value=>{plan[key]=value;if(key!=='title'&&newcomerFromPersona(current)&&roleInput)roleInput.value=current.playerRole;markDirty();},options);reviewFields.set(`persona:${key}`,item.input);return item;};
       const name=personaField('Persona name','name'),title=personaField('Short label','title',{hint:'Shown next to the name in your persona list.'}),description=personaField('Persona description','description',{area:true,rows:10,hint:played?`Written from ${played.name}’s personality, voice, relationships, what they know at the start, and their appearance. It holds nothing from later in the story. It follows your edits to ${played.name} until you change the wording here.`:current.newcomer?`Written from ${current.newcomer.name}. Change anything you like.`:'Add who your character is, and how they look, or use Write my character above.'});
       showPersona=()=>{name.input.value=plan.name;title.input.value=plan.title;description.input.value=plan.description;};
       personaSection.body.append(name.wrap,title.wrap,description.wrap,button(played?`Write it again from ${played.name}`:'Write it again from my role',()=>{Object.assign(plan,personaDraft(current));showPersona();markDirty();notify('Persona rewritten from the draft.');}),paragraph('Save to Lumiverse makes this persona. Saving again updates it, unless you have changed it in Lumiverse since.','sp-hint'));

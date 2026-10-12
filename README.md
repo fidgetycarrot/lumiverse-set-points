@@ -4,9 +4,11 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.15** fixes playing **someone new** in a story told from one character's point of view. Before, the openings could quietly make you that character: their memories, their belongings, what happened to them. Now the character the story follows stays in the story as someone the narrator plays, and you join as your own person. New imports also write that person for you (name, why they are there, how they look) and make them your persona. The first time you open a chat with the card, Set Points switches to that persona for that chat.
+Version **0.1.16** keeps your own character. When you join as someone new, the import form now has **Your character**: describe them there and Set Points keeps your words exactly, adds only what you left out, and makes that your persona. Editing the persona in Review now changes the character the story uses too, and renaming them is flagged anywhere the old name is still used. Openings that call you by name instead of “you” are flagged as well, and new scene repairs fix them.
 
-Already imported a story and hit this? You do not need to import it again. In **Review**, use **Write my character** under **Your persona**, then **Repair selected scenes** on the openings, and save. See [Joining as someone new](#joining-as-someone-new).
+Version **0.1.15** fixed playing **someone new** in a story told from one character's point of view. The character the story follows stays in the story as someone the narrator plays, and you join as your own person. If you leave **Your character** blank, the import writes someone for you (name, why they are there, how they look) and makes them your persona. The first time you open a chat with the card, Set Points switches to that persona for that chat.
+
+Already imported a story and hit this? You do not need to import it again. See [Joining as someone new](#joining-as-someone-new).
 
 The scene-planning fix from **0.1.14** remains: repeated, unsorted, or overlapping source-event references are normalized locally, and **Resume saved import** reuses recoverable paid work.
 
@@ -91,16 +93,17 @@ The role contract is published in the card system prompt, description, always-on
 
 ## Joining as someone new
 
-In **Who will you play?**, type a story character's name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new person in the story.
+In **Who will you play?**, type a story character's name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new person in the story. To use a character you already have in mind, describe them in **Your character**. Your words are kept exactly; Set Points only adds parts you left out (such as why they are there or what they wear) and never adds personality.
 
 When you join as someone new:
 
 - The character the story mostly follows stays in the story. The narrator plays them like anyone else. You never inherit their body, past, memories, belongings, or what happened to them. Set Points works out who that is from the story and notes it in **Source viewpoint**; change it there if it picked the wrong person.
-- After planning, the import writes your character with one extra model request: a name (or the one you gave), why you are there at the start, what you know, and how you look. Everything you typed is kept. Personality and choices are left to you. Later steps place this person in the scenes.
+- After planning, one extra model request sets up your character: from **Your character** if you filled it in, or written from scratch if not (a name, why you are there at the start, what you know, and how you look). Personality and choices are left to you. Later steps place this person in the scenes and speak to them as “you”.
+- If Set Points makes up a name, it is only a placeholder. Change **Persona name** in Review and the character the story uses changes with it.
 - **Your persona** is set to **Make a persona** with that description, ready to check.
-- **Player and viewpoint checks** flags an opening that talks to “you” but leaves out the character the story follows, in case it has put you in their place.
+- **Player and viewpoint checks** flags an opening that talks to “you” but leaves out the character the story follows, in case it has put you in their place. It also flags openings that call you by name instead of “you”, scene notes or openings that still use a name you changed, and a **Your role** that names someone other than your character.
 
-**For a draft made before 0.1.15:** open **Review → Your persona** and choose **Write my character**. It uses one model request with the connection you pick, fills **Your role**, and rewrites the persona text. Then select the flagged openings (or all of them) under **Repair selected scenes**. New repairs keep the story's main character separate from you. Save to Lumiverse when you are happy.
+**Fixing a draft you already have:** in **Review → Your persona**, put your character's name in **Persona name** and their description in **Persona description**. That updates the character the story uses, and the old name is remembered so the openings that still use it get flagged. (Or choose **Write my character**: if you already wrote the persona, your words are kept and only missing parts are added.) Then select the flagged openings under **Repair selected scenes**. New repairs keep the story's main character separate from you and call you “you”. Save to Lumiverse when you are happy.
 
 ## Your persona
 

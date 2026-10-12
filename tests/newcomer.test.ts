@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { adaptStory, cardPayload, validateDraft, type GenerationMessage } from '../src/importer';
 import { leadFromEvents, roleInstruction, roleIssues, roleReviewFingerprint, requireRoleReview, sourceLead } from '../src/roles';
-import { personaDraft, personaIsAutomatic } from '../src/persona';
+import { newcomerFromPersona, personaBody, personaDraft, personaIsAutomatic, setNewcomer } from '../src/persona';
 import { newcomerMessages, validateNewcomer } from '../src/newcomer';
 import { repairSceneOpenings } from '../src/scene-repair';
 import { SetPointsController } from '../src/backend';
@@ -234,5 +234,92 @@ describe('using the story persona in its chats', () => {
     expect(result.newcomer.name).toBe('Bryn');
     expect(result.role).toBe('Bryn, a tinker');
     await expect(app.handle('write-newcomer', { draft: story({ playerRole: 'Wren', roles: { narration: 'neutral', playerCharacterId: 'wren', viewpointCharacterId: null, sourceViewpoint: '' } }), connectionId: 'model' })).rejects.toThrow('Custom or unbound role');
+  });
+});
+
+describe('your own character stays yours', () => {
+  test('your own description is kept word for word; the model only adds what is missing', () => {
+    const own = 'Bruenor is a huge warrior with a battle hammer.\n\nAppearance: brown hair, blue eyes, short beard.';
+    const made = validateNewcomer({ name: 'Bruenor', role: 'Bruenor, a warrior', missing: 'Why they are here: looking for his lost party.' }, story().cast, own);
+    expect(made.description.startsWith(own)).toBe(true);
+    expect(made.description).toContain('looking for his lost party');
+    expect(validateNewcomer({ name: 'Bruenor', role: 'Bruenor, a warrior', missing: '' }, story().cast, own).description).toBe(own);
+    const prompt = newcomerMessages({ title: 't', premise: 'p', startingPoint: 's', playerRole: 'someone new', cast: [], setting: [], opening: '', playerDetails: own });
+    expect(prompt[0].content).toContain('kept exactly as they wrote it');
+    expect(JSON.parse(prompt[1].content).task).toBe('set-points-newcomer-details-v1');
+    // Without details, the request is unchanged from 0.1.15.
+    expect(JSON.parse(newcomerMessages({ title: 't', premise: 'p', startingPoint: 's', playerRole: 'x', cast: [], setting: [], opening: '' })[1].content)).not.toHaveProperty('playerDetails');
+  });
+
+  test('editing the persona renames the character, remembers the old name, and keeps the role in step', () => {
+    const draft = validateDraft(story({ playerRole: 'Maren, a traveling tinker', newcomer: { name: 'Maren', description: 'A tinker.' } }));
+    draft.persona = { mode: 'create', ...personaDraft(draft) };
+    draft.persona.name = 'Bruenor';
+    draft.persona.description = 'Bruenor is a huge warrior.\n\nJoining "The Moss Gate" at: After the gate opens\n\n' + personaDraft(draft).description.split('\n\n').at(-1);
+    expect(newcomerFromPersona(draft)).toBe(true);
+    expect(draft.newcomer).toEqual({ name: 'Bruenor', description: 'Bruenor is a huge warrior.', previousNames: ['Maren'] });
+    expect(draft.playerRole).toBe('Bruenor, a traveling tinker');
+    expect(personaIsAutomatic(draft)).toBe(true);
+    expect(personaBody(draft.persona.description)).toBe('Bruenor is a huge warrior.');
+    expect(validateDraft(draft).newcomer?.previousNames).toEqual(['Maren']);
+    // Renaming back drops the name from the old list.
+    setNewcomer(draft, { name: 'Maren', description: 'A tinker.' });
+    expect(draft.newcomer?.previousNames).toEqual(['Bruenor']);
+  });
+
+  test('flags a role that names someone else, and openings that call you by name or an old name', () => {
+    const draft = story({ playerRole: 'Bruenor, a warrior', newcomer: { name: 'Maren', description: 'A tinker.' } });
+    draft.scenes[1].greeting = 'Wren nods. Maren’s footsteps echo as Tamsin turns to face Maren.';
+    const issues = roleIssues(draft);
+    expect(issues.find(issue => issue.fieldKey === 'playerRole')?.message).toBe('Your role doesn’t name your character, Maren. Use the same name in both, so the narrator knows who you are.');
+    expect(issues.find(issue => issue.sceneId === 'town' && issue.kind === 'identity')?.message).toBe('This opening calls you “Maren”. Openings should speak to you as “you”.');
+    const renamed = story({ playerRole: 'Bruenor, a warrior', newcomer: { name: 'Bruenor', description: 'A warrior.', previousNames: ['Maren'] } });
+    renamed.scenes[1].greeting = draft.scenes[1].greeting; renamed.scenes[1].direction = 'Wren greets Maren.';
+    const after = roleIssues(renamed);
+    expect(after.some(issue => issue.fieldKey === 'playerRole')).toBe(false);
+    expect(after.find(issue => issue.fieldKey === 'scene:town:greeting')?.message).toContain('old name, “Maren”');
+    expect(after.find(issue => issue.fieldKey === 'scene:town:direction')?.message).toContain('Change it to Bruenor');
+    // Quoted dialogue that uses the name is fine.
+    renamed.scenes[1].greeting = 'Wren calls out, “Bruenor, over here!”'; renamed.scenes[1].direction = 'Wren waves.';
+    expect(roleIssues(renamed).some(issue => issue.sceneId === 'town' && issue.message.includes('calls you'))).toBe(false);
+  });
+
+  test('new repairs tell the model to call you “you” and drop old names; older repair prompts are unchanged', async () => {
+    const draft = validateDraft(story({ newcomer: { name: 'Bruenor', description: 'A warrior.', previousNames: ['Maren'] } }));
+    const seen: GenerationMessage[][] = [];
+    const generate = async (messages: GenerationMessage[]) => { seen.push(messages); const body = JSON.parse(messages[1].content); return { content: JSON.stringify({ id: body.scene.id, greeting: 'Wren stands at the gate as you arrive.', direction: 'Wren may speak first.', assumptions: [], roles: { playerCharacterId: null, narration: 'neutral', viewpointCharacterId: null } }) }; };
+    await repairSceneOpenings(draft, ['gate'], generate, () => {}, undefined, 4);
+    await repairSceneOpenings(draft, ['gate'], generate, () => {}, undefined, 3);
+    expect(seen[0][0].content).toContain('The human plays the supplied player, Bruenor. In narration, call them “you”');
+    expect(seen[0][0].content).toContain('any of their previous names');
+    expect(JSON.parse(seen[0][1].content).player.previousNames).toEqual(['Maren']);
+    expect(seen[1][0].content).not.toContain('The human plays the supplied player');
+  });
+
+  test('an import with your own description uses it as your character and persona', async () => {
+    const own = 'Bruenor is a huge warrior with a battle hammer.';
+    const seen: GenerationMessage[][] = [];
+    const result = await adaptStory(importOptions({ playerDetails: own }), async messages => {
+      seen.push(messages);
+      if (!messages[1].content.startsWith('SOURCE CHUNK') && JSON.parse(messages[1].content).task === 'set-points-newcomer-details-v1') return { content: JSON.stringify({ name: 'Bruenor', role: 'Bruenor, a warrior', missing: 'Why they are here: he lost his party.' }), finish_reason: 'stop' };
+      return reply(messages);
+    }, () => {});
+    expect(result.newcomer?.description).toBe(`${own}\n\nWhy they are here: he lost his party.`);
+    expect(result.persona?.name).toBe('Bruenor');
+    expect(result.persona?.description.startsWith(own)).toBe(true);
+    expect(result.playerRole).toBe('Bruenor, a warrior');
+    const later = seen.filter(messages => !messages[1].content.startsWith('SOURCE CHUNK') && JSON.parse(messages[1].content).task === 'set-points-scenes-v1');
+    expect(later[0][1].content).toContain('call them “you”, never by name');
+  });
+
+  test('Write my character keeps a persona you wrote yourself', async () => {
+    const h = host();
+    let sent: any;
+    (h.api as any).generate.raw = async (input: any) => { sent = input; return { content: JSON.stringify({ name: 'Bruenor', role: 'Bruenor, a warrior', missing: '' }), finish_reason: 'stop' }; };
+    const draft = story({ newcomer: { name: 'Maren', description: 'A tinker.' } });
+    draft.persona = { mode: 'create', name: 'Bruenor', title: 't', description: 'Bruenor is a huge warrior.' };
+    const result = await new SetPointsController(h.api, 'alice').handle('write-newcomer', { draft, connectionId: 'model' }) as { newcomer: { description: string } };
+    expect(JSON.parse(sent.messages[1].content).playerDetails).toBe('Bruenor is a huge warrior.');
+    expect(result.newcomer.description).toBe('Bruenor is a huge warrior.');
   });
 });

@@ -541,6 +541,22 @@ describe('joining as someone new',()=>{
     expect(app.root.textContent).toContain('You join this story as Bryn, someone new');
     expect(app.button('Write Bryn again')).toBeTruthy();
   });
+  test('renaming the persona renames your character and your role',async()=>{
+    const app=harness();await tick();app.button('Review').click();
+    app.button('Write my character').click();await tick();await tick();
+    app.input('Persona name','Bruenor');
+    expect(app.field('Your role').value).toBe('Bruenor, a tinker');
+    app.button('Save draft').click();await tick();
+    const saved=app.requests.filter(item=>item.action==='save-draft').at(-1)!.input.draft;
+    expect(saved.newcomer).toEqual({name:'Bruenor',description:'Who they are: a tinker.',previousNames:['Bryn']});
+    expect(saved.persona.name).toBe('Bruenor');
+  });
+  test('the import form sends your own character description',async()=>{
+    const app=harness(false);await tick();app.button('Try a sample').click();
+    app.input('Your character · optional','Bruenor, a huge warrior with a hammer.');
+    app.button('Create adaptation').click();await tick();
+    expect(app.requests.find(item=>item.action==='start-import')!.input.options.playerDetails).toBe('Bruenor, a huge warrior with a hammer.');
+  });
   test('a played story character gets no Write my character button',async()=>{
     const app=harness();app.state.draft!.playerRole='Iona';app.state.draft!.roles={narration:'neutral',playerCharacterId:'captain',viewpointCharacterId:null,sourceViewpoint:''};await tick();app.changed();await tick();app.button('Review').click();
     expect(app.button('Write my character')).toBeUndefined();

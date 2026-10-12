@@ -1,4 +1,4 @@
-import { personaDraft, personaIsAutomatic } from './persona';
+import { personaBody, personaDraft, personaIsAutomatic } from './persona';
 import { newcomerContext, writeNewcomer } from './newcomer';
 import { defaultRoles, sourceLead } from './roles';
 import { polishCharacters, characterPolishSignature, validateCharacterPolishResult } from './character-polish';
@@ -19,7 +19,7 @@ type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string
 // A look job is either a full design (needs the story text) or a reroll of one
 // character (needs only the saved looks, which carry their own story notes).
 type LookInput = { draft: StoryDraft; sourceText?: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; reroll?: { characterId: string; note: string; pack: LookPack } };
-type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2|3 };
+type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2|3|4 };
 type CharacterPolishInput = { draft: StoryDraft; characterIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 type Workspace = {
   characterPolishInput?: CharacterPolishInput; characterPolishJob?: ImportJob; characterPolishResult?: StoryDraft; characterPolishConnectionFingerprint?: unknown;
@@ -377,6 +377,8 @@ export class SetPointsController {
     const draft = validateDraft(value.draft);
     if ((draft.roles ?? defaultRoles(draft)).playerCharacterId) throw new Error('You are playing a character from the story. Set Player cast identity to “Custom or unbound role” to join as someone new.');
     const settings = responseSettings(value as Pick<ImportOptions, 'maxOutputTokens'|'reasoningMode'>), connection = await this.selectedConnection(value.connectionId);
+    // A persona you wrote yourself is kept word for word; only what it leaves out is added.
+    const ownWords = draft.persona?.mode === 'create' && !personaIsAutomatic(draft) ? personaBody(draft.persona.description).slice(0, 4000) : '';
     this.writingNewcomer = true;
     const controller = new AbortController();
     try {
@@ -387,7 +389,7 @@ export class SetPointsController {
         title: draft.title, premise: draft.premise, startingPoint: draft.startingPoint, playerRole: draft.playerRole, lead: sourceLead(draft)?.name,
         cast: draft.cast.map(person => ({ name: person.name, aliases: person.aliases, about: `${person.personality} ${person.knowledge}` })),
         setting: draft.lore.map(entry => ({ name: entry.name, details: entry.content })),
-        opening: draft.scenes[0]?.title ?? '',
+        opening: draft.scenes[0]?.title ?? '', playerDetails: ownWords,
       }), draft.cast, generate, controller.signal);
       this.note('New character written on request.');
       return { newcomer: { name: made.name, description: made.description }, role: made.role };
@@ -494,6 +496,7 @@ export class SetPointsController {
       if (options.narrationMode !== undefined && !['neutral','character'].includes(options.narrationMode)) throw new Error('Choose a valid narration style.');
       if (options.narrationMode === 'character' && (typeof options.narratorCharacter !== 'string' || !options.narratorCharacter.trim())) throw new Error('Name the supporting character who narrates.');
       if (options.narratorCharacter !== undefined && (typeof options.narratorCharacter !== 'string' || options.narratorCharacter.length>200) || options.sourceViewpoint !== undefined && (typeof options.sourceViewpoint !== 'string' || options.sourceViewpoint.length>500)) throw new Error('Keep narrator names under 200 characters and source viewpoint under 500.');
+      if (options.playerDetails !== undefined && (typeof options.playerDetails !== 'string' || options.playerDetails.length > 4000)) throw new Error('Keep your character description under 4,000 characters.');
       if (options.sourceUrl) options.sourceUrl = storyUrl(options.sourceUrl);
       const connection = await this.selectedConnection(options.connectionId);
       if (resume && !sameSettings(connection.fingerprint, this.workspace.lastConnectionFingerprint)) throw new Error('The saved connection settings have changed. Resume paused before making any model request. Restore those settings, or use Create adaptation to start with the new settings and normal model charges.');
@@ -617,8 +620,8 @@ export class SetPointsController {
   private validateRepairInput(value: unknown): RepairInput {
     const data=record(value), draft=validateDraft(data.draft);
     if (!Array.isArray(data.sceneIds) || !data.sceneIds.length || new Set(data.sceneIds).size!==data.sceneIds.length || data.sceneIds.some(id=>typeof id!=='string'||!draft.scenes.some(scene=>scene.id===id))) throw new Error('Select existing scenes once each for repair.');
-    if(data.promptVersion!==undefined&&data.promptVersion!==1&&data.promptVersion!==2&&data.promptVersion!==3)throw new Error('Invalid saved scene repair format.');
-    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data),...(data.promptVersion!==undefined?{promptVersion:data.promptVersion as 1|2|3}:{})};
+    if(data.promptVersion!==undefined&&![1,2,3,4].includes(data.promptVersion as number))throw new Error('Invalid saved scene repair format.');
+    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data),...(data.promptVersion!==undefined?{promptVersion:data.promptVersion as 1|2|3|4}:{})};
   }
   private async startRepair(value: unknown, retryUncertain=false, resume=false): Promise<ImportJob> {
     await this.ready; this.require('generation');
@@ -626,7 +629,7 @@ export class SetPointsController {
     if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.looksBusy()) throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
     this.repairStarting=true;
     try {
-      const options=this.validateRepairInput(value);if(!resume)options.promptVersion=3;
+      const options=this.validateRepairInput(value);if(!resume)options.promptVersion=4;
       const settings=responseSettings(options),connection=await this.selectedConnection(options.connectionId);
       if (resume&&!sameSettings(connection.fingerprint,this.workspace.repairConnectionFingerprint)) throw new Error('The saved scene repair connection changed. Restore its settings before resuming, or start a new normally charged repair.');
       this.repairCheckpoints.beginRun({retryUncertain});

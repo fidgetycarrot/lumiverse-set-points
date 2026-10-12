@@ -139,7 +139,8 @@ export function validateDraft(value: unknown): StoryDraft {
   let newcomer: Newcomer | undefined;
   if (draft.newcomer !== undefined) {
     const entry = object(draft.newcomer, 'newcomer');
-    newcomer = { name: safeText(entry.name, 'newcomer.name', 80), description: safeText(entry.description, 'newcomer.description', 4000) };
+    newcomer = { name: safeText(entry.name, 'newcomer.name', 80), description: safeText(entry.description, 'newcomer.description', 8000) };
+    if (entry.previousNames !== undefined) newcomer.previousNames = texts(entry.previousNames, 'newcomer.previousNames', 8, 80);
   }
   const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, 'roleReview', 80);
   if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview)) fail('INVALID_SCHEMA', 'Invalid player/viewpoint review acknowledgment.');
@@ -479,7 +480,7 @@ function packNewWarnings(values: string[]): string[] {
   return result;
 }
 
-async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal, profilePromptVersion: 1|2 = 1, planPromptVersion: 1|2|3 = 1): Promise<{ draft: StoryDraft; operations: number }> {
+async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal, profilePromptVersion: 1|2 = 1, planPromptVersion: 1|2|3 = 1, playerDetails = ''): Promise<{ draft: StoryDraft; operations: number }> {
   const roleCast = ledger.cast.map((person,index)=>({ ...person, id:`cast-${index+1}`, knowledge:person.knowledgeAtIntroduction }));
   let roles: StoryDraft['roles'];
   if (preferences.narrationMode !== undefined) { try { roles = rolesForImport(roleCast, preferences.playerRole, preferences); } catch (error) { fail('INVALID_SCHEMA', error instanceof Error ? error.message : 'Invalid narration choice.'); } }
@@ -513,7 +514,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
       title: plan.title, premise: plan.premise, startingPoint: preferences.startingPoint, playerRole: preferences.playerRole, lead: lead?.name,
       cast: ledger.cast.map(person => ({ name: person.name, aliases: person.aliases, about: `${person.personality} ${person.knowledgeAtIntroduction}` })),
       setting: plan.startingLore.map(index => ({ name: ledger.setting[index].name, details: ledger.setting[index].details })),
-      opening: plan.scenes[0]?.brief ?? '',
+      opening: plan.scenes[0]?.brief ?? '', playerDetails,
     }), roleCast, generate, signal);
     newcomer = { name: made.name, description: made.description };
     // Every later step, and the card, names the human by this character.
@@ -541,7 +542,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
   const budgets = { cast: Math.min(6000, Math.floor(proseRoom * 2 / weight)), lore: Math.min(4000, Math.floor(proseRoom / weight)), scenes: Math.min(12_000, Math.floor(proseRoom * 4 / weight)), warnings: Math.floor(warningsReserve / batches) };
   if (room <= 0 || base.warnings.length > 83 || cast.length > 0 && budgets.cast < 600 || lore.length > 0 && budgets.lore < 300 || budgets.scenes < 1600) fail('DRAFT_SIZE_LIMIT', 'The planned identities, source references, warnings, and prose cannot fit this version’s draft size limit. No content was removed and completed responses remain saved. Use fewer scenes or a smaller story section.');
   const additionalWarnings: string[] = [];
-  const foundation = { title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, scenes: plan.scenes, ...(newcomer ? { player: { ...newcomer, note: 'The human plays this new character. Place them in scenes as themselves, separate from every source character.' } } : {}) };
+  const foundation = { title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, scenes: plan.scenes, ...(newcomer ? { player: { ...newcomer, note: 'The human plays this new character. Place them in scenes as themselves, separate from every source character. In narration, call them “you”, never by name, and never write their actions, words, thoughts, or feelings.' } } : {}) };
   const acceptWarnings = (warnings: string[]) => {
     checkProseBudget(warnings, [], budgets.warnings, 'This batch’s new warnings');
     return warnings;
@@ -645,7 +646,7 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
   let adapted = preferences.narrationMode !== undefined || preferences.openingStyle!==undefined ? undefined : await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, value => validateAdaptation(value, metadata, sceneCount), value => finalizeAdaptation(value, ledger, sceneCount), signal);
   if (adapted) completed++;
   else {
-    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal, options.profilePromptVersion ?? 1, options.planPromptVersion ?? 1);
+    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal, options.profilePromptVersion ?? 1, options.planPromptVersion ?? 1, options.playerDetails?.trim() ?? '');
     adapted = staged.draft;
     completed += staged.operations;
   }

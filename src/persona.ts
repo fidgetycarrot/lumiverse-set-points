@@ -1,6 +1,6 @@
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { defaultRoles } from './roles';
-import { EXTENSION_ID, type CastMember, type PersonaPlan, type SavedStory, type StoryDraft } from './types';
+import { EXTENSION_ID, type CastMember, type Newcomer, type PersonaPlan, type SavedStory, type StoryDraft } from './types';
 
 type PersonaText = Pick<PersonaPlan, 'name' | 'title' | 'description'>;
 type Owned = { draftId?: string; written?: string };
@@ -42,6 +42,40 @@ function writePersona(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 'roles' | 
     ...(modern ? [PLAYER_PERSONA_RULE] : []),
   ];
   return { name: person.name.trim().slice(0, 200), title, description: lines.join('\n\n') };
+}
+
+/**
+ * A persona description without the two lines Set Points adds at the end
+ * (where you join the story, and the player rule). What is left is the
+ * character itself, as written by you or by Set Points.
+ */
+export function personaBody(description: string): string {
+  let text = description.trim();
+  if (text.endsWith(PLAYER_PERSONA_RULE)) text = text.slice(0, -PLAYER_PERSONA_RULE.length).trim();
+  return text.replace(/\n*Joining "[^"\n]*" at: [^\n]*$/, '').trim();
+}
+
+/**
+ * Replace the character written for someone new. Their old name is kept in
+ * previousNames so openings that still use it can be found, and a role line
+ * that started with the old name is updated to the new one.
+ */
+export function setNewcomer(draft: Pick<StoryDraft, 'newcomer' | 'playerRole'>, next: Pick<Newcomer, 'name' | 'description'>) {
+  const name = next.name.trim(), old = draft.newcomer?.name.trim() ?? '';
+  const key = (value: string) => value.trim().toLocaleLowerCase();
+  const previous = [...(draft.newcomer?.previousNames ?? []), ...(old ? [old] : [])].filter((value, index, list) => value.trim() && key(value) !== key(name) && list.findIndex(other => key(other) === key(value)) === index).slice(-8);
+  if (old && key(old) !== key(name) && key(draft.playerRole).startsWith(key(old))) draft.playerRole = `${name}${draft.playerRole.trim().slice(old.length)}`;
+  draft.newcomer = { name, description: next.description.trim(), ...(previous.length ? { previousNames: previous } : {}) };
+}
+
+/** When you edit the persona of someone new, the character the story uses follows your words. */
+export function newcomerFromPersona(draft: StoryDraft): boolean {
+  if (playerCharacter(draft) || draft.persona?.mode !== 'create') return false;
+  const name = draft.persona.name.trim(), body = personaBody(draft.persona.description);
+  if (!name || !body || name.length > 80 || body.length > 8000) return false;
+  if (draft.newcomer && draft.newcomer.name === name && draft.newcomer.description === body) return false;
+  setNewcomer(draft, { name, description: body });
+  return true;
 }
 
 export const PLAYER_PERSONA_RULE = 'This is the human-controlled player. These are starting facts and tendencies, not a script. During live play, the human supplies new actions, dialogue, thoughts, feelings, decisions, and consent.';

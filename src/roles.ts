@@ -143,6 +143,20 @@ export function roleIssues(draft: StoryDraft): RoleIssue[] {
     const you = /\byou(?:r|rs|rself)?\b/i.exec(narrative(scene.greeting));
     if (you) result.push({fieldKey:`scene:${scene.id}:greeting`,sceneId:scene.id,kind:'identity',...matchedText(scene.greeting,you),message:`${lead.name} is part of this scene’s story but isn’t in this opening. Check that “you” is your own character here, not standing in for ${lead.name}.`});
   });
+  // A character written for someone new: the role and openings must use the same person, as "you".
+  const newcomer = player ? undefined : draft.newcomer;
+  if (newcomer) {
+    const current = newcomer.name.trim(), old = (newcomer.previousNames ?? []).map(name => name.trim()).filter(name => name && name.toLocaleLowerCase() !== current.toLocaleLowerCase());
+    const names = (list: string[]) => list.filter(name => name.length >= 2).map(escape);
+    const named = (list: string[]) => names(list).length ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${names(list).join('|')})(?![\\p{L}\\p{N}])`, 'iu') : null;
+    const now = named([current]), before = named(old), any = named([current, ...old]);
+    if (now && !now.test(draft.playerRole)) result.push({fieldKey:'playerRole',kind:'identity',message:`Your role doesn’t name your character, ${current}. Use the same name in both, so the narrator knows who you are.`});
+    for (const scene of draft.scenes) {
+      const call = any?.exec(narrative(scene.greeting));
+      if (call) result.push({fieldKey:`scene:${scene.id}:greeting`,sceneId:scene.id,kind:'identity',...matchedText(scene.greeting,call),message:old.some(name => name.toLocaleLowerCase() === call[0].toLocaleLowerCase()) ? `This opening still uses your character’s old name, “${call[0]}”. Openings should speak to you as “you”.` : `This opening calls you “${call[0]}”. Openings should speak to you as “you”.`});
+      if (before?.test(scene.direction)) result.push({fieldKey:`scene:${scene.id}:direction`,sceneId:scene.id,kind:'identity',message:`This scene’s notes still use your character’s old name. Change it to ${current}.`});
+    }
+  }
   const firstPersonRule = /(?:narrate|narration|write|tell|use|perspective|viewpoint|voice|inside).{0,90}first[ -]person|first[ -]person.{0,90}(?:narration|perspective|viewpoint|head)/i;
   const forbidsFirst = /(?:never|do not|don't|avoid|no).{0,60}first[ -]person/i;
   const directions = [
@@ -158,7 +172,7 @@ export function roleIssues(draft: StoryDraft): RoleIssue[] {
 // A compact edit detector for review acknowledgment, not an authentication token.
 export function roleReviewFingerprint(draft: StoryDraft): string {
   const roles=draft.roles??defaultRoles(draft);
-  const value = JSON.stringify({checker:3,openingStyle:draft.openingStyle??'interactive',id:clean(draft.id),playerRole:clean(draft.playerRole),roles:{...roles,sourceViewpoint:clean(roles.sourceViewpoint)},narratorInstructions:clean(draft.narratorInstructions),cast:draft.cast.map(person=>({id:person.id,name:clean(person.name),aliases:person.aliases.map(clean),personality:clean(person.personality),voice:clean(person.voice),...(person.notes?{notes:person.notes}:{})})),lore:draft.lore.map(entry=>({id:entry.id,content:clean(entry.content)})),scenes:draft.scenes.map(scene=>({id:scene.id,greeting:clean(scene.greeting),direction:clean(scene.direction),assumptions:scene.assumptions.map(clean)}))});
+  const value = JSON.stringify({checker:4,newcomer:draft.newcomer?{name:clean(draft.newcomer.name),previousNames:draft.newcomer.previousNames??[]}:null,openingStyle:draft.openingStyle??'interactive',id:clean(draft.id),playerRole:clean(draft.playerRole),roles:{...roles,sourceViewpoint:clean(roles.sourceViewpoint)},narratorInstructions:clean(draft.narratorInstructions),cast:draft.cast.map(person=>({id:person.id,name:clean(person.name),aliases:person.aliases.map(clean),personality:clean(person.personality),voice:clean(person.voice),...(person.notes?{notes:person.notes}:{})})),lore:draft.lore.map(entry=>({id:entry.id,content:clean(entry.content)})),scenes:draft.scenes.map(scene=>({id:scene.id,greeting:clean(scene.greeting),direction:clean(scene.direction),assumptions:scene.assumptions.map(clean)}))});
   let hash = 14695981039346656037n;
   for (let i=0;i<value.length;i++) { hash ^= BigInt(value.charCodeAt(i)); hash = BigInt.asUintN(64,hash*1099511628211n); }
   return `${value.length}:${hash.toString(16).padStart(16,'0')}`;
