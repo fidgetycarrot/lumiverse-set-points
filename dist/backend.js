@@ -3226,7 +3226,7 @@ function requireRoleReview(draft) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.13";
+var VERSION = "0.1.14";
 
 // src/persona.ts
 function playerCharacter(draft) {
@@ -3796,21 +3796,68 @@ async function savedLegacyAdaptation(messages, generate, validate, finalize, sig
   }
   return;
 }
-function validatePlan(value, ledger, requestedScenes) {
+var legacyPlanChronologyError = "Scene event indexes must preserve source chronology without duplicate indexes within a scene.";
+function validatePlan(value, ledger, requestedScenes, legacy = false) {
   const plan = object(value, "plan");
   const startingLore = list(plan.startingLore, "startingLore", ledger.setting.length).map((item, i) => number(item, `startingLore[${i}]`, 0, ledger.setting.length - 1));
   if (new Set(startingLore).size !== startingLore.length)
     fail("INVALID_SCHEMA", "startingLore contains duplicate source indexes.");
-  let previousEvent = -1;
+  let previousEvent = -1, normalizedReferences = false, overlappingReferences = false;
   const scenes = list(plan.scenes, "scenes", requestedScenes, 1).map((item, i) => {
     const scene = object(item, `scenes[${i}]`), path = `scenes[${i}]`;
-    const eventIndexes = list(scene.eventIndexes, `${path}.eventIndexes`, ledger.events.length, 1).map((index, j) => number(index, `${path}.eventIndexes[${j}]`, 0, ledger.events.length - 1));
-    if (eventIndexes.some((index, j) => j > 0 && index <= eventIndexes[j - 1]) || eventIndexes[0] < previousEvent)
-      fail("INVALID_SCHEMA", "Scene event indexes must preserve source chronology without duplicate indexes within a scene.");
+    const supplied = list(scene.eventIndexes, `${path}.eventIndexes`, legacy ? ledger.events.length : 256, 1).map((index, j) => number(index, `${path}.eventIndexes[${j}]`, 0, ledger.events.length - 1));
+    const eventIndexes = legacy ? supplied : [...new Set(supplied)].sort((a, b) => a - b);
+    if (legacy) {
+      if (eventIndexes.some((index, j) => j > 0 && index <= eventIndexes[j - 1]) || eventIndexes[0] < previousEvent)
+        fail("INVALID_SCHEMA", legacyPlanChronologyError);
+    } else {
+      normalizedReferences ||= JSON.stringify(supplied) !== JSON.stringify(eventIndexes);
+      const latestEvent = eventIndexes[eventIndexes.length - 1];
+      if (latestEvent < previousEvent)
+        fail("INVALID_SCHEMA", `${path} moves backwards in source chronology: its latest event index ${latestEvent} precedes the previous scene's latest index ${previousEvent}. Keep scenes chronological. Earlier event references may be included for context, but the latest index must not decrease between scenes. Do not discard events or rewrite scene prose merely to hide this conflict.`);
+      overlappingReferences ||= eventIndexes[0] < previousEvent;
+    }
     previousEvent = eventIndexes[eventIndexes.length - 1];
     return { id: `scene-${i + 1}`, title: safeText(scene.title, `${path}.title`, 200), eventIndexes, brief: safeText(scene.brief, `${path}.brief`, 1500), assumptions: texts(scene.assumptions, `${path}.assumptions`, 6, 400), sourceRefs: [...new Set(eventIndexes.flatMap((index) => ledger.events[index].sourceRefs))] };
   });
-  return { title: safeText(plan.title, "plan.title", 200), premise: safeText(plan.premise, "plan.premise", 6000), narratorInstructions: safeText(plan.narratorInstructions, "plan.narratorInstructions", 8000), startingLore, scenes, warnings: texts(plan.warnings, "plan.warnings", 16, 1000) };
+  return { title: safeText(plan.title, "plan.title", 200), premise: safeText(plan.premise, "plan.premise", 6000), narratorInstructions: safeText(plan.narratorInstructions, "plan.narratorInstructions", 8000), startingLore, scenes, warnings: [...texts(plan.warnings, "plan.warnings", 16, 1000), ...normalizedReferences ? ["Repeated scene event references were deduplicated and unsorted references were put in source order locally. Every distinct cited event and the scene order were retained."] : [], ...overlappingReferences ? ["Some later scenes also cite earlier events for context. These references were retained; review each scene\u2019s chronology and continuity assumptions."] : []] };
+}
+async function savedScenePlan(messages, generate, ledger, requestedScenes, signal) {
+  if (!generate.peek)
+    return;
+  const response = await withCancellation(() => generate.peek(messages, signal, { requireSettled: true }), signal);
+  checkCancelled(signal);
+  if (!response)
+    return;
+  try {
+    return validatePlan(parseModelJson(response.content, response.finish_reason), ledger, requestedScenes);
+  } catch (error) {
+    if (!(error instanceof ImportError))
+      throw error;
+  }
+  let oldError;
+  try {
+    validatePlan(parseModelJson(response.content, response.finish_reason), ledger, requestedScenes, true);
+    return;
+  } catch (error) {
+    if (!(error instanceof ImportError))
+      throw error;
+    oldError = error;
+  }
+  if (!["MALFORMED_JSON", "INVALID_SCHEMA", "INVALID_REFERENCE", "INCOMPLETE_SOURCE"].includes(oldError.code))
+    return;
+  const repairMessages = [...messages, { role: "assistant", content: response.content }, { role: "user", content: `Your output did not match the required JSON schema: ${oldError.message} Return the complete corrected JSON object. Do not omit source material to fix formatting.` }];
+  const repair = await withCancellation(() => generate.peek(repairMessages, signal, { requireSettled: true }), signal);
+  checkCancelled(signal);
+  if (!repair)
+    return;
+  try {
+    return validatePlan(parseModelJson(repair.content, repair.finish_reason), ledger, requestedScenes);
+  } catch (error) {
+    if (!(error instanceof ImportError))
+      throw error;
+    return;
+  }
 }
 function orderedBatch(value, key, ids) {
   const output = object(value, key), expected = new Set(ids), byId = new Map;
@@ -3839,7 +3886,7 @@ ${value}`;
   }
   return result;
 }
-async function createStagedAdaptation(preferences, ledger, metadata, generate, report, signal, profilePromptVersion = 1) {
+async function createStagedAdaptation(preferences, ledger, metadata, generate, report, signal, profilePromptVersion = 1, planPromptVersion = 1) {
   const roleCast = ledger.cast.map((person, index) => ({ ...person, id: `cast-${index + 1}`, knowledge: person.knowledgeAtIntroduction }));
   let roles;
   if (preferences.narrationMode !== undefined) {
@@ -3855,12 +3902,16 @@ ${roleInstruction({ cast: roleCast, playerRole: preferences.playerRole, roles, o
   let completed = 0;
   let total = 1 + Math.ceil(ledger.cast.length / 4) + Math.ceil(ledger.setting.length / 4) + Math.ceil(preferences.requestedScenes / 2);
   report(completed, total, "Planning the narrator and scene order");
-  const plan = await requestJson([
+  const planMessages = [
     { role: "system", content: `${sourcePolicy}
 ${stagedAgencyRules}${rolePolicy}
 Plan a staged adaptation. Return exactly {"title":"story title","premise":"premise at the chosen start","narratorInstructions":"narrator rules","startingLore":[0],"scenes":[{"title":"scene title","eventIndexes":[0],"brief":"one-sentence scene setup and relevant revelation","assumptions":[]}],"warnings":[]}. Source indexes are zero-based positions in ledger.setting and ledger.events. Select only setting entries appropriate for starting lore; explain omitted or future-only entries in warnings. The full ledger remains available to later scene generation. All source cast identities will be retained separately; do not reproduce their descriptions here. Plan at least one and at most ${preferences.requestedScenes} scenes, with no invented padding. Each scene must cite one or more existing event indexes in chronological order. The first scene begins at the chosen starting point. Do not write greetings, full cast profiles, or lore content yet. Keep the premise concise, narrator instructions focused, each scene brief to one short sentence, and assumptions to only necessary continuity conditions (at most six short items). Give only new warnings, at most sixteen concise items; source warnings are preserved automatically. Aim for a compact plan under 16,000 JSON characters. All fields are required.` },
     { role: "user", content: JSON.stringify({ task: "set-points-plan-v1", preferences, ledger }) }
-  ], generate, (value) => validatePlan(value, ledger, preferences.requestedScenes), signal);
+  ];
+  if (planPromptVersion === 2)
+    planMessages[0].content += `
+Event references are coverage citations: earlier events may be repeated across scenes for context. Within each scene, use unique indexes sorted ascending. Keep scene destinations chronological: the largest cited event index must stay the same or increase from one scene to the next. One source event may support multiple consecutive scenes. Do not change the scene order merely to sort citations, and do not invent, omit, or move events to satisfy an index rule.`;
+  const plan = await savedScenePlan(planMessages, generate, ledger, preferences.requestedScenes, signal) ?? await requestJson(planMessages, generate, (value) => validatePlan(value, ledger, preferences.requestedScenes), signal);
   completed++;
   const characters = ledger.cast.map((person, sourceIndex) => ({ id: `cast-${sourceIndex + 1}`, sourceIndex, name: person.name, aliases: person.aliases, sourceRefs: person.sourceRefs }));
   const entries = plan.startingLore.map((sourceIndex) => ({ id: `lore-${sourceIndex + 1}`, sourceIndex, name: ledger.setting[sourceIndex].name }));
@@ -4020,7 +4071,7 @@ ${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` }
   if (adapted)
     completed++;
   else {
-    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal, options.profilePromptVersion ?? 1);
+    const staged = await createStagedAdaptation(preferences, ledger, metadata, generate, (done, count, label) => onProgress(completed + done, completed + count, label), signal, options.profilePromptVersion ?? 1, options.planPromptVersion ?? 1);
     adapted = staged.draft;
     completed += staged.operations;
   }
@@ -14979,7 +15030,7 @@ class SetPointsController {
     if (this.polishBusy())
       throw new Error("Wait for character polish to finish or cancel it first.");
     if (!resume)
-      options = { ...options, profilePromptVersion: 2 };
+      options = { ...options, profilePromptVersion: 2, planPromptVersion: 2 };
     const settings = responseSettings(options);
     this.require("generation");
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === "running")

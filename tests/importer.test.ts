@@ -324,10 +324,10 @@ describe('adaptation pipeline', () => {
       if(messages[1].content.startsWith('SOURCE CHUNK'))return response({...ledger(),warnings:['A source warning.']});
       return stagedReply(messages);
     };
-    generate.peek=async()=>{peeks++;return response(draft({warnings:Array.from({length:96},(_,i)=>`Old warning ${i}.`)}));};
+    generate.peek=async messages=>{peeks++;if(JSON.parse(messages[1].content).task)return undefined;return response(draft({warnings:Array.from({length:96},(_,i)=>`Old warning ${i}.`)}));};
     const result=await adaptStory(options(),generate,()=>{});
     expect(result.warnings).toContain('A source warning.');
-    expect(calls).toBe(5);expect(peeks).toBe(1);
+    expect(calls).toBe(5);expect(peeks).toBe(2);
   });
 
   test('blocks fresh staged work when the old final request has an uncertain outcome', async () => {
@@ -400,6 +400,62 @@ describe('adaptation pipeline', () => {
       result.scenes[0].eventIndexes=[0,5];result.scenes[1].eventIndexes=[1];return response(result);
     },()=>{})).rejects.toThrow('chronology');
     expect(planCalls).toBe(2);
+  });
+
+  test('normalizes repeated and unsorted event citations while preserving overlapping context and scene order', async () => {
+    const original = verboseLedger(['chunk:1'], 3), sceneRequests: any[] = [];
+    let planCalls = 0;
+    const result = await adaptStory(options(), async messages => {
+      if (messages[1].content.startsWith('SOURCE CHUNK')) return response(original);
+      const input = JSON.parse(messages[1].content), reply = JSON.parse(stagedReply(messages).content);
+      if (input.task === 'set-points-plan-v1') {
+        planCalls++; reply.scenes[0].eventIndexes = [1,0,1]; reply.scenes[1].eventIndexes = [2,0,1,2];
+      }
+      if (input.task === 'set-points-scenes-v1') sceneRequests.push(...input.scenes);
+      return response(reply);
+    }, () => {});
+    expect(planCalls).toBe(1);
+    expect(sceneRequests.map(scene => scene.eventIndexes)).toEqual([[0,1],[0,1,2]]);
+    expect(result.scenes.map(scene => scene.title)).toEqual(draft().scenes.map(scene => scene.title));
+    expect(result.scenes[1].assumptions).toEqual(draft().scenes[1].assumptions);
+    expect(result.scenes.every(scene => scene.sourceRefs.join(',') === 'chunk:1')).toBe(true);
+    expect(result.warnings.some(warning => warning.includes('Every distinct cited event'))).toBe(true);
+    expect(result.warnings.some(warning => warning.includes('earlier events for context'))).toBe(true);
+  });
+
+  test('allows multiple scenes from one event and deduplicates references longer than the source event count', async () => {
+    let planCalls = 0;
+    const result = await adaptStory(options(), async messages => {
+      if (messages[1].content.startsWith('SOURCE CHUNK')) return response(ledger());
+      const reply = JSON.parse(stagedReply(messages).content);
+      if (JSON.parse(messages[1].content).task === 'set-points-plan-v1') { planCalls++; for (const scene of reply.scenes) scene.eventIndexes = [0,0,0]; }
+      return response(reply);
+    }, () => {});
+    expect(planCalls).toBe(1); expect(result.scenes).toHaveLength(2);
+  });
+
+  test.each([{label:'negative',indexes:[-1]}, {label:'out of range',indexes:[3]}, {label:'string',indexes:['0']}, {label:'fraction',indexes:[0.5]}, {label:'empty',indexes:[]}, {label:'excessive',indexes:Array(257).fill(0)}])('still rejects $label event references', async ({indexes}) => {
+    let planCalls = 0;
+    await expect(adaptStory(options(), async messages => {
+      if (messages[1].content.startsWith('SOURCE CHUNK')) return response(verboseLedger(['chunk:1'], 3));
+      planCalls++; const reply = JSON.parse(stagedReply(messages).content); reply.scenes[0].eventIndexes = indexes; return response(reply);
+    }, () => {})).rejects.toMatchObject({code: 'INVALID_SCHEMA'});
+    expect(planCalls).toBe(2);
+  });
+
+  test('planning prompt guidance is versioned without changing source requests or the legacy plan key', async () => {
+    const requests: GenerationMessage[][][] = [];
+    for (const planPromptVersion of [undefined, 1, 2] as const) {
+      const captured: GenerationMessage[][] = []; requests.push(captured);
+      await adaptStory(options({planPromptVersion}), async messages => {
+        captured.push(structuredClone(messages)); return messages[1].content.startsWith('SOURCE CHUNK') ? response(ledger()) : stagedReply(messages);
+      }, () => {});
+    }
+    expect(requests[0][0]).toEqual(requests[2][0]);
+    expect(requests[0][1]).toEqual(requests[1][1]);
+    expect(requests[0][1][0].content).not.toContain('Event references are coverage citations');
+    expect(requests[2][1][0].content).toContain('largest cited event index must stay the same or increase');
+    expect(requests[0][1][1]).toEqual(requests[2][1][1]);
   });
 
   test('a truncated scene batch resumes independently without paying for completed reading or profiles', async () => {

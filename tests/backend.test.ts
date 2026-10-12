@@ -36,6 +36,29 @@ function harness(generate: (input:any)=>Promise<unknown> = async()=>({content:'n
   return {api,stored,calls};
 }
 function repairReply(input:any){const body=JSON.parse(input.messages[1].content);return {content:JSON.stringify({id:body.scene.id,greeting:'Iona holds a letter beside the boat.',direction:'Offer the clue while leaving the response open.',assumptions:[],roles:{playerCharacterId:body.roles.playerCharacterId,narration:body.roles.narration,viewpointCharacterId:body.roles.viewpointCharacterId}}),finish_reason:'stop'};}
+
+test('resumes the published 0.1.13 planning failure from its rejected paid repair without rereading or buying another plan', async () => {
+  const fixture = await Bun.file(new URL('./fixtures/scene-plan-v013.json', import.meta.url)).json() as {stored: Array<[string, unknown]>};
+  const h = harness(async input => {
+    expect(JSON.parse(input.messages[1].content).task).toBe('set-points-scenes-v1');
+    return {content: JSON.stringify(stagedReply(input)), finish_reason: 'stop'};
+  });
+  for (const [key, value] of fixture.stored) h.stored.set(key, value);
+  const savedResponses = new Map([...h.stored].filter(([key]) => /responses\/[a-f0-9]{64}\.json$/.test(key)));
+  expect([...savedResponses.values()].some(value => JSON.parse(String(value)).state === 'rejected')).toBe(true);
+  const app = new SetPointsController(h.api, 'alice');
+  await app.handle('resume-import', {}); await app.waitForImport();
+  const view = await app.snapshot(null);
+  expect(view.job?.status).toBe('complete'); expect(h.calls).toHaveLength(1);
+  expect(view.draft?.scenes.map(scene => scene.title)).toEqual(['The letter', 'The lighthouse']);
+  expect(view.draft?.scenes[1].assumptions).toEqual(['The traveler chooses to follow the clue.']);
+  expect(view.draft?.warnings.some(warning => warning.includes('earlier events for context'))).toBe(true);
+  for (const [key, value] of savedResponses) expect(h.stored.get(key)).toEqual(value);
+  const workspace = h.stored.get('alice:workspace.json') as any;
+  expect((typeof workspace === 'string' ? JSON.parse(workspace) : workspace).lastImport.planPromptVersion).toBeUndefined();
+  expect(view.diagnostics.join('\n')).not.toContain('A letter lies on the desk');
+});
+
 describe('completed-draft scene repair',()=>{
   test('resumes the actual 0.1.10 partial-repair fixture without repurchasing its completed scene',async()=>{
     const fixture=await Bun.file(new URL('./fixtures/scene-repair-v010.json',import.meta.url)).json() as {stored:Array<[string,unknown]>};

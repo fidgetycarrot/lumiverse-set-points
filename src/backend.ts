@@ -399,7 +399,7 @@ export class SetPointsController {
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
     if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
-    if (!resume) options = { ...options, profilePromptVersion: 2 };
+    if (!resume) options = { ...options, profilePromptVersion: 2, planPromptVersion: 2 };
     const settings = responseSettings(options);
     this.require('generation');
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');

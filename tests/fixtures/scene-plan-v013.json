@@ -1,0 +1,33 @@
+{
+  "generatedBy": "Published Set Points 0.1.13 backend with an original neutral fixture",
+  "stored": [
+    [
+      "alice:workspace.json",
+      "{\"draft\":null,\"saved\":null,\"job\":{\"id\":\"611d2556-0807-452d-a753-28c770be05ae\",\"status\":\"failed\",\"completed\":1,\"total\":3,\"label\":\"Import needs attention\",\"phase\":\"Planning the narrator and scene order\",\"retryUncertain\":false,\"error\":\"Scene event indexes must preserve source chronology without duplicate indexes within a scene. Saved steps are retained. Resume saved import reuses them; remaining model requests use normal charges.\"},\"lastImport\":{\"text\":\"The Lighthouse Letter\\n\\nMara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.\\n\\nAt the harbor, Iona tells Mara that Elias left a sealed letter in the old chart room. Iona is wary of outsiders, but admits she is worried. A storm will reach Greyhaven at midnight. Mara can ask Iona for help or investigate alone.\\n\\nThe chart room contains a letter from Elias: the lighthouse lens was deliberately damaged, and he has gone to the north cove to find a replacement. He asks for a lantern signal if the boat should return. The letter is the first evidence that Elias left willingly.\\n\\nAt the north cove, Elias waits beside a stranded boat. He has the lens, but the tide has blocked the footpath. Iona knows a sea route back. The group must decide how to carry the fragile lens home.\\n\\nAt the lighthouse, the storm arrives. The replacement lens can restore the beacon. Whether Mara repairs it, asks for help, or finds another solution remains her choice.\",\"sourceTitle\":\"The Lighthouse Letter\",\"playerRole\":\"Mara\",\"startingPoint\":\"At the harbor\",\"sceneCount\":2,\"chunkSize\":12000,\"connectionId\":\"model\",\"profilePromptVersion\":2},\"lastConnectionFingerprint\":{\"id\":\"model\",\"model\":\"test\",\"provider\":\"test\",\"parameters\":{\"temperature\":0.3,\"max_tokens\":16000}}}"
+    ],
+    [
+      "alice:imports/responses/bf5ceda308b361a30af6984873d71e39df8ab17300b462a0a1c925e65f2efd2f.intent.json",
+      "{\"attemptId\":\"c68aeb82-31f3-4583-9d81-f1bc45e4d881\",\"checksum\":\"8b11248c1f39e913d179759d74c0d4fa0cc45020c32208e6493bdaab362cfd55\",\"format\":1,\"key\":\"bf5ceda308b361a30af6984873d71e39df8ab17300b462a0a1c925e65f2efd2f\",\"kind\":\"intent\",\"state\":\"pending\"}"
+    ],
+    [
+      "alice:imports/responses/bf5ceda308b361a30af6984873d71e39df8ab17300b462a0a1c925e65f2efd2f.json",
+      "{\"attemptId\":\"c68aeb82-31f3-4583-9d81-f1bc45e4d881\",\"checksum\":\"debef19693d850b619e1e17b1bc9b6bb0041a87b4a773918706bc98e8a9a24c7\",\"format\":1,\"key\":\"bf5ceda308b361a30af6984873d71e39df8ab17300b462a0a1c925e65f2efd2f\",\"kind\":\"response\",\"response\":{\"content\":\"{\\\"coveredChunks\\\":[\\\"chunk:1\\\"],\\\"premise\\\":\\\"A traveler follows a lighthouse clue.\\\",\\\"cast\\\":[],\\\"setting\\\":[],\\\"events\\\":[{\\\"title\\\":\\\"Arrival\\\",\\\"summary\\\":\\\"The traveler finds another clue.\\\",\\\"participants\\\":[],\\\"changes\\\":\\\"Another location becomes relevant.\\\",\\\"sourceRefs\\\":[\\\"chunk:1\\\"]},{\\\"title\\\":\\\"A letter\\\",\\\"summary\\\":\\\"The traveler finds another clue.\\\",\\\"participants\\\":[],\\\"changes\\\":\\\"Another location becomes relevant.\\\",\\\"sourceRefs\\\":[\\\"chunk:1\\\"]},{\\\"title\\\":\\\"The lighthouse\\\",\\\"summary\\\":\\\"The traveler finds another clue.\\\",\\\"participants\\\":[],\\\"changes\\\":\\\"Another location becomes relevant.\\\",\\\"sourceRefs\\\":[\\\"chunk:1\\\"]}],\\\"warnings\\\":[]}\",\"finish_reason\":\"stop\"},\"state\":\"complete\"}"
+    ],
+    [
+      "alice:imports/responses/cfe6818b8e2eae57fdb6e9afafefa1c7b456cf67d9eaed5ca8cbfd5c6f677f47.intent.json",
+      "{\"attemptId\":\"30098731-5a9a-4d83-bb4c-ea6ec1b363f7\",\"checksum\":\"11d48804f66d072cf6b353300ecd0107d81e318aa98488e40e088ccf82a978b5\",\"format\":1,\"key\":\"cfe6818b8e2eae57fdb6e9afafefa1c7b456cf67d9eaed5ca8cbfd5c6f677f47\",\"kind\":\"intent\",\"state\":\"pending\"}"
+    ],
+    [
+      "alice:imports/responses/cfe6818b8e2eae57fdb6e9afafefa1c7b456cf67d9eaed5ca8cbfd5c6f677f47.json",
+      "{\"attemptId\":\"30098731-5a9a-4d83-bb4c-ea6ec1b363f7\",\"checksum\":\"d6a19c8436908b739d3835cd150373bb977df17a1d9a37e3e9bec54f2f526ba4\",\"format\":1,\"key\":\"cfe6818b8e2eae57fdb6e9afafefa1c7b456cf67d9eaed5ca8cbfd5c6f677f47\",\"kind\":\"response\",\"response\":{\"content\":\"{\\\"title\\\":\\\"The Lighthouse Letter\\\",\\\"premise\\\":\\\"A traveler follows a lighthouse clue.\\\",\\\"narratorInstructions\\\":\\\"Leave the traveler’s choices open.\\\",\\\"startingLore\\\":[],\\\"scenes\\\":[{\\\"title\\\":\\\"The letter\\\",\\\"eventIndexes\\\":[2],\\\"brief\\\":\\\"A letter lies on the desk.\\\",\\\"assumptions\\\":[]},{\\\"title\\\":\\\"The lighthouse\\\",\\\"eventIndexes\\\":[1],\\\"brief\\\":\\\"The lighthouse door stands open.\\\",\\\"assumptions\\\":[\\\"The traveler chooses to follow the clue.\\\"]}],\\\"warnings\\\":[]}\",\"finish_reason\":\"stop\"},\"state\":\"complete\"}"
+    ],
+    [
+      "alice:imports/responses/40347f0a1dc4221d2e854994e9b3fc9fe5d0274a0702eb090aa594b55e3f59b0.intent.json",
+      "{\"attemptId\":\"59c97e0e-c723-4703-9d69-92ceb1f5ebcc\",\"checksum\":\"0141d3e46ac35559921f8097125dcdcaf0cd3a73b8f0bb898041a585af2e08d6\",\"format\":1,\"key\":\"40347f0a1dc4221d2e854994e9b3fc9fe5d0274a0702eb090aa594b55e3f59b0\",\"kind\":\"intent\",\"state\":\"pending\"}"
+    ],
+    [
+      "alice:imports/responses/40347f0a1dc4221d2e854994e9b3fc9fe5d0274a0702eb090aa594b55e3f59b0.json",
+      "{\"attemptId\":\"59c97e0e-c723-4703-9d69-92ceb1f5ebcc\",\"checksum\":\"72340b8afea463a2da10a00691e21946c24660c792b65a3f00fecf2353cf120f\",\"format\":1,\"key\":\"40347f0a1dc4221d2e854994e9b3fc9fe5d0274a0702eb090aa594b55e3f59b0\",\"kind\":\"response\",\"response\":{\"content\":\"{\\\"title\\\":\\\"The Lighthouse Letter\\\",\\\"premise\\\":\\\"A traveler follows a lighthouse clue.\\\",\\\"narratorInstructions\\\":\\\"Leave the traveler’s choices open.\\\",\\\"startingLore\\\":[],\\\"scenes\\\":[{\\\"title\\\":\\\"The letter\\\",\\\"eventIndexes\\\":[0,1],\\\"brief\\\":\\\"A letter lies on the desk.\\\",\\\"assumptions\\\":[]},{\\\"title\\\":\\\"The lighthouse\\\",\\\"eventIndexes\\\":[0,2],\\\"brief\\\":\\\"The lighthouse door stands open.\\\",\\\"assumptions\\\":[\\\"The traveler chooses to follow the clue.\\\"]}],\\\"warnings\\\":[]}\",\"finish_reason\":\"stop\"},\"state\":\"rejected\"}"
+    ]
+  ]
+}
