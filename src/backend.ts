@@ -1,4 +1,6 @@
 import { personaDraft, personaIsAutomatic } from './persona';
+import { newcomerContext, writeNewcomer } from './newcomer';
+import { defaultRoles, sourceLead } from './roles';
 import { polishCharacters, characterPolishSignature, validateCharacterPolishResult } from './character-polish';
 import { characterIssues } from './character-review';
 import type { SpindleAPI, GenerationRequestDTO, GenerationResponseDTO, InterceptorDisposer } from 'lumiverse-spindle-types';
@@ -10,14 +12,14 @@ import { SceneRuntime } from './runtime';
 import { extractPage, storyUrl } from './source';
 import { enrichVisuals, validateVisualPack, visualDraftSignature, type VisualPack } from './visuals';
 import { designLooks, lookDraftSignature, rerollLook, validateLookPack, LOOK_LIMITS, type LookPack } from './looks';
-import { VERSION, type AppSnapshot, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
+import { EXTENSION_ID, VERSION, type AppSnapshot, type Newcomer, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
 
 const STATE_PATH = 'workspace.json';
 type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 // A look job is either a full design (needs the story text) or a reroll of one
 // character (needs only the saved looks, which carry their own story notes).
 type LookInput = { draft: StoryDraft; sourceText?: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; reroll?: { characterId: string; note: string; pack: LookPack } };
-type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2 };
+type RepairInput = { draft: StoryDraft; sceneIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode']; promptVersion?:1|2|3 };
 type CharacterPolishInput = { draft: StoryDraft; characterIds: string[]; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
 type Workspace = {
   characterPolishInput?: CharacterPolishInput; characterPolishJob?: ImportJob; characterPolishResult?: StoryDraft; characterPolishConnectionFingerprint?: unknown;
@@ -119,6 +121,7 @@ export class SetPointsController {
   private starting = false;
   private saving = false;
   private checking = false;
+  private writingNewcomer = false;
   private checkAbort?: AbortController;
   constructor(private api: SpindleAPI, private userId?: string, private changed: () => void = () => {}) {
     this.runtime = new SceneRuntime(api, userId);
@@ -366,6 +369,78 @@ export class SetPointsController {
       throw error;
     } finally { this.checking = false; this.checkAbort = undefined; }
   }
+  /** One model request that writes the human's own character for an existing draft. Nothing is saved until Review applies it. */
+  private async writeNewcomerFor(value: Record<string, unknown>): Promise<{ newcomer: Newcomer; role: string }> {
+    await this.ready; this.require('generation');
+    if (this.writingNewcomer) throw new Error('Your character is already being written.');
+    if (this.starting || this.abort || this.workspace.job?.status === 'running' || this.saving || this.checking) throw new Error('Wait for the current import, save, or connection check to finish.');
+    const draft = validateDraft(value.draft);
+    if ((draft.roles ?? defaultRoles(draft)).playerCharacterId) throw new Error('You are playing a character from the story. Set Player cast identity to “Custom or unbound role” to join as someone new.');
+    const settings = responseSettings(value as Pick<ImportOptions, 'maxOutputTokens'|'reasoningMode'>), connection = await this.selectedConnection(value.connectionId);
+    this.writingNewcomer = true;
+    const controller = new AbortController();
+    try {
+      const generate: Generate = async (messages, signal) => this.readModelResponse(await this.requestModel(connection, messages, signal ?? controller.signal, settings.maxOutputTokens, 300_000, settings.reasoningMode));
+      // The first scene's title, not its prose: an opening that wrongly cast the
+      // human as a source character would teach the same mistake here.
+      const made = await writeNewcomer(newcomerContext({
+        title: draft.title, premise: draft.premise, startingPoint: draft.startingPoint, playerRole: draft.playerRole, lead: sourceLead(draft)?.name,
+        cast: draft.cast.map(person => ({ name: person.name, aliases: person.aliases, about: `${person.personality} ${person.knowledge}` })),
+        setting: draft.lore.map(entry => ({ name: entry.name, details: entry.content })),
+        opening: draft.scenes[0]?.title ?? '',
+      }), draft.cast, generate, controller.signal);
+      this.note('New character written on request.');
+      return { newcomer: { name: made.name, description: made.description }, role: made.role };
+    } finally { this.writingNewcomer = false; }
+  }
+
+  /** Remember which persona belongs to a saved card, so its chats can use it. */
+  private async bindPersona(saved: SavedStory) {
+    if (!saved.personaId) return;
+    try { await this.api.userStorage.setJson(`personas/card-${saved.characterId}.json`, { personaId: saved.personaId }, { userId: this.userId }); }
+    catch { this.note('Could not remember the persona for this card.'); }
+  }
+
+  /**
+   * The first time a chat with a Set Points card opens, play it as the persona
+   * made for that story. The choice is stored on the chat, so Lumiverse keeps it
+   * for that chat only. A persona already picked for the chat is never replaced,
+   * and a chat is only set up once, so switching away later is respected.
+   */
+  private async useStoryPersona(chatId: string, confirm: boolean): Promise<{ personaId: string; personaName: string } | null> {
+    if (!this.api.permissions.has('personas') || !this.api.permissions.has('chats')) return null;
+    return this.runtime.exclusive(chatId, async () => {
+      const chat = await this.api.chats.get(chatId, this.userId);
+      if (!chat?.character_id) return null;
+      const meta = chat.metadata ?? {}, mark = `${EXTENSION_ID}_persona`;
+      if (confirm) {
+        // Lumiverse picks a persona as a chat opens; if that ran after us, put ours back once.
+        const id = meta[mark];
+        if (typeof id !== 'string' || meta.active_persona_id !== id) return null;
+        const active = await this.api.personas.getActive(this.userId);
+        if (active?.id === id) return null;
+        const persona = await this.api.personas.get(id, this.userId);
+        if (!persona) return null;
+        await this.api.personas.switchActive(id, this.userId);
+        return { personaId: id, personaName: persona.name };
+      }
+      if (meta[mark] !== undefined) return null;
+      let personaId: string | undefined;
+      try { personaId = (await this.api.userStorage.getJson<{ personaId?: string }>(`personas/card-${chat.character_id}.json`, { fallback: {}, userId: this.userId })).personaId; } catch {}
+      if (!personaId && this.workspace.saved?.characterId === chat.character_id) personaId = this.workspace.saved.personaId;
+      if (!personaId) return null;
+      const persona = await this.api.personas.get(personaId, this.userId);
+      if (!persona) return null;
+      const chosen = typeof meta.active_persona_id === 'string' && meta.active_persona_id ? meta.active_persona_id : null;
+      // Chat metadata is replaced whole, so the write carries everything that was there.
+      await this.api.chats.update(chatId, { metadata: { ...meta, ...(chosen ? {} : { active_persona_id: personaId }), [mark]: chosen ?? personaId } }, this.userId);
+      if (chosen && chosen !== personaId) return null;
+      await this.api.personas.switchActive(personaId, this.userId);
+      this.note('Story persona set for a new chat.');
+      return { personaId, personaName: persona.name };
+    });
+  }
+
   async snapshot(chatId?: string|null): Promise<AppSnapshot> {
     await this.ready;
     const permissions = await this.api.permissions.getGranted();
@@ -399,7 +474,7 @@ export class SetPointsController {
   private async start(options: ImportOptions, retryUncertain = false, resume = false): Promise<ImportJob> {
     await this.ready;
     if (this.polishBusy()) throw new Error('Wait for character polish to finish or cancel it first.');
-    if (!resume) options = { ...options, profilePromptVersion: 2, planPromptVersion: 2 };
+    if (!resume) options = { ...options, profilePromptVersion: 2, planPromptVersion: 3 };
     const settings = responseSettings(options);
     this.require('generation');
     if (this.repairStarting || this.repairAbort || this.workspace.repairJob?.status === 'running') throw new Error('Wait for scene repair to finish or cancel it first.');
@@ -542,8 +617,8 @@ export class SetPointsController {
   private validateRepairInput(value: unknown): RepairInput {
     const data=record(value), draft=validateDraft(data.draft);
     if (!Array.isArray(data.sceneIds) || !data.sceneIds.length || new Set(data.sceneIds).size!==data.sceneIds.length || data.sceneIds.some(id=>typeof id!=='string'||!draft.scenes.some(scene=>scene.id===id))) throw new Error('Select existing scenes once each for repair.');
-    if(data.promptVersion!==undefined&&data.promptVersion!==1&&data.promptVersion!==2)throw new Error('Invalid saved scene repair format.');
-    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data),...(data.promptVersion!==undefined?{promptVersion:data.promptVersion as 1|2}:{})};
+    if(data.promptVersion!==undefined&&data.promptVersion!==1&&data.promptVersion!==2&&data.promptVersion!==3)throw new Error('Invalid saved scene repair format.');
+    return {draft,sceneIds:data.sceneIds as string[],connectionId:string(data.connectionId,'Scene repair connection'),...responseSettings(data),...(data.promptVersion!==undefined?{promptVersion:data.promptVersion as 1|2|3}:{})};
   }
   private async startRepair(value: unknown, retryUncertain=false, resume=false): Promise<ImportJob> {
     await this.ready; this.require('generation');
@@ -551,7 +626,7 @@ export class SetPointsController {
     if (this.starting||this.abort||this.visualStarting||this.visualAbort||this.repairStarting||this.repairAbort||this.checking||this.saving||this.workspace.job?.status==='running'||this.workspace.visualJob?.status==='running'||this.looksBusy()) throw new Error('Wait for the current operation to finish or cancel it before repairing scenes.');
     this.repairStarting=true;
     try {
-      const options=this.validateRepairInput(value);if(!resume)options.promptVersion=2;
+      const options=this.validateRepairInput(value);if(!resume)options.promptVersion=3;
       const settings=responseSettings(options),connection=await this.selectedConnection(options.connectionId);
       if (resume&&!sameSettings(connection.fingerprint,this.workspace.repairConnectionFingerprint)) throw new Error('The saved scene repair connection changed. Restore its settings before resuming, or start a new normally charged repair.');
       this.repairCheckpoints.beginRun({retryUncertain});
@@ -803,6 +878,8 @@ export class SetPointsController {
         return this.startLooks(options, data.retryUncertain === true, true);
       }
       case 'cancel-looks': this.lookAbort?.abort(); return { cancelled: Boolean(this.lookAbort) };
+      case 'write-newcomer': return this.writeNewcomerFor(data);
+      case 'use-story-persona': return this.useStoryPersona(string(data.chatId, 'Active chat'), data.confirm === true);
       case 'switch-persona': {
         this.require('personas');
         const persona = await this.api.personas.get(string(data.personaId, 'Persona'), this.userId);
@@ -867,7 +944,7 @@ export class SetPointsController {
         try {
           this.workspace.draft = draft; await this.persist();
           const saved = await this.publisher.publish(draft);
-          this.workspace.saved = saved; await this.persist(); this.note('Narrator card and attached world book saved.'); this.changed(); return saved;
+          this.workspace.saved = saved; await this.persist(); await this.bindPersona(saved); this.note('Narrator card and attached world book saved.'); this.changed(); return saved;
         } finally { this.saving = false; }
       }
       case 'play-enable': {

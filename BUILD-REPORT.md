@@ -1,6 +1,22 @@
-# Set Points 0.1.14 — verification
+# Set Points 0.1.15 — verification
 
 Prepared October 12, 2026.
+
+## Change in 0.1.15
+
+**Problem.** A story told from one character's view, imported with a custom player role ("someone new"), produced openings that addressed the player as that character: their sensations, items, and blessings, with the character removed from the scene. The persona made for a custom role held only the role name, and the saved persona was never used in the story's chat.
+
+**Keeping the lead separate.** For a custom or unbound player, the role contract now states that the player is someone new, names the character the source follows, and forbids giving the player that character's body, history, memories, sensations, belongings, injuries, blessings, relationships, or experiences. The lead is found locally: a cast member named in Source viewpoint wins; otherwise new imports use ledger event participation, and existing drafts use mentions in other characters' relationships and knowledge, the premise, and lore. Scene text is deliberately excluded, because a faulty opening is exactly where the lead's name goes missing. New imports note the lead in Source viewpoint for review. The rule reaches planning, cast, lore, and scene prompts, the published card, premise lore, and scene metadata.
+
+**New check.** Player and viewpoint checks flag an opening that uses "you" but never names the lead, for the first scene and for any scene whose private direction names the lead. The checker revision is bumped to 3, so older acknowledgments do not hide it.
+
+**Writing the newcomer.** New imports with a custom player make one added request after planning. It keeps every detail the player typed, picks a name distinct from all cast names and aliases when none is given, and writes who they are, why they are present, what they know, appearance (adult), and starting outfit, without deciding personality or choices. The result becomes the player role line, `draft.newcomer`, and context for cast, lore, and scene batches. A name matching a source character is rejected and gets the usual single format repair. Existing drafts can use **Write my character** in Review (one request, not cached; nothing changes until applied in Review).
+
+**Persona.** New imports default to **Make a persona**. For a newcomer, the persona is built from `draft.newcomer` and follows the draft until reworded. After a save, the card's persona is remembered. The first time a chat with that card opens, Set Points stores the persona on the chat (`active_persona_id`, merged with existing metadata inside the chat's runtime queue) and switches to it. A persona already chosen for the chat is kept, each chat is set up once, and a single delayed check restores the persona if Lumiverse's own open-time selection ran afterward. Cards saved before this version use the persona from the workspace's last save.
+
+**Paid work.** New behavior is versioned: plan prompt version 3 and scene-repair prompt version 3. Saved imports and repairs resume with their original prompts, and the 0.1.10 partial-repair fixture still resumes with one request. Publication revision 6 creates a new card once on re-saving, so the new contract reaches published cards; older cards and chats are kept.
+
+**Validation.** Type checking and all 504 tests across 20 files pass. New tests cover lead detection (including a draft whose openings erased the lead), the contract text and its absence for played characters and older prompts, the new check and its acknowledgment, newcomer validation and prompt, persona text, a version-3 import end to end, unchanged older imports, repair prompt versions, chat persona setup (once only, existing choice kept, other cards ignored, pre-0.1.15 cards, the delayed check), and the Review button. The checks were also run against the reported draft: the lead resolves to the source protagonist and the first opening is flagged. Production and preview bundles were rebuilt. Real model output and a live Lumiverse session were not verified here.
 
 ## Change in 0.1.14
 

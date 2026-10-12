@@ -1,6 +1,8 @@
 import { characterText } from './character-format';
-import { defaultRoles, roleInstruction, rolesForImport, validateRoles } from './roles';
-import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type PersonaPlan, type StoryDraft, type LoreEntry, type StoryScene } from './types';
+import { defaultRoles, leadFromEvents, mentionCount, roleInstruction, rolesForImport, validateRoles } from './roles';
+import { newcomerContext, writeNewcomer } from './newcomer';
+import { personaDraft } from './persona';
+import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type Newcomer, type PersonaPlan, type StoryDraft, type LoreEntry, type StoryScene } from './types';
 
 export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
 export type GenerationMessage = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -134,10 +136,15 @@ export function validateDraft(value: unknown): StoryDraft {
       persona.personaId = personaId;
     }
   }
+  let newcomer: Newcomer | undefined;
+  if (draft.newcomer !== undefined) {
+    const entry = object(draft.newcomer, 'newcomer');
+    newcomer = { name: safeText(entry.name, 'newcomer.name', 80), description: safeText(entry.description, 'newcomer.description', 4000) };
+  }
   const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, 'roleReview', 80);
   if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview)) fail('INVALID_SCHEMA', 'Invalid player/viewpoint review acknowledgment.');
   return {
-    ...(draft.openingStyle!==undefined?{openingStyle:draft.openingStyle as StoryDraft['openingStyle']}:{}), ...(roles ? { roles } : {}), ...(roleReview ? { roleReview } : {}), ...(persona ? { persona } : {}),
+    ...(draft.openingStyle!==undefined?{openingStyle:draft.openingStyle as StoryDraft['openingStyle']}:{}), ...(roles ? { roles } : {}), ...(roleReview ? { roleReview } : {}), ...(persona ? { persona } : {}), ...(newcomer ? { newcomer } : {}),
     version: 1, id: identifier(draft.id, 'id'), title: safeText(draft.title, 'title', 200), premise: safeText(draft.premise, 'premise', 6000), playerRole, startingPoint: safeText(draft.startingPoint, 'startingPoint', 2000),
     narratorInstructions: safeText(draft.narratorInstructions, 'narratorInstructions', 8000), cast, ...(appearances !== undefined ? { appearances } : {}), lore, scenes, warnings: texts(draft.warnings, 'warnings', 96, 2000),
     source: { title: safeText(source.title, 'source.title', 200), ...(sourceUrl(source.url) ? { url: sourceUrl(source.url) } : {}), characters: number(source.characters, 'source.characters', 1, IMPORT_LIMITS.sourceCharacters), chunks }, createdAt: number(draft.createdAt, 'createdAt', 0, Number.MAX_SAFE_INTEGER),
@@ -472,22 +479,49 @@ function packNewWarnings(values: string[]): string[] {
   return result;
 }
 
-async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal, profilePromptVersion: 1|2 = 1, planPromptVersion: 1|2 = 1): Promise<{ draft: StoryDraft; operations: number }> {
+async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, metadata: DraftMetadata, generate: Generate, report: (completed: number, total: number, label: string) => void, signal?: AbortSignal, profilePromptVersion: 1|2 = 1, planPromptVersion: 1|2|3 = 1): Promise<{ draft: StoryDraft; operations: number }> {
   const roleCast = ledger.cast.map((person,index)=>({ ...person, id:`cast-${index+1}`, knowledge:person.knowledgeAtIntroduction }));
   let roles: StoryDraft['roles'];
   if (preferences.narrationMode !== undefined) { try { roles = rolesForImport(roleCast, preferences.playerRole, preferences); } catch (error) { fail('INVALID_SCHEMA', error instanceof Error ? error.message : 'Invalid narration choice.'); } }
+  // Joining as someone new: name who the source follows, so every later step
+  // keeps that character separate from the human instead of casting them as "you".
+  // Version 3 imports (0.1.15+) keep the source's lead separate and write the newcomer.
+  // Older saved imports resume with their original prompts and paid answers.
+  const newcomerAware = planPromptVersion >= 3;
+  const lead = newcomerAware && roles && !roles.playerCharacterId ? leadFromEvents(roleCast, ledger.events, roles.sourceViewpoint) : undefined;
+  if (roles && lead && !roleCast.some(person => person.id !== lead.id && mentionCount(roles!.sourceViewpoint, person)) && !mentionCount(roles.sourceViewpoint, lead)) {
+    const note = `${roles.sourceViewpoint ? `${roles.sourceViewpoint} ` : ''}The source story mainly follows ${lead.name}.`;
+    if (note.length <= 500) roles.sourceViewpoint = note;
+  }
   const stagedAgencyRules=preferences.openingStyle==='story' ? agencyRules.replace("Never write these for the human, even when the source protagonist did them. Each greeting sets a concrete situation, lets other characters speak or act, and stops before the player responds.","During live chat, leave new player decisions to the human. Stored scene openings use Story excerpt style and may preserve preset source actions and dialogue for the selected player as scripted setup, using the selected narrator voice.").replace("A scene may set up a confrontation but must leave the human's response and its outcome open.","After the scripted setup, leave subsequent player decisions open. Do not transfer source actions to a different cast identity.") : agencyRules;
-  const rolePolicy = roles ? `\n${roleInstruction({cast:roleCast,playerRole:preferences.playerRole,roles,openingStyle:preferences.openingStyle})}` : '';
+  let rolePolicy = roles ? `\n${roleInstruction({cast:roleCast,playerRole:preferences.playerRole,roles,openingStyle:preferences.openingStyle},{newcomer:newcomerAware})}` : '';
+  const joinsAsNewcomer = newcomerAware && !!roles && !roles.playerCharacterId;
   let completed = 0;
-  let total = 1 + Math.ceil(ledger.cast.length / 4) + Math.ceil(ledger.setting.length / 4) + Math.ceil(preferences.requestedScenes / 2);
+  let total = 1 + (joinsAsNewcomer ? 1 : 0) + Math.ceil(ledger.cast.length / 4) + Math.ceil(ledger.setting.length / 4) + Math.ceil(preferences.requestedScenes / 2);
   report(completed, total, 'Planning the narrator and scene order');
   const planMessages: GenerationMessage[] = [
     { role: 'system', content: `${sourcePolicy}\n${stagedAgencyRules}${rolePolicy}\nPlan a staged adaptation. Return exactly {"title":"story title","premise":"premise at the chosen start","narratorInstructions":"narrator rules","startingLore":[0],"scenes":[{"title":"scene title","eventIndexes":[0],"brief":"one-sentence scene setup and relevant revelation","assumptions":[]}],"warnings":[]}. Source indexes are zero-based positions in ledger.setting and ledger.events. Select only setting entries appropriate for starting lore; explain omitted or future-only entries in warnings. The full ledger remains available to later scene generation. All source cast identities will be retained separately; do not reproduce their descriptions here. Plan at least one and at most ${preferences.requestedScenes} scenes, with no invented padding. Each scene must cite one or more existing event indexes in chronological order. The first scene begins at the chosen starting point. Do not write greetings, full cast profiles, or lore content yet. Keep the premise concise, narrator instructions focused, each scene brief to one short sentence, and assumptions to only necessary continuity conditions (at most six short items). Give only new warnings, at most sixteen concise items; source warnings are preserved automatically. Aim for a compact plan under 16,000 JSON characters. All fields are required.` },
     { role: 'user', content: JSON.stringify({ task: 'set-points-plan-v1', preferences, ledger }) },
   ];
-  if (planPromptVersion === 2) planMessages[0].content += '\nEvent references are coverage citations: earlier events may be repeated across scenes for context. Within each scene, use unique indexes sorted ascending. Keep scene destinations chronological: the largest cited event index must stay the same or increase from one scene to the next. One source event may support multiple consecutive scenes. Do not change the scene order merely to sort citations, and do not invent, omit, or move events to satisfy an index rule.';
+  if (planPromptVersion >= 2) planMessages[0].content += '\nEvent references are coverage citations: earlier events may be repeated across scenes for context. Within each scene, use unique indexes sorted ascending. Keep scene destinations chronological: the largest cited event index must stay the same or increase from one scene to the next. One source event may support multiple consecutive scenes. Do not change the scene order merely to sort citations, and do not invent, omit, or move events to satisfy an index rule.';
   const plan = await savedScenePlan(planMessages, generate, ledger, preferences.requestedScenes, signal) ?? await requestJson(planMessages, generate, value => validatePlan(value, ledger, preferences.requestedScenes), signal);
   completed++;
+  let newcomer: Newcomer | undefined;
+  if (joinsAsNewcomer) {
+    report(completed, total, 'Creating your character');
+    const made = await writeNewcomer(newcomerContext({
+      title: plan.title, premise: plan.premise, startingPoint: preferences.startingPoint, playerRole: preferences.playerRole, lead: lead?.name,
+      cast: ledger.cast.map(person => ({ name: person.name, aliases: person.aliases, about: `${person.personality} ${person.knowledgeAtIntroduction}` })),
+      setting: plan.startingLore.map(index => ({ name: ledger.setting[index].name, details: ledger.setting[index].details })),
+      opening: plan.scenes[0]?.brief ?? '',
+    }), roleCast, generate, signal);
+    newcomer = { name: made.name, description: made.description };
+    // Every later step, and the card, names the human by this character.
+    preferences = { ...preferences, playerRole: made.role };
+    metadata = { ...metadata, playerRole: made.role };
+    rolePolicy = `\n${roleInstruction({cast:roleCast,playerRole:made.role,roles:roles!,openingStyle:preferences.openingStyle})}`;
+    completed++;
+  }
   const characters = ledger.cast.map((person, sourceIndex) => ({ id: `cast-${sourceIndex + 1}`, sourceIndex, name: person.name, aliases: person.aliases, sourceRefs: person.sourceRefs }));
   const entries = plan.startingLore.map(sourceIndex => ({ id: `lore-${sourceIndex + 1}`, sourceIndex, name: ledger.setting[sourceIndex].name }));
   const cast: CastMember[] = characters.map(person => ({ id: person.id, name: person.name, aliases: [...person.aliases], sourceRefs: [...person.sourceRefs], personality: '', voice: '', relationships: '', knowledge: '' }));
@@ -497,7 +531,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
   if (metadata.source.chunks > 1) knownWarnings.push(`Adapted from ${metadata.source.chunks} source sections using a condensed story ledger. Review character consistency, chronology, and omitted subplots before saving.`);
   if (scenes.length < preferences.requestedScenes) knownWarnings.push(`The model produced ${scenes.length} scenes of the ${preferences.requestedScenes} requested. Review whether any major events are missing.`);
   if (entries.length < ledger.setting.length) knownWarnings.push(`${ledger.setting.length - entries.length} source setting entries were excluded from starting lore. Their source facts remain available to scene generation; review the plan's warnings for future-only details or omissions.`);
-  const base: StoryDraft = { ...metadata, ...(preferences.openingStyle!==undefined?{openingStyle:preferences.openingStyle}:{}), ...(roles ? { roles } : {}), title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, cast, lore, scenes, warnings: [...new Set(knownWarnings)] };
+  const base: StoryDraft = { ...metadata, ...(preferences.openingStyle!==undefined?{openingStyle:preferences.openingStyle}:{}), ...(roles ? { roles } : {}), ...(newcomer ? { newcomer } : {}), title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, cast, lore, scenes, warnings: [...new Set(knownWarnings)] };
   const batches = Math.ceil(cast.length / 4) + Math.ceil(lore.length / 4) + Math.ceil(scenes.length / 2);
   total = completed + batches;
   const room = IMPORT_LIMITS.draftCharacters - JSON.stringify(base).length - 512;
@@ -507,7 +541,7 @@ async function createStagedAdaptation(preferences: Preferences, ledger: Ledger, 
   const budgets = { cast: Math.min(6000, Math.floor(proseRoom * 2 / weight)), lore: Math.min(4000, Math.floor(proseRoom / weight)), scenes: Math.min(12_000, Math.floor(proseRoom * 4 / weight)), warnings: Math.floor(warningsReserve / batches) };
   if (room <= 0 || base.warnings.length > 83 || cast.length > 0 && budgets.cast < 600 || lore.length > 0 && budgets.lore < 300 || budgets.scenes < 1600) fail('DRAFT_SIZE_LIMIT', 'The planned identities, source references, warnings, and prose cannot fit this version’s draft size limit. No content was removed and completed responses remain saved. Use fewer scenes or a smaller story section.');
   const additionalWarnings: string[] = [];
-  const foundation = { title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, scenes: plan.scenes };
+  const foundation = { title: plan.title, premise: plan.premise, narratorInstructions: plan.narratorInstructions, scenes: plan.scenes, ...(newcomer ? { player: { ...newcomer, note: 'The human plays this new character. Place them in scenes as themselves, separate from every source character.' } } : {}) };
   const acceptWarnings = (warnings: string[]) => {
     checkProseBudget(warnings, [], budgets.warnings, 'This batch’s new warnings');
     return warnings;
@@ -623,6 +657,9 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
     if (!(error instanceof ImportError)) throw error;
     fail('DRAFT_SIZE_LIMIT', 'The completed sections could not be assembled within this version’s draft limits. Completed responses remain saved; no content was cut.');
   }
+  // Who the human plays in Lumiverse: made from the draft by default, so a
+  // first save sets it up. Review can switch to an existing persona or none.
+  if (result.roles) result.persona = { mode: 'create', ...personaDraft(result) };
   progress('Draft ready for review');
   return result;
 }

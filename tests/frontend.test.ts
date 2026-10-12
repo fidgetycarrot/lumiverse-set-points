@@ -36,6 +36,7 @@ function harness(hasDraft=true) {
     else if(message.action==='resume-visuals'){state.visuals={...state.visuals!,job:{id:'resumed-visual-job',status:'running',completed:1,total:3,label:'Resuming appearances'},resumeAvailable:false};result=state.visuals.job;}
     else if(message.action==='cancel-visuals'){state.visuals!.job={...state.visuals!.job!,status:'cancelled',label:'Descriptions cancelled'};state.visuals!.resumeAvailable=true;}
     else if(message.action==='save-visuals'){state.visuals={...state.visuals!,pack:structuredClone(message.input.pack),resultSignature:visualDraftSignature(message.input.draft)};result=state.visuals.pack;}
+    else if(message.action==='write-newcomer'){result={newcomer:{name:'Bryn',description:'Who they are: a tinker.'},role:'Bryn, a tinker'};}
     else if(message.action==='play-force'){state.play.current=1;state.play.next=null;state.play.canUndo=true;result=state.play;}
     receive({type:'set-points:response',id:message.id,result:structuredClone(result)});
   });}} as unknown as SpindleFrontendContext;
@@ -525,5 +526,23 @@ describe('backup races and approved image captions',()=>{
     const app=harness();readyVisuals(app);await tick();let copied='';Object.defineProperty(app.window.navigator,'clipboard',{configurable:true,value:{writeText:async(value:string)=>{copied=value;}}});app.input('Iona: approved appearance','Brown hair and green eyes.');app.input('Iona: approved starting outfit','A red jacket.');
     const notice=Array.from(app.root.querySelectorAll('p')).find(item=>item.textContent?.startsWith('Your approved look differs'))!;expect(notice.hidden).toBe(false);app.button('Copy Iona approved caption').click();await tick();expect(copied).toBe('Brown hair and green eyes. A red jacket.');expect(copied).not.toContain('grey eyes');expect(copied).not.toContain('blue coat');expect(copied).not.toContain('compass');
     app.input('Iona: approved appearance','Iona has grey eyes.');app.input('Iona: approved starting outfit','A blue coat.');expect(notice.hidden).toBe(true);expect(app.requests.some(item=>item.action==='start-visuals')).toBe(false);
+  });
+});
+
+describe('joining as someone new',()=>{
+  test('Write my character fills the role and a persona to check',async()=>{
+    const app=harness();await tick();app.button('Review').click();
+    expect(app.root.textContent).toContain('You join this story as someone new');
+    app.button('Write my character').click();await tick();await tick();
+    expect(app.requests.some(item=>item.action==='write-newcomer'&&item.input.connectionId==='model')).toBe(true);
+    expect(app.field('Your role').value).toBe('Bryn, a tinker');
+    expect(app.field('Persona name').value).toBe('Bryn');
+    expect(app.field('Persona description').value).toContain('a tinker');
+    expect(app.root.textContent).toContain('You join this story as Bryn, someone new');
+    expect(app.button('Write Bryn again')).toBeTruthy();
+  });
+  test('a played story character gets no Write my character button',async()=>{
+    const app=harness();app.state.draft!.playerRole='Iona';app.state.draft!.roles={narration:'neutral',playerCharacterId:'captain',viewpointCharacterId:null,sourceViewpoint:''};await tick();app.changed();await tick();app.button('Review').click();
+    expect(app.button('Write my character')).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import type { VisualPack } from './visuals';
 import type { LookPack } from './looks';
 export const EXTENSION_ID = 'lumiverse_set_points';
-export const VERSION = '0.1.14';
+export const VERSION = '0.1.15';
 export type NarrationMode = 'neutral'|'character';
 export interface StoryRoles { narration: NarrationMode; playerCharacterId: string|null; viewpointCharacterId: string|null; sourceViewpoint: string }
 export interface CharacterNotes { motivations: string; reactions: string; voiceExamples: string[]; cautions: string[]; evidence?: string[] }
@@ -10,17 +10,19 @@ export interface ApprovedAppearance { characterId: string; description: string; 
 /** Who the human plays as in Lumiverse. 'create' makes a persona on save; 'existing' points at one of theirs; 'none' leaves it alone. */
 export type PersonaMode = 'create'|'existing'|'none';
 export interface PersonaPlan { mode: PersonaMode; name: string; title: string; description: string; personaId?: string }
+/** The human's own character when they join as someone new rather than a source character. */
+export interface Newcomer { name: string; description: string }
 export interface PersonaChoice { id: string; name: string; title: string }
 export interface LoreEntry { id: string; name: string; keys: string[]; content: string }
 export interface StoryScene { id: string; title: string; greeting: string; direction: string; assumptions: string[]; sourceRefs: string[] }
 export interface StoryDraft {
   version: 1; id: string; title: string; premise: string; playerRole: string; startingPoint: string;
   narratorInstructions: string; cast: CastMember[]; appearances?: ApprovedAppearance[]; lore: LoreEntry[]; scenes: StoryScene[]; warnings: string[];
-  roles?: StoryRoles; roleReview?: string; openingStyle?:'interactive'|'story'; persona?: PersonaPlan;
+  roles?: StoryRoles; roleReview?: string; openingStyle?:'interactive'|'story'; persona?: PersonaPlan; newcomer?: Newcomer;
   source: { title: string; url?: string; characters: number; chunks: number }; createdAt: number;
 }
 export type ReasoningMode = 'inherit'|'off'|'low';
-export interface ImportOptions { text: string; sourceTitle: string; sourceUrl?: string; playerRole: string; startingPoint: string; sceneCount: number; connectionId: string; chunkSize: number; maxOutputTokens?: number; reasoningMode?: ReasoningMode; narrationMode?: NarrationMode; narratorCharacter?: string; sourceViewpoint?: string; openingStyle?:StoryDraft['openingStyle']; profilePromptVersion?:1|2; planPromptVersion?:1|2 }
+export interface ImportOptions { text: string; sourceTitle: string; sourceUrl?: string; playerRole: string; startingPoint: string; sceneCount: number; connectionId: string; chunkSize: number; maxOutputTokens?: number; reasoningMode?: ReasoningMode; narrationMode?: NarrationMode; narratorCharacter?: string; sourceViewpoint?: string; openingStyle?:StoryDraft['openingStyle']; profilePromptVersion?:1|2; planPromptVersion?:1|2|3 }
 export interface WebPageLink { title: string; url: string }
 export interface WebStoryPage { title: string; text: string; url: string; nextPages: WebPageLink[] }
 export interface ImportJob { id: string; status: 'running'|'complete'|'cancelled'|'failed'; completed: number; total: number; label: string; error?: string; retryUncertain?: boolean; phase?: string }

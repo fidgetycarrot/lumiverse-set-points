@@ -17,8 +17,12 @@ export function playerCharacter(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 
  * A story character's persona carries only starting-point facts, the same ones
  * the narrator gets, so nothing later in the plot leaks through it.
  */
-function writePersona(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 'roles' | 'title' | 'startingPoint' | 'appearances'>, modern = true): PersonaText {
+function writePersona(draft: Pick<StoryDraft, 'cast' | 'playerRole' | 'roles' | 'title' | 'startingPoint' | 'appearances' | 'newcomer'>, modern = true): PersonaText {
   const person = playerCharacter(draft), title = draft.title.trim().slice(0, 200);
+  if (!person && draft.newcomer) {
+    // Someone new to the story: the character written for them, joining at the start.
+    return { name: draft.newcomer.name.trim().slice(0, 200), title, description: `${draft.newcomer.description.trim()}\n\nJoining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}\n\n${PLAYER_PERSONA_RULE}` };
+  }
   if (!person) {
     const role = draft.playerRole.trim();
     return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}\nJoining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}${modern?`\n\n${PLAYER_PERSONA_RULE}`:''}` };

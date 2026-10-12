@@ -6,13 +6,14 @@ import { EXTENSION_ID, type SavedStory, type StoryDraft } from './types';
 
 type Receipt = { key: string; draftId: string; worldBookId?: string; characterId?: string; complete?: boolean };
 export async function draftKey(draft: StoryDraft): Promise<string> {
-  // Publication guidance changed in 0.1.10, appearance entries in 0.1.12, and cast layout in 0.1.13.
+  // Publication guidance changed in 0.1.10, appearance entries in 0.1.12, cast layout in 0.1.13,
+  // and the role contract for someone new to the story in 0.1.15.
   // A new receipt creates a fresh card instead of returning a pre-update card
   // with the old rules. Draft identity and paid model-response checkpoints are
   // unaffected. The persona is saved on its own, so editing it never makes a
   // second card.
   const { persona: _persona, ...card } = draft;
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 5, draft: card })));
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 6, draft: card })));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 

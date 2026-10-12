@@ -4,7 +4,11 @@
 
 Set Points adapts story text into a playable Lumiverse narrator card, supporting cast, world book, and a sequence of scenes. Review the adaptation, choose your role, and decide whether to follow the source or explore freely.
 
-Version **0.1.14** fixes scene planning that stopped on repeated, unsorted, or overlapping source-event references. References are normalized locally while keeping every distinct cited event and the scene order. **Resume saved import** checks the saved plan and its old format-repair answer before requesting a new plan, so recoverable paid work can be reused. Plans whose latest event reference moves backward still require correction.
+Version **0.1.15** fixes playing **someone new** in a story told from one character's point of view. Before, the openings could quietly make you that character: their memories, their belongings, what happened to them. Now the character the story follows stays in the story as someone the narrator plays, and you join as your own person. New imports also write that person for you (name, why they are there, how they look) and make them your persona. The first time you open a chat with the card, Set Points switches to that persona for that chat.
+
+Already imported a story and hit this? You do not need to import it again. In **Review**, use **Write my character** under **Your persona**, then **Repair selected scenes** on the openings, and save. See [Joining as someone new](#joining-as-someone-new).
+
+The scene-planning fix from **0.1.14** remains: repeated, unsorted, or overlapping source-event references are normalized locally, and **Resume saved import** reuses recoverable paid work.
 
 The character-prompting improvements from **0.1.13** remain available on **existing drafts**. Each character has optional motivation, reaction, and speech-example notes you can edit for free. **Character consistency** checks possible persona, appearance, and narrator-name conflicts locally. **Polish character prompting** optionally asks your selected model to add notes for selected characters using their existing starting profiles, with evidence, a preview, and an explicit apply button. You do not need to import the story or generate appearances again.
 
@@ -18,7 +22,7 @@ Optional character work runs when you ask for it, and you still do not need to d
 - Produces a narrator card, attached world book, initial greeting, and ordered alternate greetings, with a shared player/narrator role contract and retained scene-control metadata.
 - Offers free player/viewpoint checks and optional repairs of selected completed scenes, with preview, explicit application, cancellation, and saved-step recovery.
 - Adds editable portrayal notes, free character-consistency checks, and optional resumable character polish on completed drafts.
-- Lets you make a persona for the character you play, or use one of your own. The persona is written from the draft with no model request.
+- Makes a persona for the character you play, or uses one of your own. When you join as someone new, it writes that new character for you.
 - Lets you approve appearance and starting-outfit details directly in Review, including on existing 0.1.5 drafts. Publishes each described character as a short world-book entry of their own.
 - Optionally designs looks for the whole cast together when the story leaves them out, labels every trait as from the story, hinted by it, or made up, and rerolls one character at a time.
 - Optionally creates separate character image descriptions with source facts, starting outfits, unknowns, and clearly labeled suggestions. Provides appearance/outfit tag copy buttons, combined Anima tags, captions, and a separate JSON export.
@@ -47,7 +51,7 @@ Repository installation URL: [fidgetycarrot/lumiverse-set-points](https://github
 | `generation` | Adaptation, optional looks, image descriptions, scene repairs and character polish, connection choices, and generation lifecycle tracking |
 | `characters` | Creating narrator cards and reading their scene data |
 | `world_books` | Creating and attaching starting lore and approved appearance entries |
-| `personas` | Optional. Listing your personas, making or updating the one for a story, and switching to it when you ask |
+| `personas` | Optional. Listing your personas, making or updating the one for a story, and using it in that story's chats |
 | `chats` | Finding and validating the selected chat |
 | `chat_mutation` | Inserting, cleaning, and undoing scene messages |
 | `interceptor` | Adding current/next scene direction before a normal reply |
@@ -85,17 +89,30 @@ New imports supply the same role contract to planning, cast/lore writing, and sc
 
 The role contract is published in the card system prompt, description, always-on premise lore, and scene metadata. For newly published cards, it also accompanies normal replies when **Follow the story** is off, without preparing a scene handoff. It guides the model but cannot prevent every mistake or rewrite a literal opening inserted by Force. Conflicting prose still benefits from editing or repair.
 
+## Joining as someone new
+
+In **Who will you play?**, type a story character's name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new person in the story.
+
+When you join as someone new:
+
+- The character the story mostly follows stays in the story. The narrator plays them like anyone else. You never inherit their body, past, memories, belongings, or what happened to them. Set Points works out who that is from the story and notes it in **Source viewpoint**; change it there if it picked the wrong person.
+- After planning, the import writes your character with one extra model request: a name (or the one you gave), why you are there at the start, what you know, and how you look. Everything you typed is kept. Personality and choices are left to you. Later steps place this person in the scenes.
+- **Your persona** is set to **Make a persona** with that description, ready to check.
+- **Player and viewpoint checks** flags an opening that talks to “you” but leaves out the character the story follows, in case it has put you in their place.
+
+**For a draft made before 0.1.15:** open **Review → Your persona** and choose **Write my character**. It uses one model request with the connection you pick, fills **Your role**, and rewrites the persona text. Then select the flagged openings (or all of them) under **Repair selected scenes**. New repairs keep the story's main character separate from you. Save to Lumiverse when you are happy.
+
 ## Your persona
 
 **Review → Your persona** comes right after the role settings. Pick one of three:
 
-- **I’ll pick a persona myself** (the default). Set Points does nothing with personas.
-- **Make a persona for [character]**. Set Points writes a name, a short label, and a description for you to check. When you play a story character, the description is built from that character’s personality, voice, relationships, what they know at the start, and their approved appearance and outfit. It uses only starting-point facts, the same ones the narrator gets, so it holds nothing from later in the story. When you play someone new, it starts as a short note for you to fill in.
+- **I’ll pick a persona myself**. Set Points does nothing with personas.
+- **Make a persona for [character]** (the default for new imports). Set Points writes a name, a short label, and a description for you to check. When you play a story character, the description is built from that character’s personality, voice, relationships, what they know at the start, and their approved appearance and outfit. It uses only starting-point facts, the same ones the narrator gets, so it holds nothing from later in the story. When you play someone new, it is the character Set Points wrote for you.
 - **Use one of my personas**. Pick from your list. Your persona is left exactly as it is; Set Points only remembers the choice.
 
-Writing the persona uses no model request. Until you change its wording, it follows your edits: change the character’s voice or approve a new look and the persona text updates with it. Once you reword it yourself, it stays as you wrote it; **Write it again from [character]** rebuilds it from the draft.
+For a story character, writing the persona uses no model request. Until you change its wording, it follows your edits: change the character’s voice or approve a new look and the persona text updates with it. Once you reword it yourself, it stays as you wrote it; **Write it again from [character]** rebuilds it from the draft.
 
-**Save to Lumiverse** makes the persona along with the card. Saving again updates that same persona instead of making another, and changing only the persona never makes a second card. If you have edited the persona inside Lumiverse since, Set Points leaves it alone and tells you. After saving, **Switch to this persona now** makes it your active persona; Set Points never switches personas on its own.
+**Save to Lumiverse** makes the persona along with the card. Saving again updates that same persona instead of making another, and changing only the persona never makes a second card. If you have edited the persona inside Lumiverse since, Set Points leaves it alone and tells you. The first time you open a chat with the saved card, Set Points switches to this persona and stores it on that chat, so Lumiverse keeps it for that chat only. It never replaces a persona already picked for the chat, and it only does this once per chat, so if you switch away it stays switched. **Switch to this persona now** is still there after saving.
 
 If you play a story character but use your own persona, the narrator still treats you as that character. Pick a persona that fits, or set **Player cast identity** to **Custom or unbound role** to join the story as someone new. The played character stays in the narrator’s cast notes either way, so the other characters know who they are talking to.
 

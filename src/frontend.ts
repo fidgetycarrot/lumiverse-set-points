@@ -272,7 +272,7 @@ export function setup(ctx: SpindleFrontendContext) {
   linkSection.body.append(paragraph('Read one page, or follow its next-page links. Page loading uses no model. Some sites block access; paste text when needed.','sp-hint'),url.wrap,otherUrls.wrap,row(fetchButton,fetchLinkedButton),paragraph('Up to 100 pages and 500,000 characters. Collected text stays separate until you choose to use it.','sp-hint'),collectionBox);
   sourceCard.append(sourceTools,fileInput,title.wrap,source.wrap,sourceBottom,linkSection.root);panels.import.append(sourceCard);
   const options=node('div','sp-card sp-stack'); options.append(node('h3','','Make a place for yourself'));
-  const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'The narrator leaves this character’s dialogue and choices to you. In Review you can make a persona for them or use one of your own.'});
+  const role=field('Who will you play?','',undefined,{placeholder:'An existing character, or someone new',hint:'Type a story character’s name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new character in the story, and Set Points writes them for you. The story’s main character stays in the story. You get a persona to check in Review.'});
   const narrationMode=selectField('Narration style',[['neutral','External narrator'],['character','Supporting character in first person']],'neutral',()=>{narratorName.wrap.hidden=narrationMode.input.value!=='character';});
   const narratorName=field('Who narrates?','',undefined,{placeholder:'Exact supporting-character name or alias',hint:'Choose someone other than the character you play.'});narratorName.wrap.hidden=true;
   const sourceViewpoint=field('Original story viewpoint · optional','',undefined,{placeholder:'For example: Lina tells the story in first person',hint:'Source context only. It does not assign your player role.'});
@@ -803,12 +803,26 @@ export function setup(ctx: SpindleFrontendContext) {
       else if(kept)current.persona={mode:'none',name:kept.name,title:kept.title,description:kept.description};
       markDirty();renderReview();
     });
-    personaSection.body.append(paragraph('A persona is who the narrator sees you as. Make one for this story, use one you already have, or leave it and pick one yourself when you start the chat.','sp-hint'),personaMode.wrap);
+    personaSection.body.append(paragraph('A persona is who the narrator sees you as. Make one for this story, use one you already have, or leave it and pick one yourself when you start the chat.','sp-hint'));
+    if(!played){
+      // Joining as someone new: write who they are with one model request.
+      const newcomerConnection=selectField('Connection for writing your character',snapshot?.connections.map(item=>[item.id,item.name] as [string,string])??[],connection.value||snapshot?.connections[0]?.id||'');
+      const writeCharacter=button(current.newcomer?`Write ${current.newcomer.name} again`:'Write my character',async()=>{
+        if(!newcomerConnection.input.value)throw new Error('Choose a connection. Add one in Lumiverse settings if the list is empty.');
+        const result=await rpc.request<{newcomer:NonNullable<StoryDraft['newcomer']>;role:string}>('write-newcomer',{draft:clone(current),connectionId:newcomerConnection.input.value});
+        if(destroyed||nonce!==panelNonce||draft!==current)return;
+        current.newcomer=result.newcomer;current.playerRole=result.role;
+        if(current.persona?.mode!=='existing')current.persona={mode:'create',...personaDraft(current)};
+        markDirty();renderReview();notify(`Wrote ${result.newcomer.name}. Check the persona below, then save.`);
+      });
+      personaSection.body.append(paragraph(current.newcomer?`You join this story as ${current.newcomer.name}, someone new. Edit them in the persona below.`:'You join this story as someone new. Set Points can write who you are, why you’re here at the start, and how you look.','sp-hint'),newcomerConnection.wrap,writeCharacter,paragraph('Uses one model request. Replaces the persona text below.','sp-hint'));
+    }
+    personaSection.body.append(personaMode.wrap);
     if(current.persona&&current.persona.mode!=='none'&&!canUsePersonas)personaSection.body.append(paragraph('Grant personas in Lumiverse’s Extensions panel so Set Points can do this. Until then, Save to Lumiverse will stop and tell you.','sp-notice'));
     if(current.persona?.mode==='create'){
       const plan=current.persona;
       const personaField=(label:string,key:'name'|'title'|'description',options:{area?:boolean;rows?:number;hint?:string}={})=>{const item=field(label,plan[key],value=>{plan[key]=value;markDirty();},options);reviewFields.set(`persona:${key}`,item.input);return item;};
-      const name=personaField('Persona name','name'),title=personaField('Short label','title',{hint:'Shown next to the name in your persona list.'}),description=personaField('Persona description','description',{area:true,rows:10,hint:played?`Written from ${played.name}’s personality, voice, relationships, what they know at the start, and their appearance. It holds nothing from later in the story. It follows your edits to ${played.name} until you change the wording here.`:'Add who your character is to the cast, and how they look.'});
+      const name=personaField('Persona name','name'),title=personaField('Short label','title',{hint:'Shown next to the name in your persona list.'}),description=personaField('Persona description','description',{area:true,rows:10,hint:played?`Written from ${played.name}’s personality, voice, relationships, what they know at the start, and their appearance. It holds nothing from later in the story. It follows your edits to ${played.name} until you change the wording here.`:current.newcomer?`Written from ${current.newcomer.name}. Change anything you like.`:'Add who your character is, and how they look, or use Write my character above.'});
       showPersona=()=>{name.input.value=plan.name;title.input.value=plan.title;description.input.value=plan.description;};
       personaSection.body.append(name.wrap,title.wrap,description.wrap,button(played?`Write it again from ${played.name}`:'Write it again from my role',()=>{Object.assign(plan,personaDraft(current));showPersona();markDirty();notify('Persona rewritten from the draft.');}),paragraph('Save to Lumiverse makes this persona. Saving again updates it, unless you have changed it in Lumiverse since.','sp-hint'));
     }else if(current.persona?.mode==='existing'){
@@ -1052,7 +1066,19 @@ export function setup(ctx: SpindleFrontendContext) {
     })();return refreshInFlight;
   }
   teardown.push(tab.onActivate(()=>{void refresh();}));
-  teardown.push(ctx.events.on('CHAT_CHANGED',()=>{void refresh();}));
+  // The first time a story chat opens, play it as that story's persona.
+  let personaTimer:ReturnType<typeof setTimeout>|undefined;
+  async function useStoryPersona(){
+    const chatId=ctx.getActiveChat().chatId;if(!chatId||destroyed)return;
+    try{
+      const result=await rpc.request<{personaName:string}|null>('use-story-persona',{chatId});
+      if(!result||destroyed)return;
+      notify(`Playing as ${result.personaName} in this story.`);
+      if(personaTimer)clearTimeout(personaTimer);
+      personaTimer=setTimeout(()=>{if(!destroyed&&ctx.getActiveChat().chatId===chatId)void rpc.request('use-story-persona',{chatId,confirm:true}).catch(()=>{});},1500);
+    }catch{}
+  }
+  teardown.push(ctx.events.on('CHAT_CHANGED',()=>{void refresh();void useStoryPersona();}),()=>{if(personaTimer)clearTimeout(personaTimer);});
   const openAction=ctx.ui.registerInputBarAction({id:'set-points-open',label:'Set Points',subtitle:'Review and direct your story',iconSvg:ICON});
   teardown.push(openAction.onClick(()=>{tab.activate();selectTab('play');}),()=>openAction.destroy());
   const forceAction=ctx.ui.registerInputBarAction({id:'set-points-force',label:'Force next scene',subtitle:'Set Points · insert the next planned scene',iconSvg:ICON});
@@ -1060,6 +1086,6 @@ export function setup(ctx: SpindleFrontendContext) {
     const active=ctx.getActiveChat();if(!active.chatId){tab.activate();selectTab('play');notify('Open a story chat first.');return;}
     const play=await rpc.request<SceneView>('play-force',{chatId:active.chatId});if(snapshot)snapshot.play=play;renderPlay(play);
   })),()=>forceAction.destroy());
-  renderReview();renderPlay(null);selectTab('import');ctx.ready();void refresh();
+  renderReview();renderPlay(null);selectTab('import');ctx.ready();void refresh();void useStoryPersona();
   return ()=>{if(destroyed)return;destroyed=true;webAbort?.abort();if(polling)clearInterval(polling);rpc.destroy();for(const cleanup of teardown.reverse())cleanup();app.remove();tab.destroy();};
 }

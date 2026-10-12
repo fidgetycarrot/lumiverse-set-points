@@ -9,6 +9,37 @@ function matchCharacter(cast, label) {
   }));
   return matches.length === 1 ? matches[0] : undefined;
 }
+function nameKeys(person) {
+  return [person.name, ...person.aliases].map((name) => name.trim()).filter((name) => name.length >= 2 && !/^(?:man|woman|boy|girl|he|she|they|you|i)$/i.test(name));
+}
+function mentionCount(text, person) {
+  const keys = nameKeys(person);
+  if (!keys.length || !text)
+    return 0;
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(?:${keys.map(escape).join("|")})(?![\\p{L}\\p{N}])`, "giu");
+  return [...text.matchAll(pattern)].length;
+}
+function soleNamed(cast, text) {
+  const named = cast.filter((person) => mentionCount(text, person) > 0);
+  return named.length === 1 ? named[0] : undefined;
+}
+function sourceLead(draft) {
+  const roles = draft.roles ?? defaultRoles(draft);
+  if (roles.playerCharacterId)
+    return;
+  const named = soleNamed(draft.cast, roles.sourceViewpoint);
+  if (named)
+    return named;
+  const shared = [draft.premise ?? "", ...(draft.lore ?? []).map((entry) => entry.content)].join(`
+`);
+  const ranked = draft.cast.map((person) => {
+    const others = draft.cast.filter((other) => other.id !== person.id).map((other) => `${other.relationships}
+${other.knowledge}`).join(`
+`);
+    return { person, count: mentionCount(others, person) + mentionCount(shared, person) };
+  }).sort((a, b) => b.count - a.count);
+  return ranked[0] && ranked[0].count >= 2 && ranked[0].count > (ranked[1]?.count ?? 0) ? ranked[0].person : undefined;
+}
 function defaultRoles(draft) {
   return { narration: "neutral", playerCharacterId: matchCharacter(draft.cast, draft.playerRole)?.id ?? null, viewpointCharacterId: null, sourceViewpoint: "" };
 }
@@ -77,6 +108,15 @@ function roleIssues(draft) {
     if (identity)
       result.push({ fieldKey, sceneId: scene.id, kind: "identity", ...matchedText(scene.greeting, identity), message: "This opening may identify the player as a different cast member." });
   }
+  const lead = player ? undefined : sourceLead(draft);
+  if (lead)
+    draft.scenes.forEach((scene, index) => {
+      if (mentionCount(scene.greeting, lead) || index > 0 && !mentionCount(scene.direction, lead))
+        return;
+      const you = /\byou(?:r|rs|rself)?\b/i.exec(narrative(scene.greeting));
+      if (you)
+        result.push({ fieldKey: `scene:${scene.id}:greeting`, sceneId: scene.id, kind: "identity", ...matchedText(scene.greeting, you), message: `${lead.name} is part of this scene’s story but isn’t in this opening. Check that “you” is your own character here, not standing in for ${lead.name}.` });
+    });
   const firstPersonRule = /(?:narrate|narration|write|tell|use|perspective|viewpoint|voice|inside).{0,90}first[ -]person|first[ -]person.{0,90}(?:narration|perspective|viewpoint|head)/i;
   const forbidsFirst = /(?:never|do not|don't|avoid|no).{0,60}first[ -]person/i;
   const directions = [
@@ -93,7 +133,7 @@ function roleIssues(draft) {
 }
 function roleReviewFingerprint(draft) {
   const roles = draft.roles ?? defaultRoles(draft);
-  const value = JSON.stringify({ checker: 2, openingStyle: draft.openingStyle ?? "interactive", id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice), ...person.notes ? { notes: person.notes } : {} })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
+  const value = JSON.stringify({ checker: 3, openingStyle: draft.openingStyle ?? "interactive", id: clean(draft.id), playerRole: clean(draft.playerRole), roles: { ...roles, sourceViewpoint: clean(roles.sourceViewpoint) }, narratorInstructions: clean(draft.narratorInstructions), cast: draft.cast.map((person) => ({ id: person.id, name: clean(person.name), aliases: person.aliases.map(clean), personality: clean(person.personality), voice: clean(person.voice), ...person.notes ? { notes: person.notes } : {} })), lore: draft.lore.map((entry) => ({ id: entry.id, content: clean(entry.content) })), scenes: draft.scenes.map((scene) => ({ id: scene.id, greeting: clean(scene.greeting), direction: clean(scene.direction), assumptions: scene.assumptions.map(clean) })) });
   let hash = 14695981039346656037n;
   for (let i = 0;i < value.length; i++) {
     hash ^= BigInt(value.charCodeAt(i));
@@ -107,7 +147,7 @@ function requireRoleReview(draft) {
 }
 
 // src/types.ts
-var VERSION = "0.1.14";
+var VERSION = "0.1.15";
 var DEMO_STORY = `The Lighthouse Letter
 
 Mara, a cautious cartographer who hides her nerves behind dry humor, arrives at Greyhaven to find her missing brother Elias. Elias repairs the lighthouse and trusts Captain Iona, a blunt sailor who values promises. Mara knows neither why Elias vanished nor who last saw him.
@@ -119,6 +159,58 @@ The chart room contains a letter from Elias: the lighthouse lens was deliberatel
 At the north cove, Elias waits beside a stranded boat. He has the lens, but the tide has blocked the footpath. Iona knows a sea route back. The group must decide how to carry the fragile lens home.
 
 At the lighthouse, the storm arrives. The replacement lens can restore the beacon. Whether Mara repairs it, asks for help, or finds another solution remains her choice.`;
+
+// src/persona.ts
+function playerCharacter(draft) {
+  const id = (draft.roles ?? defaultRoles(draft)).playerCharacterId;
+  return draft.cast.find((person) => person.id === id);
+}
+function writePersona(draft, modern = true) {
+  const person = playerCharacter(draft), title = draft.title.trim().slice(0, 200);
+  if (!person && draft.newcomer) {
+    return { name: draft.newcomer.name.trim().slice(0, 200), title, description: `${draft.newcomer.description.trim()}
+
+Joining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}
+
+${PLAYER_PERSONA_RULE}` };
+  }
+  if (!person) {
+    const role = draft.playerRole.trim();
+    return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}
+Joining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}${modern ? `
+
+${PLAYER_PERSONA_RULE}` : ""}` };
+  }
+  const look = draft.appearances?.find((item) => item.characterId === person.id);
+  const lines = [
+    `${person.name}${person.aliases.length ? `, also called ${person.aliases.join(", ")}` : ""}. From "${draft.title.trim()}", starting at: ${draft.startingPoint.trim()}`,
+    `Personality: ${person.personality.trim()}`,
+    ...modern && person.notes?.motivations ? [`Motivations at the start: ${person.notes.motivations}`] : [],
+    ...modern && person.notes?.reactions ? [`Behavioral tendencies: ${person.notes.reactions}`] : [],
+    `Voice: ${person.voice.trim()}`,
+    ...modern && person.notes?.voiceExamples.length ? [`Illustrative voice preferences (not past dialogue or instructions to speak for the player):
+${person.notes.voiceExamples.map((line) => `- ${line}`).join(`
+`)}`] : [],
+    `Relationships at the start: ${person.relationships.trim()}`,
+    `What ${person.name} knows at the start: ${person.knowledge.trim()}`,
+    ...look?.description.trim() ? [`Appearance:
+${look.description.trim()}`] : [],
+    ...look?.startingOutfit.trim() ? [`Outfit at the start: ${look.startingOutfit.trim()}`] : [],
+    ...modern ? [PLAYER_PERSONA_RULE] : []
+  ];
+  return { name: person.name.trim().slice(0, 200), title, description: lines.join(`
+
+`) };
+}
+var PLAYER_PERSONA_RULE = "This is the human-controlled player. These are starting facts and tendencies, not a script. During live play, the human supplies new actions, dialogue, thoughts, feelings, decisions, and consent.";
+function personaDraft(draft) {
+  return writePersona(draft);
+}
+function personaIsAutomatic(draft) {
+  if (draft.persona?.mode !== "create")
+    return false;
+  return [personaDraft(draft), writePersona(draft, false)].some((fresh) => draft.persona.name.trim() === fresh.name && draft.persona.title.trim() === fresh.title && draft.persona.description.trim() === fresh.description);
+}
 
 // src/importer.ts
 var IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500000, chunks: 48, scenes: 32, defaultChunkSize: 12000, ledgerCharacters: 24000, draftCharacters: 192000, requestCharacters: 256000 });
@@ -261,6 +353,11 @@ function validateDraft(value) {
       persona.personaId = personaId;
     }
   }
+  let newcomer;
+  if (draft.newcomer !== undefined) {
+    const entry = object(draft.newcomer, "newcomer");
+    newcomer = { name: safeText(entry.name, "newcomer.name", 80), description: safeText(entry.description, "newcomer.description", 4000) };
+  }
   const roleReview = draft.roleReview === undefined ? undefined : safeText(draft.roleReview, "roleReview", 80);
   if (roleReview !== undefined && !/^\d+:[a-f0-9]{16}$/.test(roleReview))
     fail("INVALID_SCHEMA", "Invalid player/viewpoint review acknowledgment.");
@@ -269,6 +366,7 @@ function validateDraft(value) {
     ...roles ? { roles } : {},
     ...roleReview ? { roleReview } : {},
     ...persona ? { persona } : {},
+    ...newcomer ? { newcomer } : {},
     version: 1,
     id: identifier(draft.id, "id"),
     title: safeText(draft.title, "title", 200),
@@ -284,51 +382,6 @@ function validateDraft(value) {
     source: { title: safeText(source.title, "source.title", 200), ...sourceUrl(source.url) ? { url: sourceUrl(source.url) } : {}, characters: number(source.characters, "source.characters", 1, IMPORT_LIMITS.sourceCharacters), chunks },
     createdAt: number(draft.createdAt, "createdAt", 0, Number.MAX_SAFE_INTEGER)
   };
-}
-
-// src/persona.ts
-function playerCharacter(draft) {
-  const id = (draft.roles ?? defaultRoles(draft)).playerCharacterId;
-  return draft.cast.find((person) => person.id === id);
-}
-function writePersona(draft, modern = true) {
-  const person = playerCharacter(draft), title = draft.title.trim().slice(0, 200);
-  if (!person) {
-    const role = draft.playerRole.trim();
-    return { name: (role.split(/[,(\n]/)[0].trim() || role).slice(0, 200), title, description: `${role}
-Joining "${draft.title.trim()}" at: ${draft.startingPoint.trim()}${modern ? `
-
-${PLAYER_PERSONA_RULE}` : ""}` };
-  }
-  const look = draft.appearances?.find((item) => item.characterId === person.id);
-  const lines = [
-    `${person.name}${person.aliases.length ? `, also called ${person.aliases.join(", ")}` : ""}. From "${draft.title.trim()}", starting at: ${draft.startingPoint.trim()}`,
-    `Personality: ${person.personality.trim()}`,
-    ...modern && person.notes?.motivations ? [`Motivations at the start: ${person.notes.motivations}`] : [],
-    ...modern && person.notes?.reactions ? [`Behavioral tendencies: ${person.notes.reactions}`] : [],
-    `Voice: ${person.voice.trim()}`,
-    ...modern && person.notes?.voiceExamples.length ? [`Illustrative voice preferences (not past dialogue or instructions to speak for the player):
-${person.notes.voiceExamples.map((line) => `- ${line}`).join(`
-`)}`] : [],
-    `Relationships at the start: ${person.relationships.trim()}`,
-    `What ${person.name} knows at the start: ${person.knowledge.trim()}`,
-    ...look?.description.trim() ? [`Appearance:
-${look.description.trim()}`] : [],
-    ...look?.startingOutfit.trim() ? [`Outfit at the start: ${look.startingOutfit.trim()}`] : [],
-    ...modern ? [PLAYER_PERSONA_RULE] : []
-  ];
-  return { name: person.name.trim().slice(0, 200), title, description: lines.join(`
-
-`) };
-}
-var PLAYER_PERSONA_RULE = "This is the human-controlled player. These are starting facts and tendencies, not a script. During live play, the human supplies new actions, dialogue, thoughts, feelings, decisions, and consent.";
-function personaDraft(draft) {
-  return writePersona(draft);
-}
-function personaIsAutomatic(draft) {
-  if (draft.persona?.mode !== "create")
-    return false;
-  return [personaDraft(draft), writePersona(draft, false)].some((fresh) => draft.persona.name.trim() === fresh.name && draft.persona.title.trim() === fresh.title && draft.persona.description.trim() === fresh.description);
 }
 
 // src/character-polish.ts
@@ -1210,7 +1263,7 @@ function setup(ctx) {
   panels.import.append(sourceCard);
   const options = node("div", "sp-card sp-stack");
   options.append(node("h3", "", "Make a place for yourself"));
-  const role = field("Who will you play?", "", undefined, { placeholder: "An existing character, or someone new", hint: "The narrator leaves this character’s dialogue and choices to you. In Review you can make a persona for them or use one of your own." });
+  const role = field("Who will you play?", "", undefined, { placeholder: "An existing character, or someone new", hint: "Type a story character’s name to play them. Anything else, like “someone new” or “a traveling healer named Wren”, makes you a new character in the story, and Set Points writes them for you. The story’s main character stays in the story. You get a persona to check in Review." });
   const narrationMode = selectField("Narration style", [["neutral", "External narrator"], ["character", "Supporting character in first person"]], "neutral", () => {
     narratorName.wrap.hidden = narrationMode.input.value !== "character";
   });
@@ -2348,7 +2401,26 @@ function setup(ctx) {
       markDirty();
       renderReview();
     });
-    personaSection.body.append(paragraph("A persona is who the narrator sees you as. Make one for this story, use one you already have, or leave it and pick one yourself when you start the chat.", "sp-hint"), personaMode.wrap);
+    personaSection.body.append(paragraph("A persona is who the narrator sees you as. Make one for this story, use one you already have, or leave it and pick one yourself when you start the chat.", "sp-hint"));
+    if (!played) {
+      const newcomerConnection = selectField("Connection for writing your character", snapshot?.connections.map((item) => [item.id, item.name]) ?? [], connection.value || snapshot?.connections[0]?.id || "");
+      const writeCharacter = button(current.newcomer ? `Write ${current.newcomer.name} again` : "Write my character", async () => {
+        if (!newcomerConnection.input.value)
+          throw new Error("Choose a connection. Add one in Lumiverse settings if the list is empty.");
+        const result = await rpc.request("write-newcomer", { draft: clone(current), connectionId: newcomerConnection.input.value });
+        if (destroyed || nonce !== panelNonce || draft !== current)
+          return;
+        current.newcomer = result.newcomer;
+        current.playerRole = result.role;
+        if (current.persona?.mode !== "existing")
+          current.persona = { mode: "create", ...personaDraft(current) };
+        markDirty();
+        renderReview();
+        notify(`Wrote ${result.newcomer.name}. Check the persona below, then save.`);
+      });
+      personaSection.body.append(paragraph(current.newcomer ? `You join this story as ${current.newcomer.name}, someone new. Edit them in the persona below.` : "You join this story as someone new. Set Points can write who you are, why you’re here at the start, and how you look.", "sp-hint"), newcomerConnection.wrap, writeCharacter, paragraph("Uses one model request. Replaces the persona text below.", "sp-hint"));
+    }
+    personaSection.body.append(personaMode.wrap);
     if (current.persona && current.persona.mode !== "none" && !canUsePersonas)
       personaSection.body.append(paragraph("Grant personas in Lumiverse’s Extensions panel so Set Points can do this. Until then, Save to Lumiverse will stop and tell you.", "sp-notice"));
     if (current.persona?.mode === "create") {
@@ -2361,7 +2433,7 @@ function setup(ctx) {
         reviewFields.set(`persona:${key}`, item.input);
         return item;
       };
-      const name = personaField("Persona name", "name"), title = personaField("Short label", "title", { hint: "Shown next to the name in your persona list." }), description = personaField("Persona description", "description", { area: true, rows: 10, hint: played ? `Written from ${played.name}’s personality, voice, relationships, what they know at the start, and their appearance. It holds nothing from later in the story. It follows your edits to ${played.name} until you change the wording here.` : "Add who your character is to the cast, and how they look." });
+      const name = personaField("Persona name", "name"), title = personaField("Short label", "title", { hint: "Shown next to the name in your persona list." }), description = personaField("Persona description", "description", { area: true, rows: 10, hint: played ? `Written from ${played.name}’s personality, voice, relationships, what they know at the start, and their appearance. It holds nothing from later in the story. It follows your edits to ${played.name} until you change the wording here.` : current.newcomer ? `Written from ${current.newcomer.name}. Change anything you like.` : "Add who your character is, and how they look, or use Write my character above." });
       showPersona = () => {
         name.input.value = plan.name;
         title.input.value = plan.title;
@@ -3014,9 +3086,31 @@ function setup(ctx) {
   teardown.push(tab.onActivate(() => {
     refresh();
   }));
+  let personaTimer;
+  async function useStoryPersona() {
+    const chatId = ctx.getActiveChat().chatId;
+    if (!chatId || destroyed)
+      return;
+    try {
+      const result = await rpc.request("use-story-persona", { chatId });
+      if (!result || destroyed)
+        return;
+      notify(`Playing as ${result.personaName} in this story.`);
+      if (personaTimer)
+        clearTimeout(personaTimer);
+      personaTimer = setTimeout(() => {
+        if (!destroyed && ctx.getActiveChat().chatId === chatId)
+          rpc.request("use-story-persona", { chatId, confirm: true }).catch(() => {});
+      }, 1500);
+    } catch {}
+  }
   teardown.push(ctx.events.on("CHAT_CHANGED", () => {
     refresh();
-  }));
+    useStoryPersona();
+  }), () => {
+    if (personaTimer)
+      clearTimeout(personaTimer);
+  });
   const openAction = ctx.ui.registerInputBarAction({ id: "set-points-open", label: "Set Points", subtitle: "Review and direct your story", iconSvg: ICON });
   teardown.push(openAction.onClick(() => {
     tab.activate();
@@ -3041,6 +3135,7 @@ function setup(ctx) {
   selectTab("import");
   ctx.ready();
   refresh();
+  useStoryPersona();
   return () => {
     if (destroyed)
       return;

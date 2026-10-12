@@ -36,6 +36,8 @@ export class SceneRuntime {
   private cancelled = new Set<string>();
   constructor(private api: SpindleAPI, private userId?: string) {}
 
+  /** Run a task in this chat's queue, so it never interleaves with scene changes to the same chat. */
+  exclusive<T>(chatId: string, task: () => Promise<T>): Promise<T> { return this.serial(chatId, task); }
   private serial<T>(chatId: string, task: () => Promise<T>): Promise<T> {
     const prior = this.queues.get(chatId) ?? Promise.resolve();
     const next = prior.catch(() => {}).then(task);
