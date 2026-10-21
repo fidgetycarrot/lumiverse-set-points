@@ -1,6 +1,14 @@
-# Set Points 0.1.17 — verification
+# Set Points 0.1.18 — verification
 
-Prepared October 12, 2026.
+Prepared October 21, 2026.
+
+## Change in 0.1.18
+
+**Problem.** Lumiverse (October 19, 2026) refused to start the backend: "uses blocked backend capabilities: direct fetch API usage". Set Points makes no direct network requests; web pages go through the CORS proxy. The match came from the bundled `domutils` feed reader (pulled in by `linkedom`), whose internal helper is named `fetch` and is called as `fetch("summary", …)`.
+
+**Fix.** `npm run build` now runs `scripts/build.ts`, which bundles with a plugin that renames that helper to `fetchFeedTag` in `domutils/lib/(esm/)feeds.js` only, and fails the build if any call named `fetch(` remains in that file. The resulting backend differs from 0.1.17 only in those seven lines; the frontend is unchanged.
+
+**Validation.** Lumiverse's own scanner (`detectDangerousBackendCapabilities`, copied from the installed host) reports `direct fetch API usage` for the 0.1.17 bundle and nothing for the new one with the declared `base64_decode` capability. A new test applies the host's fetch, global-fetch, Bun system API, and fetch-module patterns to `dist/backend.js`, and fails on the 0.1.17 bundle. Type checking and all 518 tests across 21 files pass.
 
 ## Change in 0.1.17
 

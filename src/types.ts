@@ -1,7 +1,7 @@
 import type { VisualPack } from './visuals';
 import type { LookPack } from './looks';
 export const EXTENSION_ID = 'lumiverse_set_points';
-export const VERSION = '0.1.17';
+export const VERSION = '0.1.18';
 export type NarrationMode = 'neutral'|'character';
 export interface StoryRoles { narration: NarrationMode; playerCharacterId: string|null; viewpointCharacterId: string|null; sourceViewpoint: string }
 export interface CharacterNotes { motivations: string; reactions: string; voiceExamples: string[]; cautions: string[]; evidence?: string[] }

@@ -3293,7 +3293,7 @@ function requireRoleReview(draft) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.17";
+var VERSION = "0.1.18";
 
 // src/persona.ts
 function playerCharacter(draft) {
@@ -7981,11 +7981,11 @@ function getAtomFeed(feedRoot) {
       if (href) {
         entry.link = href;
       }
-      const description = fetch("summary", children) || fetch("content", children);
+      const description = fetchFeedTag("summary", children) || fetchFeedTag("content", children);
       if (description) {
         entry.description = description;
       }
-      const pubDate = fetch("updated", children);
+      const pubDate = fetchFeedTag("updated", children);
       if (pubDate) {
         entry.pubDate = new Date(pubDate);
       }
@@ -7999,7 +7999,7 @@ function getAtomFeed(feedRoot) {
     feed.link = href;
   }
   addConditionally(feed, "description", "subtitle", childs);
-  const updated = fetch("updated", childs);
+  const updated = fetchFeedTag("updated", childs);
   if (updated) {
     feed.updated = new Date(updated);
   }
@@ -8019,7 +8019,7 @@ function getRssFeed(feedRoot) {
       addConditionally(entry, "title", "title", children);
       addConditionally(entry, "link", "link", children);
       addConditionally(entry, "description", "description", children);
-      const pubDate = fetch("pubDate", children) || fetch("dc:date", children);
+      const pubDate = fetchFeedTag("pubDate", children) || fetchFeedTag("dc:date", children);
       if (pubDate)
         entry.pubDate = new Date(pubDate);
       return entry;
@@ -8028,7 +8028,7 @@ function getRssFeed(feedRoot) {
   addConditionally(feed, "title", "title", childs);
   addConditionally(feed, "link", "link", childs);
   addConditionally(feed, "description", "description", childs);
-  const updated = fetch("lastBuildDate", childs);
+  const updated = fetchFeedTag("lastBuildDate", childs);
   if (updated) {
     feed.updated = new Date(updated);
   }
@@ -8072,11 +8072,11 @@ function getMediaElements(where) {
 function getOneElement(tagName, node) {
   return getElementsByTagName(tagName, node, true, 1)[0];
 }
-function fetch(tagName, where, recurse = false) {
+function fetchFeedTag(tagName, where, recurse = false) {
   return textContent(getElementsByTagName(tagName, where, recurse, 1)).trim();
 }
 function addConditionally(obj, prop, tagName, where, recurse = false) {
-  const val = fetch(tagName, where, recurse);
+  const val = fetchFeedTag(tagName, where, recurse);
   if (val)
     obj[prop] = val;
 }
