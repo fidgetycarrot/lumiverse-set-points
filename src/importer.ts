@@ -3,6 +3,7 @@ import { defaultRoles, leadFromEvents, mentionCount, roleInstruction, rolesForIm
 import { newcomerContext, writeNewcomer } from './newcomer';
 import { personaDraft } from './persona';
 import { EXTENSION_ID, type ApprovedAppearance, type CastMember, type ImportOptions, type Newcomer, type PersonaPlan, type StoryDraft, type LoreEntry, type StoryScene } from './types';
+import { uuid } from './safe-id';
 
 export const IMPORT_LIMITS = Object.freeze({ sourceCharacters: 500_000, chunks: 48, scenes: 32, defaultChunkSize: 12_000, ledgerCharacters: 24_000, draftCharacters: 192_000, requestCharacters: 256_000 });
 export type GenerationMessage = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -640,7 +641,7 @@ export async function adaptStory(options: ImportOptions, generate: Generate, onP
     ledgers = next; round++;
   }
   const ledger = ledgers[0];
-  const metadata: DraftMetadata = { version: 1, id: `sp-${crypto.randomUUID()}`, playerRole, startingPoint, source: { title, ...(url ? { url } : {}), characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
+  const metadata: DraftMetadata = { version: 1, id: `sp-${uuid()}`, playerRole, startingPoint, source: { title, ...(url ? { url } : {}), characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
   const preferences: Preferences = { sourceTitle: title, playerRole, startingPoint, requestedScenes: sceneCount, ...(options.openingStyle!==undefined?{openingStyle:options.openingStyle}:{}), ...(options.narrationMode !== undefined ? { narrationMode: options.narrationMode, narratorCharacter: options.narratorCharacter ?? '', sourceViewpoint: options.sourceViewpoint ?? '' } : {}) };
   progress('Checking for a saved complete adaptation');
   let adapted = preferences.narrationMode !== undefined || preferences.openingStyle!==undefined ? undefined : await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, value => validateAdaptation(value, metadata, sceneCount), value => finalizeAdaptation(value, ledger, sceneCount), signal);

@@ -3,6 +3,7 @@ import type { SpindleAPI, WorldBookEntryCreateDTO } from 'lumiverse-spindle-type
 import { APPEARANCE_CONTINUITY_RULE, APPEARANCE_FIXED_RULE, APPEARANCE_RULE, appearanceEntryText, approvedLooks, cardPayload, mainCharacterIds, validateDraft } from './importer';
 import { requirePersonaAccess, savePersona } from './persona';
 import { EXTENSION_ID, type SavedStory, type StoryDraft } from './types';
+import { sha256Digest } from './safe-id';
 
 type Receipt = { key: string; draftId: string; worldBookId?: string; characterId?: string; complete?: boolean };
 export async function draftKey(draft: StoryDraft): Promise<string> {
@@ -13,7 +14,7 @@ export async function draftKey(draft: StoryDraft): Promise<string> {
   // unaffected. The persona is saved on its own, so editing it never makes a
   // second card.
   const { persona: _persona, ...card } = draft;
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ publicationRevision: 6, draft: card })));
+  const hash = await sha256Digest(new TextEncoder().encode(JSON.stringify({ publicationRevision: 6, draft: card })));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 

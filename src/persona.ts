@@ -1,6 +1,7 @@
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import { defaultRoles } from './roles';
 import { EXTENSION_ID, type CastMember, type Newcomer, type PersonaPlan, type SavedStory, type StoryDraft } from './types';
+import { sha256Digest } from './safe-id';
 
 type PersonaText = Pick<PersonaPlan, 'name' | 'title' | 'description'>;
 type Owned = { draftId?: string; written?: string };
@@ -88,7 +89,7 @@ export function personaIsAutomatic(draft: StoryDraft): boolean {
 }
 
 async function fingerprint(text: PersonaText): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([text.name, text.title, text.description])));
+  const hash = await sha256Digest(new TextEncoder().encode(JSON.stringify([text.name, text.title, text.description])));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 function owned(metadata: Record<string, unknown> | undefined): Owned | undefined {

@@ -1,5 +1,6 @@
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import type { GenerationMessage } from './importer';
+import { uuid, sha256Digest } from './safe-id';
 
 const FORMAT = 1;
 const MAX_BYTES = 1_000_000;
@@ -27,7 +28,7 @@ function canonical(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 async function digest(value: string): Promise<string> {
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  const bytes = await sha256Digest(new TextEncoder().encode(value));
   return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 function safeNumber(value: unknown): number|undefined { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined; }
@@ -194,7 +195,7 @@ export class ResponseCheckpoints {
       // answer above costs nothing even if another attempt has an unknown result.
       await this.requireSettled(keys, previous);
       const key = keys[0];
-      const attempt: Intent = { format: FORMAT, key, attemptId: crypto.randomUUID(), kind: 'intent', state: 'pending' };
+      const attempt: Intent = { format: FORMAT, key, attemptId: uuid(), kind: 'intent', state: 'pending' };
       await this.write(attempt);
       let result: unknown;
       try { result = await generate(); }

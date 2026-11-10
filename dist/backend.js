@@ -3293,7 +3293,152 @@ function requireRoleReview(draft) {
 
 // src/types.ts
 var EXTENSION_ID = "lumiverse_set_points";
-var VERSION = "0.1.18";
+var VERSION = "0.1.19";
+
+// src/safe-id.ts
+var HEX = "0123456789abcdef";
+function uuid() {
+  let out = "";
+  for (let i = 0;i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      out += "-";
+      continue;
+    }
+    if (i === 14) {
+      out += "4";
+      continue;
+    }
+    const r = Math.random() * 16 | 0;
+    out += HEX[i === 19 ? r & 3 | 8 : r];
+  }
+  return out;
+}
+var K = new Uint32Array([
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+]);
+function toBytes(data) {
+  if (typeof data === "string")
+    return new TextEncoder().encode(data);
+  if (data instanceof ArrayBuffer)
+    return new Uint8Array(data);
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+function sha256Bytes(data) {
+  const bytes = toBytes(data);
+  const bitLength = bytes.length * 8;
+  const padded = new Uint8Array(bytes.length + 9 + 63 >> 6 << 6);
+  padded.set(bytes);
+  padded[bytes.length] = 128;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(bitLength / 4294967296));
+  view.setUint32(padded.length - 4, bitLength >>> 0);
+  const h = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]);
+  const w = new Uint32Array(64);
+  for (let offset = 0;offset < padded.length; offset += 64) {
+    for (let i = 0;i < 16; i++)
+      w[i] = view.getUint32(offset + i * 4);
+    for (let i = 16;i < 64; i++) {
+      const a = w[i - 15], b = w[i - 2];
+      const s0 = (a >>> 7 | a << 25) ^ (a >>> 18 | a << 14) ^ a >>> 3;
+      const s1 = (b >>> 17 | b << 15) ^ (b >>> 19 | b << 13) ^ b >>> 10;
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+    }
+    let a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], k = h[7];
+    for (let i = 0;i < 64; i++) {
+      const S1 = (e >>> 6 | e << 26) ^ (e >>> 11 | e << 21) ^ (e >>> 25 | e << 7);
+      const t1 = k + S1 + (e & f ^ ~e & g) + K[i] + w[i] >>> 0;
+      const S0 = (a >>> 2 | a << 30) ^ (a >>> 13 | a << 19) ^ (a >>> 22 | a << 10);
+      const t2 = S0 + (a & b ^ a & c ^ b & c) >>> 0;
+      k = g;
+      g = f;
+      f = e;
+      e = d + t1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2 >>> 0;
+    }
+    h[0] = h[0] + a >>> 0;
+    h[1] = h[1] + b >>> 0;
+    h[2] = h[2] + c >>> 0;
+    h[3] = h[3] + d >>> 0;
+    h[4] = h[4] + e >>> 0;
+    h[5] = h[5] + f >>> 0;
+    h[6] = h[6] + g >>> 0;
+    h[7] = h[7] + k >>> 0;
+  }
+  const out = new Uint8Array(32);
+  const outView = new DataView(out.buffer);
+  for (let i = 0;i < 8; i++)
+    outView.setUint32(i * 4, h[i]);
+  return out;
+}
+async function sha256Digest(data) {
+  return sha256Bytes(data).buffer;
+}
 
 // src/persona.ts
 function playerCharacter(draft) {
@@ -3353,7 +3498,7 @@ function personaIsAutomatic(draft) {
   return [personaDraft(draft), writePersona(draft, false)].some((fresh) => draft.persona.name.trim() === fresh.name && draft.persona.title.trim() === fresh.title && draft.persona.description.trim() === fresh.description);
 }
 async function fingerprint(text) {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([text.name, text.title, text.description])));
+  const hash = await sha256Digest(new TextEncoder().encode(JSON.stringify([text.name, text.title, text.description])));
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 function owned(metadata) {
@@ -4181,7 +4326,7 @@ ${JSON.stringify({ reference: ref, sourceTitle: title, text: chunks[i] })}` }
     round++;
   }
   const ledger = ledgers[0];
-  const metadata = { version: 1, id: `sp-${crypto.randomUUID()}`, playerRole, startingPoint, source: { title, ...url ? { url } : {}, characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
+  const metadata = { version: 1, id: `sp-${uuid()}`, playerRole, startingPoint, source: { title, ...url ? { url } : {}, characters: options.text.length, chunks: chunks.length }, createdAt: Date.now() };
   const preferences = { sourceTitle: title, playerRole, startingPoint, requestedScenes: sceneCount, ...options.openingStyle !== undefined ? { openingStyle: options.openingStyle } : {}, ...options.narrationMode !== undefined ? { narrationMode: options.narrationMode, narratorCharacter: options.narratorCharacter ?? "", sourceViewpoint: options.sourceViewpoint ?? "" } : {} };
   progress("Checking for a saved complete adaptation");
   let adapted = preferences.narrationMode !== undefined || preferences.openingStyle !== undefined ? undefined : await savedLegacyAdaptation(legacyDraftMessages(preferences, ledger), generate, (value) => validateAdaptation(value, metadata, sceneCount), (value) => finalizeAdaptation(value, ledger, sceneCount), signal);
@@ -4504,7 +4649,7 @@ function canonical(value) {
   return JSON.stringify(normalize(value));
 }
 async function digest(value) {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  const bytes = await sha256Digest(new TextEncoder().encode(value));
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 function safeNumber(value) {
@@ -4708,7 +4853,7 @@ class ResponseCheckpoints {
       }
       await this.requireSettled(keys, previous);
       const key = keys[0];
-      const attempt = { format: FORMAT, key, attemptId: crypto.randomUUID(), kind: "intent", state: "pending" };
+      const attempt = { format: FORMAT, key, attemptId: uuid(), kind: "intent", state: "pending" };
       await this.write(attempt);
       let result;
       try {
@@ -4744,7 +4889,7 @@ class ResponseCheckpoints {
 // src/publisher.ts
 async function draftKey(draft) {
   const { persona: _persona, ...card } = draft;
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({ publicationRevision: 6, draft: card })));
+  const hash = await sha256Digest(new TextEncoder().encode(JSON.stringify({ publicationRevision: 6, draft: card })));
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 function worldEntries(draft) {
@@ -4940,8 +5085,8 @@ var REQUIRED = ["characters", "chats", "chat_mutation", "generation", "intercept
 var PENDING_MS = 15 * 60 * 1000;
 var object2 = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
 var clean2 = (v) => v.replace(SIGNAL_RE, "").trimEnd();
-var nonce = () => crypto.randomUUID().replaceAll("-", "");
-var digest2 = async (text) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))), (n) => n.toString(16).padStart(2, "0")).join("");
+var nonce = () => uuid().replaceAll("-", "");
+var digest2 = async (text) => Array.from(new Uint8Array(await sha256Digest(new TextEncoder().encode(text))), (n) => n.toString(16).padStart(2, "0")).join("");
 var lastConversation = (messages) => messages.filter((m) => m.role === "user" || m.role === "assistant").sort((a, b) => a.index_in_chat - b.index_in_chat).at(-1);
 var ownInsertion = (m) => object2(m.metadata?.[EXTENSION_ID]);
 var baseView = (notice) => ({ chatId: null, characterId: null, title: "", enabled: false, current: 0, next: null, scenes: [], canUndo: false, busy: false, notice });
@@ -5014,7 +5159,7 @@ class SceneRuntime {
       }
     }
     const encoded = new TextEncoder().encode(JSON.stringify([chat.character_id, source.draftId, scenes, ...roleDirection ? [roleDirection] : []]));
-    const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", encoded)), (n) => n.toString(16).padStart(2, "0")).join("");
+    const fingerprint = Array.from(new Uint8Array(await sha256Digest(encoded)), (n) => n.toString(16).padStart(2, "0")).join("");
     let state;
     try {
       state = JSON.parse(await this.api.variables.chat.get(chatId, STATE_KEY) || "null");
@@ -14946,7 +15091,7 @@ class SetPointsController {
       this.workspace = { draft: saved.draft ? validateDraft(saved.draft) : null, saved: saved.saved ?? null, job: saved.job ?? null, ...saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {} };
     } catch {
       await this.api.userStorage.setJson(`recovery/workspace-${Date.now()}.json`, saved, { userId: this.userId });
-      this.workspace = { draft: null, saved: null, ...saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}, job: { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Saved draft needs attention", error: "The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft." } };
+      this.workspace = { draft: null, saved: null, ...saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}, job: { id: uuid(), status: "failed", completed: 0, total: 1, label: "Saved draft needs attention", error: "The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft." } };
       this.note("Invalid saved draft backed up for recovery.");
     }
     try {
@@ -14968,7 +15113,7 @@ class SetPointsController {
       await this.api.userStorage.setJson(`recovery/character-polish-${Date.now()}.json`, { input: saved.characterPolishInput, result: saved.characterPolishResult, job: saved.characterPolishJob }, { userId: this.userId });
       delete this.workspace.characterPolishInput;
       delete this.workspace.characterPolishResult;
-      this.workspace.characterPolishJob = { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Character polish needs attention", error: "Invalid upgrade data was backed up. Your draft and paid responses are preserved." };
+      this.workspace.characterPolishJob = { id: uuid(), status: "failed", completed: 0, total: 1, label: "Character polish needs attention", error: "Invalid upgrade data was backed up. Your draft and paid responses are preserved." };
     }
     try {
       if (saved.repairInput)
@@ -14985,7 +15130,7 @@ class SetPointsController {
       await this.api.userStorage.setJson(`recovery/scene-repair-${Date.now()}.json`, { repairInput: saved.repairInput, repairResult: saved.repairResult, repairJob: saved.repairJob }, { userId: this.userId });
       delete this.workspace.repairInput;
       delete this.workspace.repairResult;
-      this.workspace.repairJob = { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Saved scene repair needs attention", error: "Invalid repair data was backed up. The story draft and paid responses are preserved." };
+      this.workspace.repairJob = { id: uuid(), status: "failed", completed: 0, total: 1, label: "Saved scene repair needs attention", error: "Invalid repair data was backed up. The story draft and paid responses are preserved." };
     }
     let invalidVisuals = false;
     if (saved.draftSource) {
@@ -15022,7 +15167,7 @@ class SetPointsController {
     }
     if (invalidVisuals) {
       await this.api.userStorage.setJson(`recovery/visuals-${Date.now()}.json`, { draftSource: saved.draftSource, visualPack: saved.visualPack, visualInput: saved.visualInput, visualJob: saved.visualJob, visualResultSignature: saved.visualResultSignature, visualConnectionFingerprint: saved.visualConnectionFingerprint }, { userId: this.userId });
-      this.workspace.visualJob = { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Saved image descriptions need attention", error: "Some saved image-description data could not be opened. A recovery copy was retained. Your story draft and paid responses are preserved." };
+      this.workspace.visualJob = { id: uuid(), status: "failed", completed: 0, total: 1, label: "Saved image descriptions need attention", error: "Some saved image-description data could not be opened. A recovery copy was retained. Your story draft and paid responses are preserved." };
       this.note("Invalid image-description data backed up for recovery.");
     }
     try {
@@ -15047,7 +15192,7 @@ class SetPointsController {
       delete this.workspace.lookPack;
       delete this.workspace.lookResultSignature;
       delete this.workspace.lookInput;
-      this.workspace.lookJob = { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Saved looks need attention", error: "Some saved look data could not be opened. A recovery copy was kept. Your story draft and paid responses are preserved." };
+      this.workspace.lookJob = { id: uuid(), status: "failed", completed: 0, total: 1, label: "Saved looks need attention", error: "Some saved look data could not be opened. A recovery copy was kept. Your story draft and paid responses are preserved." };
       this.note("Invalid look data backed up for recovery.");
     }
     if (this.workspace.visualJob?.status === "running") {
@@ -15394,7 +15539,7 @@ class SetPointsController {
       this.checkpoints.beginRun({ retryUncertain });
       this.abort = new AbortController;
       const controller = this.abort;
-      const job = { id: crypto.randomUUID(), status: "running", completed: 0, total: 1, label: "Preparing the story" };
+      const job = { id: uuid(), status: "running", completed: 0, total: 1, label: "Preparing the story" };
       this.workspace.job = job;
       this.workspace.lastImport = structuredClone(options);
       this.workspace.lastConnectionFingerprint = structuredClone(connection.fingerprint);
@@ -15480,7 +15625,7 @@ class SetPointsController {
             await this.startLooks({ draft: finished, sourceText: options.text, connectionId: options.connectionId, ...settings, autoUse: true });
           } catch (error) {
             this.note("Describing looks could not start after the import.");
-            this.workspace.lookJob = { id: crypto.randomUUID(), status: "failed", completed: 0, total: 1, label: "Looks were not described", error: `${error instanceof Error ? error.message : "Describing looks could not start."} Use Design character looks to try again.` };
+            this.workspace.lookJob = { id: uuid(), status: "failed", completed: 0, total: 1, label: "Looks were not described", error: `${error instanceof Error ? error.message : "Describing looks could not start."} Use Design character looks to try again.` };
             this.changed();
           }
         }
@@ -15507,7 +15652,7 @@ class SetPointsController {
       if (resume && !sameSettings(connection.fingerprint, this.workspace.characterPolishConnectionFingerprint))
         throw new Error("The saved character polish connection changed. Restore its settings before resuming, or start a new normally charged polish.");
       this.characterPolishCheckpoints.beginRun({ retryUncertain });
-      const controller = new AbortController, job = { id: crypto.randomUUID(), status: "running", completed: 0, total: options.characterIds.length, label: "Preparing character polish" };
+      const controller = new AbortController, job = { id: uuid(), status: "running", completed: 0, total: options.characterIds.length, label: "Preparing character polish" };
       this.characterPolishAbort = controller;
       this.workspace.characterPolishInput = structuredClone(options);
       this.workspace.characterPolishJob = job;
@@ -15589,7 +15734,7 @@ class SetPointsController {
       if (resume && !sameSettings(connection.fingerprint, this.workspace.repairConnectionFingerprint))
         throw new Error("The saved scene repair connection changed. Restore its settings before resuming, or start a new normally charged repair.");
       this.repairCheckpoints.beginRun({ retryUncertain });
-      const controller = new AbortController, job = { id: crypto.randomUUID(), status: "running", completed: 0, total: options.sceneIds.length, label: "Preparing scene repair" };
+      const controller = new AbortController, job = { id: uuid(), status: "running", completed: 0, total: options.sceneIds.length, label: "Preparing scene repair" };
       this.repairAbort = controller;
       this.workspace.repairInput = structuredClone(options);
       this.workspace.repairJob = job;
@@ -15678,7 +15823,7 @@ class SetPointsController {
       this.visualCheckpoints.beginRun({ retryUncertain });
       const controller = new AbortController;
       this.visualAbort = controller;
-      const job = { id: crypto.randomUUID(), status: "running", completed: 0, total: 1, label: "Preparing image descriptions" };
+      const job = { id: uuid(), status: "running", completed: 0, total: 1, label: "Preparing image descriptions" };
       this.workspace.visualJob = job;
       this.workspace.visualInput = structuredClone(options);
       this.workspace.visualConnectionFingerprint = structuredClone(connection.fingerprint);
@@ -15771,7 +15916,7 @@ class SetPointsController {
       this.lookCheckpoints.beginRun({ retryUncertain });
       const controller = new AbortController;
       this.lookAbort = controller;
-      const job = { id: crypto.randomUUID(), status: "running", completed: 0, total: 1, label: options.reroll ? "Preparing a new look" : "Preparing to design looks" };
+      const job = { id: uuid(), status: "running", completed: 0, total: 1, label: options.reroll ? "Preparing a new look" : "Preparing to design looks" };
       this.workspace.lookJob = job;
       this.workspace.lookInput = structuredClone(options);
       this.workspace.lookConnectionFingerprint = structuredClone(connection.fingerprint);

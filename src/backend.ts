@@ -13,6 +13,7 @@ import { extractPage, storyUrl } from './source';
 import { enrichVisuals, validateVisualPack, visualDraftSignature, type VisualPack } from './visuals';
 import { designLooks, lookDraftSignature, rerollLook, useLooks, validateLookPack, LOOK_LIMITS, type LookPack } from './looks';
 import { EXTENSION_ID, VERSION, type AppSnapshot, type Newcomer, type ImportJob, type ImportOptions, type SavedStory, type StoryDraft } from './types';
+import { uuid } from './safe-id';
 
 const STATE_PATH = 'workspace.json';
 type VisualInput = { draft: StoryDraft; sourceText: string; connectionId: string; maxOutputTokens?: number; reasoningMode?: ImportOptions['reasoningMode'] };
@@ -154,7 +155,7 @@ export class SetPointsController {
       this.workspace = { draft: saved.draft ? validateDraft(saved.draft) : null, saved: saved.saved ?? null, job: saved.job ?? null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}) };
     } catch {
       await this.api.userStorage.setJson(`recovery/workspace-${Date.now()}.json`, saved, { userId: this.userId });
-      this.workspace = { draft: null, saved: null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}), job: { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
+      this.workspace = { draft: null, saved: null, ...(saved.lastImport ? { lastImport: saved.lastImport, lastConnectionFingerprint: saved.lastConnectionFingerprint } : {}), job: { id: uuid(), status: 'failed', completed: 0, total: 1, label: 'Saved draft needs attention', error: 'The previous draft could not be opened. A recovery copy was retained; you can import a new story or load an exported draft.' } };
       this.note('Invalid saved draft backed up for recovery.');
     }
     // A failed optional upgrade cannot prevent opening a completed old draft.
@@ -173,7 +174,7 @@ export class SetPointsController {
     } catch {
       await this.api.userStorage.setJson(`recovery/character-polish-${Date.now()}.json`, { input: saved.characterPolishInput, result: saved.characterPolishResult, job: saved.characterPolishJob }, { userId: this.userId });
       delete this.workspace.characterPolishInput; delete this.workspace.characterPolishResult;
-      this.workspace.characterPolishJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Character polish needs attention', error: 'Invalid upgrade data was backed up. Your draft and paid responses are preserved.' };
+      this.workspace.characterPolishJob = { id: uuid(), status: 'failed', completed: 0, total: 1, label: 'Character polish needs attention', error: 'Invalid upgrade data was backed up. Your draft and paid responses are preserved.' };
     }
     // Optional repair recovery must not make completed legacy drafts unreadable.
     try {
@@ -187,7 +188,7 @@ export class SetPointsController {
     } catch {
       await this.api.userStorage.setJson(`recovery/scene-repair-${Date.now()}.json`,{repairInput:saved.repairInput,repairResult:saved.repairResult,repairJob:saved.repairJob},{userId:this.userId});
       delete this.workspace.repairInput; delete this.workspace.repairResult;
-      this.workspace.repairJob = {id:crypto.randomUUID(),status:'failed',completed:0,total:1,label:'Saved scene repair needs attention',error:'Invalid repair data was backed up. The story draft and paid responses are preserved.'};
+      this.workspace.repairJob = {id:uuid(),status:'failed',completed:0,total:1,label:'Saved scene repair needs attention',error:'Invalid repair data was backed up. The story draft and paid responses are preserved.'};
     }
     // Optional visual data must never make a valid story draft unreadable.
     let invalidVisuals = false;
@@ -216,7 +217,7 @@ export class SetPointsController {
     } catch { invalidVisuals = true; delete this.workspace.visualInput; }
     if (invalidVisuals) {
       await this.api.userStorage.setJson(`recovery/visuals-${Date.now()}.json`, { draftSource: saved.draftSource, visualPack: saved.visualPack, visualInput: saved.visualInput, visualJob: saved.visualJob, visualResultSignature: saved.visualResultSignature, visualConnectionFingerprint: saved.visualConnectionFingerprint }, { userId: this.userId });
-      this.workspace.visualJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved image descriptions need attention', error: 'Some saved image-description data could not be opened. A recovery copy was retained. Your story draft and paid responses are preserved.' };
+      this.workspace.visualJob = { id: uuid(), status: 'failed', completed: 0, total: 1, label: 'Saved image descriptions need attention', error: 'Some saved image-description data could not be opened. A recovery copy was retained. Your story draft and paid responses are preserved.' };
       this.note('Invalid image-description data backed up for recovery.');
     }
     // Designed looks are optional too: bad saved data is set aside, never fatal.
@@ -238,7 +239,7 @@ export class SetPointsController {
     } catch {
       await this.api.userStorage.setJson(`recovery/looks-${Date.now()}.json`, { lookPack: saved.lookPack, lookInput: saved.lookInput, lookJob: saved.lookJob, lookResultSignature: saved.lookResultSignature }, { userId: this.userId });
       delete this.workspace.lookPack; delete this.workspace.lookResultSignature; delete this.workspace.lookInput;
-      this.workspace.lookJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Saved looks need attention', error: 'Some saved look data could not be opened. A recovery copy was kept. Your story draft and paid responses are preserved.' };
+      this.workspace.lookJob = { id: uuid(), status: 'failed', completed: 0, total: 1, label: 'Saved looks need attention', error: 'Some saved look data could not be opened. A recovery copy was kept. Your story draft and paid responses are preserved.' };
       this.note('Invalid look data backed up for recovery.');
     }
     if (this.workspace.visualJob?.status === 'running') {
@@ -504,7 +505,7 @@ export class SetPointsController {
       this.checkpoints.beginRun({ retryUncertain });
       this.abort = new AbortController();
       const controller = this.abort;
-      const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: 'Preparing the story' };
+      const job: ImportJob = { id: uuid(), status: 'running', completed: 0, total: 1, label: 'Preparing the story' };
       this.workspace.job = job;
       this.workspace.lastImport = structuredClone(options);
       this.workspace.lastConnectionFingerprint = structuredClone(connection.fingerprint);
@@ -575,7 +576,7 @@ export class SetPointsController {
         // them and fill each character's look, so Review starts with them in place.
         if (finished && options.describeLooks) {
           try { await this.startLooks({ draft: finished, sourceText: options.text, connectionId: options.connectionId, ...settings, autoUse: true }); }
-          catch (error) { this.note('Describing looks could not start after the import.'); this.workspace.lookJob = { id: crypto.randomUUID(), status: 'failed', completed: 0, total: 1, label: 'Looks were not described', error: `${error instanceof Error ? error.message : 'Describing looks could not start.'} Use Design character looks to try again.` }; this.changed(); }
+          catch (error) { this.note('Describing looks could not start after the import.'); this.workspace.lookJob = { id: uuid(), status: 'failed', completed: 0, total: 1, label: 'Looks were not described', error: `${error instanceof Error ? error.message : 'Describing looks could not start.'} Use Design character looks to try again.` }; this.changed(); }
         }
       })();
       return structuredClone(job);
@@ -594,7 +595,7 @@ export class SetPointsController {
       const options = this.validateCharacterPolishInput(value), settings = responseSettings(options), connection = await this.selectedConnection(options.connectionId);
       if (resume && !sameSettings(connection.fingerprint, this.workspace.characterPolishConnectionFingerprint)) throw new Error('The saved character polish connection changed. Restore its settings before resuming, or start a new normally charged polish.');
       this.characterPolishCheckpoints.beginRun({ retryUncertain });
-      const controller = new AbortController(), job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: options.characterIds.length, label: 'Preparing character polish' };
+      const controller = new AbortController(), job: ImportJob = { id: uuid(), status: 'running', completed: 0, total: options.characterIds.length, label: 'Preparing character polish' };
       this.characterPolishAbort = controller;
       this.workspace.characterPolishInput = structuredClone(options); this.workspace.characterPolishJob = job; delete this.workspace.characterPolishResult;
       this.workspace.characterPolishConnectionFingerprint = structuredClone(connection.fingerprint);
@@ -641,7 +642,7 @@ export class SetPointsController {
       const settings=responseSettings(options),connection=await this.selectedConnection(options.connectionId);
       if (resume&&!sameSettings(connection.fingerprint,this.workspace.repairConnectionFingerprint)) throw new Error('The saved scene repair connection changed. Restore its settings before resuming, or start a new normally charged repair.');
       this.repairCheckpoints.beginRun({retryUncertain});
-      const controller=new AbortController(),job:ImportJob={id:crypto.randomUUID(),status:'running',completed:0,total:options.sceneIds.length,label:'Preparing scene repair'};
+      const controller=new AbortController(),job:ImportJob={id:uuid(),status:'running',completed:0,total:options.sceneIds.length,label:'Preparing scene repair'};
       this.repairAbort=controller;
       this.workspace.repairInput=structuredClone(options);this.workspace.repairJob=job;delete this.workspace.repairResult;this.workspace.repairConnectionFingerprint=structuredClone(connection.fingerprint);
       try { await this.persist(); } catch { this.repairAbort=undefined;this.workspace.repairJob={...job,status:'failed',label:'Scene repair could not be saved',error:'No model request was sent. Check extension storage.'};this.changed();throw new Error(this.workspace.repairJob.error); }
@@ -693,7 +694,7 @@ export class SetPointsController {
       this.visualCheckpoints.beginRun({ retryUncertain });
       const controller = new AbortController();
       this.visualAbort = controller;
-      const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: 'Preparing image descriptions' };
+      const job: ImportJob = { id: uuid(), status: 'running', completed: 0, total: 1, label: 'Preparing image descriptions' };
       this.workspace.visualJob = job;
       this.workspace.visualInput = structuredClone(options);
       this.workspace.visualConnectionFingerprint = structuredClone(connection.fingerprint);
@@ -768,7 +769,7 @@ export class SetPointsController {
       this.lookCheckpoints.beginRun({ retryUncertain });
       const controller = new AbortController();
       this.lookAbort = controller;
-      const job: ImportJob = { id: crypto.randomUUID(), status: 'running', completed: 0, total: 1, label: options.reroll ? 'Preparing a new look' : 'Preparing to design looks' };
+      const job: ImportJob = { id: uuid(), status: 'running', completed: 0, total: 1, label: options.reroll ? 'Preparing a new look' : 'Preparing to design looks' };
       this.workspace.lookJob = job;
       this.workspace.lookInput = structuredClone(options);
       this.workspace.lookConnectionFingerprint = structuredClone(connection.fingerprint);

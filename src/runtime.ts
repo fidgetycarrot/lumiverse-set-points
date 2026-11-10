@@ -1,6 +1,7 @@
 import type { SpindleAPI, LlmMessageDTO, InterceptorContextDTO, InterceptorResultDTO, MessageContentProcessorCtxDTO, MessageContentProcessorResultDTO, ChatDTO } from 'lumiverse-spindle-types';
 import { validateDisplayText } from './importer';
 import { EXTENSION_ID, type StoryScene, type SceneView } from './types';
+import { uuid, sha256Digest } from './safe-id';
 
 const STATE_KEY = `${EXTENSION_ID}_state_v1`;
 const HANDOFF_KEY = `${EXTENSION_ID}_handoff`;
@@ -23,8 +24,8 @@ interface State extends Position {
 interface Loaded { chat: ChatDTO; title: string; scenes: StoryScene[]; state: State; roleDirection?: string }
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const clean = (v: string) => v.replace(SIGNAL_RE, '').trimEnd();
-const nonce = () => crypto.randomUUID().replaceAll('-', '');
-const digest = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), n => n.toString(16).padStart(2,'0')).join('');
+const nonce = () => uuid().replaceAll('-', '');
+const digest = async (text: string) => Array.from(new Uint8Array(await sha256Digest(new TextEncoder().encode(text))), n => n.toString(16).padStart(2,'0')).join('');
 const lastConversation = (messages: Messages) => messages.filter(m => m.role === 'user' || m.role === 'assistant').sort((a,b) => a.index_in_chat - b.index_in_chat).at(-1);
 const ownInsertion = (m: Messages[number]) => object(m.metadata?.[EXTENSION_ID]);
 const baseView = (notice: string): SceneView => ({chatId:null,characterId:null,title:'',enabled:false,current:0,next:null,scenes:[],canUndo:false,busy:false,notice});
@@ -70,7 +71,7 @@ export class SceneRuntime {
     if (source.roleDirection !== undefined) { try {roleDirection=validateDisplayText(source.roleDirection,'Role direction',8000);} catch {throw new Error('This card has invalid role direction. Review and save the adaptation again.');} }
     // A stable digest keeps story prose out of the persisted diagnostic state.
     const encoded = new TextEncoder().encode(JSON.stringify([chat.character_id, source.draftId, scenes, ...(roleDirection?[roleDirection]:[])]));
-    const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', encoded)), n => n.toString(16).padStart(2,'0')).join('');
+    const fingerprint = Array.from(new Uint8Array(await sha256Digest(encoded)), n => n.toString(16).padStart(2,'0')).join('');
     let state: State | undefined;
     try { state = JSON.parse(await this.api.variables.chat.get(chatId, STATE_KEY) || 'null') as State | undefined; } catch {}
     const initial = (): State => ({version:1,chatId,fingerprint,enabled:false,current:scenes[0].id,next:scenes[1]?.id ?? null,pending:null,insertion:null,intent:null,undoing:null,notice:''});
